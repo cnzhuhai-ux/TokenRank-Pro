@@ -6,6 +6,38 @@
 
 整个项目开源，包括电脑端同步器、服务端和小程序：https://github.com/xmasdong/tokenrank
 
+## 支持采集的终端
+
+采集分两层：统计内核 [token-watcher](https://github.com/luwill/token-watcher)（1.9.x，13 种 AI 编程工具）+ 本仓库的 Oort 系补充采集（[`client/sync/oort.js`](client/sync/oort.js)，详见 [`docs/oort-collection.md`](docs/oort-collection.md)）。一台电脑可同时安装任意多个，用量按天汇总、按工具分别展示。
+
+**token-watcher 官方支持**
+
+| 终端 | 说明 |
+|---|---|
+| Claude Code | 含订阅与 API 用量 |
+| Codex CLI | OpenAI Codex |
+| Cursor | 本机统计库 |
+| Gemini CLI | Google |
+| Grok CLI | xAI |
+| Kimi For Coding | 月之暗面 |
+| Qoder Agent | 阿里 |
+| opencode | 开源终端 Agent |
+| Antigravity | Google |
+| DSH（DeepSeek Harness） | 基础版（`~/.dsh`） |
+| ZCode | `~/.zcode`，桌面/CLI 一体 |
+| WorkBuddy | |
+| Lines | |
+
+**Oort 系补充采集（本仓库新增，只读各产品自己的本机状态目录）**
+
+| 终端 | 数据源 | 状态 |
+|---|---|---|
+| OortCodex（独立程序，与 ZCode 无关） | AI Studio `oortcodex.oortcodex` 下的 Claude agent 转录 | ✅ |
+| DSH For OortCloud Work | `~/.dsh-oortcloud-work` 会话累计用量 | ✅ |
+| OortCloud AI Studio | Cline/Roo 任务逐请求用量 | ✅ |
+| OortOffice | 本地无 token 明细（LevelDB） | ❌ 需平台侧配合，方案见文档 |
+| OortCodex CLI | 本地暂无用量落盘 | ❌ 同上 |
+
 <p align="center">
   <img src="miniprogram/assets/mini-program-code.jpg" width="220" alt="Token 群排名小程序码">
   <br>
