@@ -103,7 +103,7 @@ test('collectOortDays 同日多源合并、无数据目录时返回空', (t) => 
   assert.equal(days[0].tools.length, 2);
 });
 
-test('mergeOortDays 重命名 zcode→OortCodex（含 tool_models）并叠加 Oort 用量', () => {
+test('mergeOortDays 不改写 ZCode 的工具名（OortCodex 是独立程序，不与 zcode 合并）并叠加 Oort 用量', () => {
   const base = [{
     day: '2026-10-28', tokens: 1000, input_tokens: 600, output_tokens: 400, cache_read: 0, cache_write: 0,
     requests: 10, models: [['glm-5.3', 1000]], tools: [['zcode', 700], ['workbuddy', 300]],
@@ -111,20 +111,51 @@ test('mergeOortDays 重命名 zcode→OortCodex（含 tool_models）并叠加 Oo
   }];
   const oort = [{
     day: '2026-10-28', tokens: 500, input_tokens: 300, output_tokens: 200, cache_read: 0, cache_write: 0,
-    requests: 2, models: [], tools: [[TOOL_NAMES.dsh, 500]], tool_models: [],
+    requests: 2, models: [], tools: [[TOOL_NAMES.oortCodex, 500]], tool_models: [],
   }];
   const merged = mergeOortDays(base, oort);
   assert.equal(merged.length, 1);
   const day = merged[0];
   assert.equal(day.tokens, 1500);
   assert.equal(day.requests, 12);
-  // zcode 改名为 OortCodex，workbuddy 保留，Oort 新工具并入，按量降序
-  assert.deepEqual(day.tools.map(([n]) => n), [TOOL_NAMES.oortCodex, TOOL_NAMES.dsh, 'workbuddy']);
-  assert.deepEqual(day.tool_models, [[TOOL_NAMES.oortCodex, 'glm-5.3', 700]]);
+  // zcode 保持原名（ZCode 是独立产品），OortCodex 作为独立工具并入，按量降序
+  assert.deepEqual(day.tools.map(([n]) => n), ['zcode', TOOL_NAMES.oortCodex, 'workbuddy']);
+  assert.deepEqual(day.tool_models, [['zcode', 'glm-5.3', 700]]);
   // cost 原样保留（Oort 增量不计价），其余字段不影响
   assert.equal(day.cost.usd_micros, 1);
   // 入参未被修改
   assert.deepEqual(base[0].tools, [['zcode', 700], ['workbuddy', 300]]);
+});
+
+test('collectOortDays 采集 OortCodex（独立程序）的 Claude agent 转录用量', (t) => {
+  const { home, done } = makeHome();
+  t.after(done);
+  const appData = join(home, 'appdata');
+  const dir = join(appData, 'OortCloud AI Studio', 'User', 'globalStorage', 'oortcodex.oortcodex', 'claude-agent-acp', 'projects', 'proj-1');
+  mkdirSync(dir, { recursive: true });
+  const lines = [
+    JSON.stringify({ type: 'user', timestamp: new Date(NOW).toISOString() }),
+    JSON.stringify({ type: 'assistant', timestamp: new Date(NOW).toISOString(),
+      message: { usage: { input_tokens: 20086, output_tokens: 106, cache_read_input_tokens: 0, cache_creation_input_tokens: 40 } } }),
+    JSON.stringify({ type: 'assistant', timestamp: new Date(NOW - DAY_MS).toISOString(),
+      message: { usage: { input_tokens: 500, output_tokens: 50, cache_read_input_tokens: 300, cache_creation_input_tokens: 0 } } }),
+    // 全零用量不计；无 usage 的行不计
+    JSON.stringify({ type: 'assistant', timestamp: new Date(NOW).toISOString(),
+      message: { usage: { input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 } } }),
+    JSON.stringify({ type: 'assistant', timestamp: new Date(NOW).toISOString(), message: {} }),
+    '{broken-line',
+  ];
+  writeFileSync(join(dir, 'session.jsonl'), lines.join('\n'));
+
+  const days = collectOortDays({ home, appData, log: () => {} });
+  assert.equal(days.length, 2);
+  const today = days.find((d) => d.day === beijing(NOW));
+  assert.equal(today.tokens, 20232);
+  assert.equal(today.requests, 1);
+  assert.deepEqual(today.tools, [[TOOL_NAMES.oortCodex, 20232]]);
+  const yesterday = days.find((d) => d.day === beijing(NOW - DAY_MS));
+  assert.equal(yesterday.tokens, 850);
+  assert.equal(yesterday.requests, 1);
 });
 
 test('mergeOortDays 为 Oort 独有的日子补新行，tools 超过 8 个按量截断', () => {
@@ -150,7 +181,7 @@ test('mergeOortDays 输出可被 JSON 序列化（tools 为数组而非 Map）',
   const base = [{ day: '2026-10-28', tokens: 1, input_tokens: 1, output_tokens: 0, cache_read: 0, cache_write: 0, requests: 1, models: [], tools: [['zcode', 1]], tool_models: [] }];
   const oort = [{ day: '2026-10-28', tokens: 2, input_tokens: 2, output_tokens: 0, cache_read: 0, cache_write: 0, requests: 1, models: [], tools: [[TOOL_NAMES.aiStudio, 2]], tool_models: [] }];
   const json = JSON.stringify(mergeOortDays(base, oort));
-  assert.match(json, /OortCodex/);
+  assert.match(json, /zcode/);
   assert.match(json, /OortCloud AI Studio/);
-  assert.ok(!json.includes('{}') || !/"tools":\s*{}/.test(json));
+  assert.ok(!/"tools":\s*{}/.test(json));
 });

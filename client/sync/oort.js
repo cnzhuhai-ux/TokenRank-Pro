@@ -15,8 +15,12 @@
  *     中 say=api_req_started 的消息，文本是尾带 {"tokensIn":..,"tokensOut":..,"cacheWrites":..,
  *     "cacheReads":..,"cost":..} 的 JSON（请求完成后回填）；每条即一次真实请求，ts 精确到毫秒。
  *     原生 oortcodex 扩展的 acp-sessions 只有上下文窗口快照（used/size），没有计费 token，不采。
- *   - OortCodex（桌面 / CLI / Agents 合并）
- *     token-watcher 已按 'zcode' 采集（CLI 与 Agents 会话同在 ~/.zcode），仅在合并时改展示名。
+ *   - OortCodex（独立程序，与 ZCode 无关：ZCode 由 token-watcher 按 'zcode' 采集，二者不合并）
+ *     OortCloud AI Studio\User\globalStorage\oortcodex.oortcodex\claude-agent-acp\projects 下
+ *     的 Claude Code 格式转录（*.jsonl，逐条 assistant 消息带 message.usage：input_tokens /
+ *     output_tokens / cache_read_input_tokens / cache_creation_input_tokens，含毫秒时间戳）。
+ *     同目录下的 codex-acp 后端 token_count 事件 info 为 null（该版本不落盘）、cline-acp 只存
+ *     设置，~/.oortcodex/cli 为空——OortCodex CLI 暂无本地可用量数据。
  *
  * 无法本地采集：OortOffice —— 本地聊天存于浏览器 Local Storage（LevelDB），无 token 明细；
  * 平台侧 new-api 有完整计量（/api/dashboard/self/overview 按天按 token），但需要有效的平台
@@ -32,8 +36,10 @@ export const TOOL_NAMES = {
   aiStudio: 'OortCloud AI Studio',
   oortCodex: 'OortCodex',
 };
-// token-watcher 的工具名 → Oort 产品展示名（zcode 事件含桌面/CLI/Agents，无法再细分）
-export const TOOL_RENAME = { zcode: TOOL_NAMES.oortCodex };
+// token-watcher 工具名 → Oort 产品展示名。注意：OortCodex 是独立程序，与 ZCode
+// （token-watcher 的 'zcode'，数据在 ~/.zcode）互不相干，二者不能合并、互不改名。
+// OortCodex 的用量由本文件单独采集（claude-agent-acp 转录）。
+export const TOOL_RENAME = {};
 
 const MAX = { tokens: 1e13, requests: 1e7 };
 const DAY_MS = 86_400_000;
@@ -125,10 +131,52 @@ function collectAiStudio(appData, log) {
   return [...buckets.values()];
 }
 
+/**
+ * OortCodex（独立程序）：Claude agent 转录里的逐条 message.usage，按时间戳分日。
+ * 目录不存在或无用量时返回空；单文件损坏只跳过该文件。
+ */
+function collectOortCodex(appData, log) {
+  if (!appData) return [];
+  const root = join(appData, 'OortCloud AI Studio', 'User', 'globalStorage', 'oortcodex.oortcodex', 'claude-agent-acp', 'projects');
+  if (!existsSync(root)) return [];
+  const buckets = new Map();
+  const walk = (dir) => {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const file = join(dir, entry.name);
+      if (entry.isDirectory()) { walk(file); continue; }
+      if (!entry.name.endsWith('.jsonl')) continue;
+      try {
+        for (const line of readFileSync(file, 'utf8').split('\n')) {
+          if (!line.includes('"usage"')) continue;
+          let record;
+          try { record = JSON.parse(line); } catch { continue; }
+          const usage = record?.message?.usage;
+          if (!usage || typeof usage !== 'object') continue;
+          const input = Number(usage.input_tokens) || 0;
+          const output = Number(usage.output_tokens) || 0;
+          const cacheRead = Number(usage.cache_read_input_tokens) || 0;
+          const cacheWrite = Number(usage.cache_creation_input_tokens) || 0;
+          if (!input && !output && !cacheRead && !cacheWrite) continue;
+          const ts = Date.parse(record.timestamp || '');
+          const day = beijingDayOf(Number.isFinite(ts) ? ts : statSync(file).mtimeMs);
+          const bucket = buckets.get(day) || emptyBucket(day);
+          addTo(bucket, { input, output, cacheRead, cacheWrite, requests: 1, tool: TOOL_NAMES.oortCodex });
+          buckets.set(day, bucket);
+        }
+      } catch (err) {
+        log(`oort oortcodex 转录 ${entry.name} 解析失败，已跳过：${err?.message || err}`);
+      }
+    }
+  };
+  walk(root);
+  return [...buckets.values()];
+}
+
 /** 汇总 Oort 系各源，产出与上报协议同构的日行（models/tool_models 无数据则为空） */
 export function collectOortDays({ home = homedir(), appData = process.env.APPDATA || null, log = () => {} } = {}) {
   const merged = new Map();
-  for (const bucket of [...collectDsh(home, log), ...collectAiStudio(appData, log)]) {
+  const sources = [...collectDsh(home, log), ...collectAiStudio(appData, log), ...collectOortCodex(appData, log)];
+  for (const bucket of sources) {
     const existing = merged.get(bucket.day) || emptyBucket(bucket.day);
     existing.input_tokens += bucket.input_tokens;
     existing.output_tokens += bucket.output_tokens;
