@@ -42,6 +42,16 @@ WX_REMINDERS_ENABLED = "0"
 # 生产环境必须：wrangler secret put WX_APPSECRET 并把下面这行删掉。
 ALLOW_DEV_LOGIN = "1"
 
+# ── 飞书机器人（可选；配置见 docs/feishu.md）──────────────────────
+# 在飞书开放平台创建「企业自建应用」并添加机器人能力后填入。
+# 未配置 FEISHU_APP_ID/FEISHU_APP_SECRET 时 /feishu/event 直接忽略所有事件。
+# FEISHU_APP_ID = "cli_xxxxxxxxxxxxxxxx"
+# FEISHU_VERIFICATION_TOKEN = "事件订阅的 Verification Token（事件加密页可查）"
+# 若事件订阅开启「加密策略」，还需配置 Encrypt Key：
+# FEISHU_ENCRYPT_KEY = "xxxxxxxxxxxxxxxx"
+
 # 生产环境额外执行（密钥不入库不入 git）：
 #   npx wrangler secret put WX_APPSECRET
+#   npx wrangler secret put FEISHU_APP_SECRET
 # 并删除上面的 ALLOW_DEV_LOGIN
+# 数据库迁移（老库升级）：npx wrangler d1 execute tokenrank --remote --file=migrations/0018_feishu.sql

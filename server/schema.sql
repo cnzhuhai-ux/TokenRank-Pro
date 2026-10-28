@@ -1,12 +1,13 @@
 -- 「Token 群排名」D1 表结构（部署见 wrangler.toml.example 注释）
 -- 原则：只存聚合数字、微信资料和用户自愿登记的私有邮箱，无原始明细、无 IP、无设备指纹。
 
--- 用户：openid 为唯一锚点（wx.login → code2session）
+-- 用户：openid 为唯一锚点（微信 wx.login → code2session；飞书用户为 'feishu:<open_id>'）
 CREATE TABLE IF NOT EXISTS users (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   openid TEXT NOT NULL UNIQUE,
   nickname TEXT,
   avatar_path TEXT,
+  avatar_url TEXT,                           -- 外链头像 URL（飞书资料头像，仅作展示）
   session_key TEXT,                          -- 微信会话密钥（解密 getGroupEnterInfo 用，永不返回）
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL,
@@ -410,3 +411,9 @@ CREATE TRIGGER IF NOT EXISTS user_topups_account_insert BEFORE INSERT ON user_to
 WHEN NOT EXISTS(SELECT 1 FROM users WHERE id=NEW.user_id) BEGIN SELECT RAISE(ABORT,'ACCOUNT_NOT_FOUND'); END;
 CREATE TRIGGER IF NOT EXISTS user_topups_account_update BEFORE UPDATE OF user_id ON user_topups
 WHEN NOT EXISTS(SELECT 1 FROM users WHERE id=NEW.user_id) BEGIN SELECT RAISE(ABORT,'ACCOUNT_NOT_FOUND'); END;
+
+-- 飞书机器人事件去重：飞书对失败回调会重试，event_id 幂等只处理一次
+CREATE TABLE IF NOT EXISTS feishu_event_log (
+  event_id TEXT PRIMARY KEY,
+  seen_at INTEGER NOT NULL
+);

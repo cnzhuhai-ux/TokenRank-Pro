@@ -18,6 +18,7 @@ import { connectionReminderMeta, reminderMeta, reminderStatus, acknowledgeRemind
 import { emailRegistrationStatus, saveEmailRegistration, removeEmailRegistration } from './email-registration.js';
 import { listSubscriptions, createSubscription, updateSubscription, deleteSubscription, getRates } from './subscriptions.js';
 import { createTopup, updateTopup, deleteTopup } from './topups.js';
+import { feishu } from './feishu.js';
 
 /**
  * 「Token 群排名」Cloudflare Worker。
@@ -42,7 +43,7 @@ const MAX_REPORT_BODY = 512 * 1024;
 const LEADERBOARD_LIMIT = 50;
 // 新建群榜的默认名；仍是默认名时视为“未起名”，所有成员都可以起一次名。
 const DEFAULT_GROUP_NAME = '本群 Token 排名';
-const completeProfile = user => !!(sanitizeName(user?.nickname) && user?.avatar_path);
+const completeProfile = user => !!(sanitizeName(user?.nickname) && (user?.avatar_path || user?.avatar_url));
 const profileRequired = () => Response.json({ error: '请先保存微信头像和昵称，再参与群排名', code: 'PROFILE_REQUIRED' }, { status: 428 });
 // Profile completion is an onboarding step, not a filter on existing members' usage.
 // Members who hid themselves in this group do not count in its rankings.
@@ -63,12 +64,12 @@ const CORS = {
 
 export default {
   async scheduled(event, env, ctx) { ctx.waitUntil(runReminders(env)); },
-  async fetch(request, env) {
+  async fetch(request, env, ctx) {
     if (request.method === 'OPTIONS') return new Response(null, { status: 204, headers: CORS });
     const url = new URL(request.url);
     const path = url.pathname.replace(/\/+$/, '') || '/';
     try {
-      return await route(request, env, url, path) ?? jsonError(404, 'not found');
+      return await route(request, env, url, path, ctx) ?? jsonError(404, 'not found');
     } catch (err) {
       // Database guards also reject requests authenticated just before deletion.
       if (err?.message?.includes('ACCOUNT_NOT_FOUND')) return Response.json({ error: '账号已注销，请重新登录', code: 'ACCOUNT_DELETED' }, { status: 410, headers: CORS });
@@ -79,7 +80,7 @@ export default {
   },
 };
 
-async function route(request, env, url, path) {
+async function route(request, env, url, path, ctx) {
   const method = request.method;
   const withCors = (res) => new Response(res.body, { status: res.status, headers: { ...CORS, ...Object.fromEntries(res.headers) } });
 
@@ -87,6 +88,9 @@ async function route(request, env, url, path) {
     await env.DB.prepare('SELECT 1 FROM users LIMIT 1').first();
     return withCors(Response.json({ ok: true, day: beijingDay() }));
   }
+
+  // ---- 飞书机器人事件回调（回调处理放 waitUntil，先回 200 防飞书重试风暴） ----
+  if (method === 'POST' && path === '/feishu/event') return withCors(await feishu.handle(request, env, ctx));
 
   const subscriptionPath = path.match(/^\/api\/subscriptions(?:\/([a-f0-9]{32}))?$/);
   if (subscriptionPath) {
@@ -357,7 +361,7 @@ async function sessionUser(request, env) {
 }
 
 async function publicUser(env, userId, origin = '') {
-  const u = await env.DB.prepare(`SELECT u.id, u.nickname, u.avatar_path, u.rank_hidden,
+  const u = await env.DB.prepare(`SELECT u.id, u.nickname, u.avatar_path, u.avatar_url, u.rank_hidden,
     c.user_id AS connected_user_id, c.last_report_at,p.awaiting_first_report,p.prompt_seen_at FROM users u
     LEFT JOIN connect_tokens c ON c.user_id=u.id LEFT JOIN reminder_preferences p ON p.user_id=u.id WHERE u.id=?1`).bind(userId).first();
   if (!u) throw new Error('ACCOUNT_NOT_FOUND');
@@ -365,7 +369,7 @@ async function publicUser(env, userId, origin = '') {
     user_id: u.id,
     ...reminderMeta(env,u,u.last_report_at),
     nickname: u.nickname,
-    avatar_url: u.avatar_path ? `${origin}/avatars/${u.avatar_path}` : null,
+    avatar_url: u.avatar_path ? `${origin}/avatars/${u.avatar_path}` : (u.avatar_url || null),
     profile_complete: completeProfile(u),
     connected: !!u.connected_user_id,
     // 接入状态三态的依据：connected=有码；last_report_at=数据确实到达过

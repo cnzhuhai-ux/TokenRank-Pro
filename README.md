@@ -2,6 +2,8 @@
 
 一个微信小程序，看自己用 Claude Code、Codex、Cursor 这些 AI 编程工具烧了多少 token，也能在微信群里排个榜。一个微信群对应一张榜，不想上榜可以关掉排名，只自己看。
 
+也支持**飞书**：自带机器人拉进飞书群，群里发「榜单」看排行、「加入」上榜，单聊发「绑定」接入电脑；一个飞书群同样对应一张榜，与微信版共用服务端。配置与用法见 [`docs/feishu.md`](docs/feishu.md)。
+
 整个项目开源，包括电脑端同步器、服务端和小程序：https://github.com/xmasdong/tokenrank
 
 <p align="center">
@@ -66,7 +68,7 @@ tokenrank rank push --full --dry-run
 |---|---|
 | `client/sync` | 电脑端同步器（当前 0.2.16）：接入、只读同步、心跳、超时恢复、更新重算、备份清理 |
 | `client/bin/tokenrank.js` | 同步器命令行入口 |
-| `server` | Cloudflare Worker、D1 表结构与迁移、安装和更新脚本 |
+| `server` | Cloudflare Worker、D1 表结构与迁移、安装和更新脚本；含飞书机器人（`server/src/feishu.js`） |
 | `miniprogram` | 原生微信小程序 |
 | `scripts` | 生成分享封面、用量卡预览等辅助脚本 |
 
