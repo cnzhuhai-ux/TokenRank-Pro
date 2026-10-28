@@ -27,7 +27,9 @@ crons = ["*/5 * * * *"]
 [vars]
 # 若用国内 CDN/服务器反代到 workers.dev（回源 Host 是 workers.dev），
 # 必须配置此项，否则接入命令等会显示 workers.dev 域名：
-# PUBLIC_BASE_URL = "https://tokenrank.xmasdong.cn"
+# PUBLIC_BASE_URL = "https://<你的域名>"
+# 浏览器直连时才需要；逗号分隔的允许来源，不要用 *。小程序和命令行同步器不需要 CORS。
+# CORS_ORIGIN = "https://<你的域名>"
 WX_APPID = "wx0000000000000000"
 # 消息模板未申请时保持关闭，不能用占位 ID。详见 docs/reminders.md。
 WX_REMINDERS_ENABLED = "0"
@@ -45,9 +47,11 @@ ALLOW_DEV_LOGIN = "1"
 # ── 飞书机器人（可选；配置见 docs/feishu.md）──────────────────────
 # 在飞书开放平台创建「企业自建应用」并添加机器人能力后填入。
 # 未配置 FEISHU_APP_ID/FEISHU_APP_SECRET 时 /feishu/event 直接忽略所有事件。
+# HTTP 回调必须配置 FEISHU_VERIFICATION_TOKEN 或 FEISHU_ENCRYPT_KEY 之一，
+# 两者都没有时所有事件都会被拒绝（Node 长连接模式不受影响）。
 # FEISHU_APP_ID = "cli_xxxxxxxxxxxxxxxx"
 # FEISHU_VERIFICATION_TOKEN = "事件订阅的 Verification Token（事件加密页可查）"
-# 若事件订阅开启「加密策略」，还需配置 Encrypt Key：
+# 若事件订阅开启「加密策略」，还需配置 Encrypt Key（回调改校验 X-Lark-Signature）：
 # FEISHU_ENCRYPT_KEY = "xxxxxxxxxxxxxxxx"
 
 # 生产环境额外执行（密钥不入库不入 git）：

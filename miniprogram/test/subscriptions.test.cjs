@@ -70,7 +70,10 @@ test('表单校验名称、价格、自定义天数和开始日期；停用时�
 function cacheFixture() {
   const calls = [], store = new Map([['session_token', 'session'], ['account_known', true]]), module = { exports: {} };
   const wx = { getStorageSync: k => store.get(k), setStorageSync: (k, v) => store.set(k, v), removeStorageSync: k => store.delete(k), clearStorageSync: () => store.clear(), request: o => calls.push(o) };
-  vm.runInNewContext(fs.readFileSync(path.join(__dirname, '../utils/api.js'), 'utf8'), { wx, module, Date, require: id => require(path.join(__dirname, '../utils', path.basename(id))) });
+  vm.runInNewContext(fs.readFileSync(path.join(__dirname, '../utils/api.js'), 'utf8'), { wx, module, Date,
+    require: id => id === './env'
+      ? { BASE_URL: 'https://rank.test', isConfigured: () => true, assertConfigured() {} }
+      : require(path.join(__dirname, '../utils', path.basename(id))) });
   return { api: module.exports, calls };
 }
 const reply = (f, data) => f.calls.at(-1).success({ statusCode: 200, data });

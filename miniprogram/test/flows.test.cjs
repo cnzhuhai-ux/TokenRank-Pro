@@ -419,7 +419,9 @@ test('帮助页返回接入页时保留来源群，不再复制带占位符的�
 function realApi(wx, extras = {}) {
   const module = { exports: {} };
   vm.runInNewContext(fs.readFileSync(path.join(root, 'utils/api.js'), 'utf8'), { wx, module, ...extras,
-    require: id => require(path.join(root, 'utils', id)) });
+    require: id => id === './env'
+      ? { BASE_URL: 'https://rank.test', isConfigured: () => true, assertConfigured() {} }
+      : require(path.join(root, 'utils', id)) });
   return module.exports;
 }
 

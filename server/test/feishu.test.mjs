@@ -5,7 +5,7 @@ import { readFileSync } from 'node:fs';
 import worker from '../src/worker.js';
 import { beijingDay, beijingDaysAgo } from '../src/lib.js';
 import {
-  createFeishuService, parseCommand, formatTokens, feishuChatHash, PERIOD_LABELS,
+  createFeishuService, parseCommand, formatTokens, feishuChatHash, feishuSignature, PERIOD_LABELS,
 } from '../src/feishu.js';
 
 const NOW = Date.parse('2026-10-28T12:00:00.000Z'); // 北京时间 20:00
@@ -153,11 +153,22 @@ test('parseCommand 识别中英文命令与周期参数', () => {
 // ───────────────────────────── 回调入口 ─────────────────────────────
 
 test('/feishu/event 路由：url_verification 原样回 challenge', async () => {
+  const env = { FEISHU_VERIFICATION_TOKEN: 'v-token' };
   const res = await worker.fetch(new Request('https://x/feishu/event', {
     method: 'POST', body: JSON.stringify({ type: 'url_verification', challenge: 'abc-123', token: 'v-token' }),
-  }), {});
+  }), env);
   assert.equal(res.status, 200);
   assert.equal((await res.json()).challenge, 'abc-123');
+});
+
+test('未配置加密密钥和 Verification Token 时事件被拒绝（fail closed）', async (t) => {
+  const { db, env } = fixture(t);
+  await seedGroupBoard(db);
+  const log = [];
+  const service = createFeishuService({ fetcher: fakeFeishuApi(log), now: () => NOW });
+  delete env.FEISHU_VERIFICATION_TOKEN;
+  await fire(service, env, messageEvent({}));
+  assert.equal(log.filter((m) => m.url.includes('/im/v1/messages')).length, 0);
 });
 
 test('未配置飞书凭证时事件被忽略且不报错', async (t) => {
@@ -207,13 +218,27 @@ async function encryptForFeishu(payload, key) {
   return btoa(String.fromCharCode(...body));
 }
 
+async function signedRequest(payload, key, { timestamp = Math.floor(NOW / 1000), nonce = 'n-1' } = {}) {
+  const raw = JSON.stringify(payload);
+  const signature = await feishuSignature(String(timestamp), nonce, key, raw);
+  return new Request('https://rank.example.com/feishu/event', {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      'x-lark-request-timestamp': String(timestamp),
+      'x-lark-request-nonce': nonce,
+      'x-lark-signature': signature,
+    },
+    body: raw,
+  });
+}
+
 test('加密的 url_verification 校验请求也能返回 challenge', async (t) => {
   const { env } = fixture(t);
   env.FEISHU_ENCRYPT_KEY = 'enc-key';
   const service = createFeishuService({ fetcher: async () => { throw new Error('不应外呼'); }, now: () => NOW });
-  const res = await service.handle(new Request('https://rank.example.com/feishu/event', {
-    method: 'POST', body: JSON.stringify({ encrypt: await encryptForFeishu({ type: 'url_verification', challenge: 'enc-challenge' }, 'enc-key') }),
-  }), env);
+  const body = { encrypt: await encryptForFeishu({ type: 'url_verification', challenge: 'enc-challenge' }, 'enc-key') };
+  const res = await service.handle(await signedRequest(body, 'enc-key'), env);
   assert.equal((await res.json()).challenge, 'enc-challenge');
 });
 
@@ -223,12 +248,30 @@ test('加密事件可解密处理', async (t) => {
   env.FEISHU_ENCRYPT_KEY = 'enc-key';
   const log = [];
   const service = createFeishuService({ fetcher: fakeFeishuApi(log), now: () => NOW });
-  const res = await service.handle(new Request('https://rank.example.com/feishu/event', {
-    method: 'POST', body: JSON.stringify({ encrypt: await encryptForFeishu(messageEvent({ eventId: 'evt-enc', openId: 'ou_2' }), 'enc-key') }),
-  }), env);
+  const body = { encrypt: await encryptForFeishu(messageEvent({ eventId: 'evt-enc', openId: 'ou_2' }), 'enc-key') };
+  const res = await service.handle(await signedRequest(body, 'enc-key'), env);
   assert.equal(res.status, 200);
   assert.equal(sentTitles(log).length, 1);
   assert.match(sentTitles(log)[0], /飞书测试群 · Token 排行榜（今日）/);
+});
+
+test('加密事件缺少签名或签名错误时不处理', async (t) => {
+  const { db, env } = fixture(t);
+  await seedGroupBoard(db);
+  env.FEISHU_ENCRYPT_KEY = 'enc-key';
+  const log = [];
+  const service = createFeishuService({ fetcher: fakeFeishuApi(log), now: () => NOW });
+  const event = messageEvent({ eventId: 'evt-enc-bad', openId: 'ou_2' });
+  const body = { encrypt: await encryptForFeishu(event, 'enc-key') };
+  const unsigned = new Request('https://rank.example.com/feishu/event', {
+    method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
+  });
+  await service.handle(unsigned, env);
+  const wrongKey = await signedRequest(body, 'other-key');
+  await service.handle(wrongKey, env);
+  const stale = await signedRequest(body, 'enc-key', { timestamp: Math.floor(NOW / 1000) - 3600 });
+  await service.handle(stale, env);
+  assert.equal(log.filter((m) => m.url.includes('/im/v1/messages')).length, 0);
 });
 
 // ───────────────────────────── 榜单 ─────────────────────────────
@@ -306,7 +349,8 @@ test('单聊「绑定」：创建账号、发接入码；重复绑定幂等不�
   assert.equal(user.nickname, '张三');
   assert.equal(user.avatar_url, 'https://img.example/new.png');
   const token = db.prepare('SELECT token FROM connect_tokens WHERE user_id=?').get(user.id).token;
-  assert.match(sentTexts(log)[0], new RegExp(`npx tokenrank-client@latest connect https://rank\\.example\\.com ${token}`));
+  assert.match(sentTexts(log)[0], new RegExp(`curl -fsSL https://rank\\.example\\.com/install\\.sh \\| sh -s https://rank\\.example\\.com ${token}`));
+  assert.match(sentTexts(log)[0], /install\.ps1/);
   await fire(service, env, messageEvent({ chatId: 'oc_p2p', chatType: 'p2p', openId: 'ou_new', text: '绑定', eventId: 'evt-bind2' }));
   assert.equal(db.prepare('SELECT COUNT(*) c FROM users WHERE openid=?').get('feishu:ou_new').c, 1);
   assert.equal(db.prepare('SELECT COUNT(*) c FROM connect_tokens WHERE user_id=?').get(user.id).c, 1);

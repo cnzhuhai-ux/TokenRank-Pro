@@ -97,6 +97,14 @@ tokenrank rank push --full --dry-run
 
 重新登录会创建空账号，需要重新填写头像昵称、加入群榜。重新接入原电脑后，会将电脑仍保留的全部历史用量上传到新账号；未重新接入前不会恢复任何用量，旧分享链接始终失效。
 
+## 部署安全要求（本 fork 加固）
+
+- **服务端域名**：`miniprogram/utils/env.js` 默认是 `https://tokenrank.example.com` 占位，未改会直接拒绝请求；部署前必须改成自己的 HTTPS 域名，并在微信后台配置 request / uploadFile 合法域名。
+- **更新地址**：`update.sh` / `update.ps1` 不再写死域名，必须显式传入服务地址（`sh -s <服务器>` / PowerShell 参数），并从同一服务器下载安装包；安装包需通过 SHA-256 校验。
+- **飞书 HTTP 回调**：必须配置 `FEISHU_VERIFICATION_TOKEN`，或启用加密并配置 `FEISHU_ENCRYPT_KEY`（校验 `X-Lark-Signature`）。两者都没有时事件一律拒绝。Node 长连接模式不经过 HTTP 回调，不受影响。
+- **Node 单进程**：默认只监听 `127.0.0.1`，对外请用 nginx / caddy 终止 TLS；非回环明文监听会拒绝启动（确需时设 `TOKENRANK_ALLOW_INSECURE_HTTP=1`）。配置目录和数据库仅当前用户可读。
+- **CORS**：默认不发送 `Access-Control-Allow-Origin`。需要浏览器直连时用 `CORS_ORIGIN` 显式列出允许的来源，不要使用 `*`。
+
 ## 怎么工作的
 
 ```
@@ -144,7 +152,7 @@ node client/bin/tokenrank.js connect http://127.0.0.1:8799 <接入码>
 node client/bin/tokenrank.js rank push --full --dry-run
 ```
 
-小程序用微信开发者工具导入 `miniprogram/`，本地联调时把 `utils/api.js` 里的 `BASE_URL` 改成本地地址。
+小程序用微信开发者工具导入 `miniprogram/`，本地联调时把 `utils/env.js` 里的 `BASE_URL` 改成本地地址。
 
 ## 测试与打包
 
@@ -159,7 +167,7 @@ node --test client/test-sync/*.test.mjs server/test/*.test.mjs miniprogram/test/
 
 1. 新建数据库用 `server/schema.sql`；已有数据库只执行尚未执行过的迁移，当前最新 `0017_topups_and_api_key.sql`。`0009` 是注销并发保护，`0010` 新增心跳表，`0011` 为工具下的模型分布增加可选 JSON 列，`0012` 增加提醒预约和首次接入询问状态，`0013` 将常规提醒调整为昨日用量日报（不改用量），`0014` 仅增加私有邮箱登记表（不启用发信），`0015` 增加私有订阅记录表，`0016` 重建该表以支持六种币种，`0017` 增加按量充值记录表和订阅的 API Key 标记；必须先执行迁移再部署相应 Worker。当前正式库此前通过 SQL 文件逐项迁移，不要依赖 Wrangler 的迁移追踪表重跑全部迁移。
 2. `cd client && npm run pack:dist`，然后在 `server` 目录 `npx wrangler deploy`，安装包和脚本作为静态资源一起发布。
-3. 微信后台配置 request、uploadFile 合法域名；在「用户隐私保护指引」里声明“收集你的昵称、头像”和“选中的照片或视频信息”（头像选择的兜底）；启用邮箱登记时同时说明邮箱的收集用途、可选性与删除方式。
+3. 在 `miniprogram/utils/env.js` 填服务端 HTTPS 域名；微信后台配置 request、uploadFile 合法域名（与之一致）；在「用户隐私保护指引」里声明“收集你的昵称、头像”和“选中的照片或视频信息”（头像选择的兜底）；启用邮箱登记时同时说明邮箱的收集用途、可选性与删除方式。
 4. 上传小程序，真机验收后提交审核。
 
 ## 查看同步是否正常
@@ -188,16 +196,16 @@ node scripts/sync-status.mjs --json   # 含每台设备的版本、状态、检�
 
 旧用户需升级一次电脑端同步器才能上报心跳；服务端升级无法让旧脚本自动具备该能力。可重新复制新版小程序里的接入命令，只升级同步器时不会强制重算已达修复版本的原版统计；已有通用更新命令也会升级同步器，但会同时执行备份重算流程。
 
-已接入的用户升级同步器（下面是正式服务的地址，自己部署时换成自己的域名）（会备份后从本机日志重算，并整体替换本账号的云端数据）：
+已接入的用户升级同步器（下面是示例，请换成你自己的服务地址）（会备份后从本机日志重算，并整体替换本账号的云端数据）：
 
 ```sh
-curl -fsSL https://tokenrank.xmasdong.cn/update.sh | sh
+curl -fsSL https://<你的域名>/update.sh | sh -s https://<你的域名>
 ```
 
 Windows PowerShell：
 
 ```powershell
-& ([scriptblock]::Create((irm 'https://tokenrank.xmasdong.cn/update.ps1')))
+& ([scriptblock]::Create((irm 'https://<你的域名>/update.ps1'))) 'https://<你的域名>'
 ```
 
 ## 后台管理

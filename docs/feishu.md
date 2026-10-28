@@ -28,7 +28,7 @@ node -e "const{DatabaseSync}=require('node:sqlite');const{readFileSync}=require(
 node node-service.mjs          # HTTP + 每 5 分钟定时任务 + 飞书长连接一次全起
 ```
 
-电脑端接入：`node client/bin/tokenrank.js connect http://127.0.0.1:8790 <接入码>`（同机用 127.0.0.1 可走 http；跨机需自备 HTTPS）。
+电脑端接入：`node client/bin/tokenrank.js connect http://127.0.0.1:8790 <接入码>`（同机用 127.0.0.1 可走 http；跨机需自备 HTTPS）。Node 服务默认只监听 `127.0.0.1`，对外请用 HTTPS 反向代理。
 
 ## 使用方式
 
@@ -56,7 +56,7 @@ node node-service.mjs          # HTTP + 每 5 分钟定时任务 + 飞书长连�
 4. **事件与回调 → 事件配置**：
    - 请求地址填 `https://<你的 Worker 域名>/feishu/event`（服务端部署完成后回来填，平台会发 url_verification 校验）
    - 订阅事件：**接收消息 im.message.receive_v1**
-   - 记下 **Verification Token**；如开启「加密策略」，记下 **Encrypt Key**
+   - 记下 **Verification Token**（HTTP 回调必填）；如开启「加密策略」，记下 **Encrypt Key**（启用后改用签名校验，见下）
 5. **版本管理与发布**：创建版本并发布，由企业管理员审核通过。
 6. 群里使用：群设置 → 群机器人 → 添加本应用；单聊使用：在飞书搜索机器人名称直接发消息。
 
@@ -69,9 +69,13 @@ node node-service.mjs          # HTTP + 每 5 分钟定时任务 + 飞书长连�
    ```toml
    FEISHU_APP_ID = "cli_xxxxxxxxxxxxxxxx"
    FEISHU_VERIFICATION_TOKEN = "事件配置页的 Verification Token"
-   # 平台开启加密策略时才需要：
+   # 平台开启加密策略时才需要；启用后回调会校验 X-Lark-Signature：
    FEISHU_ENCRYPT_KEY = "xxxxxxxxxxxxxxxx"
    ```
+
+   **HTTP 回调必须至少配置 `FEISHU_VERIFICATION_TOKEN` 或 `FEISHU_ENCRYPT_KEY` 之一**；
+   两者都没有时 `/feishu/event` 会拒绝所有事件（fail closed）。使用 Node 单进程 + 长连接
+   接收事件时，不经过 HTTP 回调，可以只配置 `FEISHU_APP_ID` / `FEISHU_APP_SECRET`。
 
 2. 密钥走 secret（不入库）：
 
@@ -96,6 +100,9 @@ node node-service.mjs          # HTTP + 每 5 分钟定时任务 + 飞书长连�
 - **接入码只走单聊**：在群里发 `绑定` 只会收到单聊引导，任何接入码不会出现在群消息里。
 - **个人用量只走单聊**：群里发 `我的` 同样只回引导，避免用量数字被群成员看到。
 - **事件幂等**：飞书回调失败会重试，`event_id` 落库去重（`feishu_event_log`，7 天自动清理），同一条消息只处理一次；超过 10 分钟的旧事件直接丢弃，防重放。
+- **回调验签**：未启用加密时校验 Verification Token；启用加密时校验 `X-Lark-Signature`
+  （`sha256(timestamp + nonce + encrypt_key + rawBody)`）并限制时间窗，二者都没有则拒绝所有事件。
+  长连接模式由飞书 SDK 建连，不经过该回调。
 - **上传内容不变**：仍只有按天汇总的 token 数、调用次数、工具/模型名和随机设备 ID，不含代码、对话、路径。
 
 ## 四、本地联调

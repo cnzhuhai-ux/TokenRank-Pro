@@ -11,7 +11,9 @@ function fixture(initial = [['session_token', 'old-session'], ['account_known', 
     request: o => requests.push(o), login: o => logins.push(o), uploadFile: o => uploads.push(o), reLaunch: o => navigation.push(o.url) };
   const module = { exports:{} };
   vm.runInNewContext(fs.readFileSync(path.join(root,'utils/api.js'),'utf8'), { wx, module,
-    require: id => require(path.join(root,'utils',path.basename(id))) });
+    require: id => id === './env'
+      ? { BASE_URL: 'https://rank.test', isConfigured: () => true, assertConfigured() {} }
+      : require(path.join(root,'utils',path.basename(id))) });
   return { api:module.exports,store,requests,logins,uploads,wx,navigation };
 }
 const reply = (req,data,statusCode=200) => req.success({statusCode,data});

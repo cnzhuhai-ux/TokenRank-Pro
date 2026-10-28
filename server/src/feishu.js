@@ -48,6 +48,20 @@ export async function feishuChatHash(chatId) {
   return [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, '0')).join('');
 }
 
+/** 飞书 HTTP 回调签名：sha256(timestamp + nonce + encryptKey + rawBody) */
+export async function feishuSignature(timestamp, nonce, encryptKey, rawBody) {
+  const data = new TextEncoder().encode(`${timestamp}${nonce}${encryptKey}${rawBody}`);
+  const buf = await crypto.subtle.digest('SHA-256', data);
+  return [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, '0')).join('');
+}
+
+function constantTimeEqual(a, b) {
+  if (typeof a !== 'string' || typeof b !== 'string' || a.length !== b.length) return false;
+  let diff = 0;
+  for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  return diff === 0;
+}
+
 
 // ───────────────────────────── 命令解析（纯函数，测试直测） ─────────────────────────────
 
@@ -174,12 +188,15 @@ export function leaderboardCard({ title, entries, members, updatedAt, nowMs, meU
 }
 
 export function connectCard(origin, token) {
-  const command = `npx tokenrank-client@latest connect ${origin} ${token}`;
+  const base = String(origin || '').replace(/\/+$/, '');
+  const sh = `curl -fsSL ${base}/install.sh | sh -s ${base} ${token}`;
+  const ps = `& ([scriptblock]::Create((irm '${base}/install.ps1'))) '${base}' '${token}'`;
   return cardBody([
     markdown('### 电脑接入'),
     divider(),
-    markdown('电脑装好 [Node.js 22+](https://nodejs.org) 后，在终端运行：'),
-    markdown('`' + command + '`'),
+    markdown('电脑装好 [Node.js 22+](https://nodejs.org) 后运行对应系统的命令（从本服务下载安装包，不走第三方源）：'),
+    markdown('**macOS / Linux**\n`' + sh + '`'),
+    markdown('**Windows PowerShell**\n`' + ps + '`'),
     markdown('运行一次即可，之后每 5 分钟自动上报一次按天汇总的数字。'),
     divider(),
     markdown(`**接入码**（重置即作废旧码，请勿转发）：\n\`${token}\``),
@@ -603,8 +620,29 @@ export function createFeishuService({ fetcher = (...args) => fetch(...args), now
 
   async function handle(request, env, ctx) {
     const respond = () => Response.json({}, { headers: { 'cache-control': 'no-store' } });
+    // 先取原始报文：加密事件的签名覆盖原始 body，必须先验签再解析。
+    let rawBody;
     let body;
-    try { body = await request.json(); } catch { return respond(); }
+    try {
+      rawBody = await request.text();
+      body = JSON.parse(rawBody);
+    } catch { return respond(); }
+
+    // 启用加密策略时，飞书会带 X-Lark-Signature；未通过验签的请求一律不处理。
+    if (env.FEISHU_ENCRYPT_KEY) {
+      const timestamp = request.headers.get('x-lark-request-timestamp') || '';
+      const nonce = request.headers.get('x-lark-request-nonce') || '';
+      const signature = request.headers.get('x-lark-signature') || '';
+      if (!timestamp || !nonce || !signature) return respond();
+      const seconds = Number(timestamp);
+      if (!Number.isFinite(seconds) || Math.abs(now() / 1000 - seconds) > EVENT_MAX_AGE_MS / 1000) return respond();
+      const expected = await feishuSignature(timestamp, nonce, env.FEISHU_ENCRYPT_KEY, rawBody);
+      if (!constantTimeEqual(signature.toLowerCase(), expected)) return respond();
+    }
+
+    // 未启用加密时，必须配置并校验 Verification Token；两者都没有时拒绝所有事件（fail closed）。
+    if (!env.FEISHU_ENCRYPT_KEY && !env.FEISHU_VERIFICATION_TOKEN) return respond();
+
     // 开启加密策略时，url_verification 校验请求同样是密文，必须先解密再判断类型
     if (body?.encrypt) {
       if (!env.FEISHU_ENCRYPT_KEY) return respond();
@@ -616,7 +654,8 @@ export function createFeishuService({ fetcher = (...args) => fetch(...args), now
     if (!env.FEISHU_APP_ID || !env.FEISHU_APP_SECRET) return respond();
     const header = body?.header;
     if (!header?.event_id || header.event_type !== 'im.message.receive_v1') return respond();
-    if (env.FEISHU_VERIFICATION_TOKEN && header.token !== env.FEISHU_VERIFICATION_TOKEN) return respond();
+    if (env.FEISHU_VERIFICATION_TOKEN && !constantTimeEqual(String(header.token || ''), env.FEISHU_VERIFICATION_TOKEN)) return respond();
+    if (header.app_id && header.app_id !== env.FEISHU_APP_ID) return respond();
     if (eventSeen.has(header.event_id)) return respond();
     eventSeen.set(header.event_id, now());
     if (eventSeen.size > 512) {

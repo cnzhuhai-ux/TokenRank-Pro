@@ -55,34 +55,59 @@ function userOrigin(env, request) {
   return env.PUBLIC_BASE_URL || new URL(request.url).origin;
 }
 
-const CORS = {
-  'access-control-allow-origin': '*',
-  'access-control-allow-methods': 'GET,POST,DELETE,OPTIONS',
-  'access-control-allow-headers': 'authorization,content-type',
-  'cache-control': 'no-store',
+/** 安装命令从本服务下载，不再依赖 npm 公网源。 */
+function installCommands(env, request, token) {
+  const base = String(userOrigin(env, request)).replace(/\/+$/, '');
+  return {
+    install_command: `curl -fsSL ${base}/install.sh | sh -s ${base} ${token}`,
+    install_command_windows: `& ([scriptblock]::Create((irm '${base}/install.ps1'))) '${base}' '${token}'`,
+  };
+}
+
+const SECURITY_HEADERS = {
+  'x-content-type-options': 'nosniff',
+  'referrer-policy': 'no-referrer',
+  'x-frame-options': 'DENY',
 };
+// CORS 默认不放开：小程序和命令行同步器都不依赖 CORS。需要浏览器直连时，
+// 在 CORS_ORIGIN 里显式列出允许的来源（逗号分隔），不要使用 *。
+function corsHeaders(request, env) {
+  const headers = {
+    'access-control-allow-methods': 'GET,POST,DELETE,OPTIONS',
+    'access-control-allow-headers': 'authorization,content-type',
+    'cache-control': 'no-store',
+    ...SECURITY_HEADERS,
+  };
+  const origin = request.headers.get('origin');
+  const allowed = String(env.CORS_ORIGIN || '').split(',').map((s) => s.trim()).filter(Boolean);
+  if (origin && allowed.includes(origin)) {
+    headers['access-control-allow-origin'] = origin;
+    headers.vary = 'origin';
+  }
+  return headers;
+}
 
 export default {
   async scheduled(event, env, ctx) { ctx.waitUntil(runReminders(env)); },
   async fetch(request, env, ctx) {
-    if (request.method === 'OPTIONS') return new Response(null, { status: 204, headers: CORS });
+    if (request.method === 'OPTIONS') return new Response(null, { status: 204, headers: corsHeaders(request, env) });
     const url = new URL(request.url);
     const path = url.pathname.replace(/\/+$/, '') || '/';
     try {
       return await route(request, env, url, path, ctx) ?? jsonError(404, 'not found');
     } catch (err) {
       // Database guards also reject requests authenticated just before deletion.
-      if (err?.message?.includes('ACCOUNT_NOT_FOUND')) return Response.json({ error: '账号已注销，请重新登录', code: 'ACCOUNT_DELETED' }, { status: 410, headers: CORS });
-      if (err?.message?.includes('GROUP_NOT_FOUND')) return new Response(JSON.stringify({ error: '群榜已变化，请重新进入' }), { status: 409, headers: { ...CORS, 'content-type': 'application/json' } });
+      if (err?.message?.includes('ACCOUNT_NOT_FOUND')) return Response.json({ error: '账号已注销，请重新登录', code: 'ACCOUNT_DELETED' }, { status: 410, headers: corsHeaders(request, env) });
+      if (err?.message?.includes('GROUP_NOT_FOUND')) return new Response(JSON.stringify({ error: '群榜已变化，请重新进入' }), { status: 409, headers: { ...corsHeaders(request, env), 'content-type': 'application/json' } });
       console.error('unhandled:', err?.message);
-      return jsonError(500, 'internal error');
+      return Response.json({ error: 'internal error' }, { status: 500, headers: corsHeaders(request, env) });
     }
   },
 };
 
 async function route(request, env, url, path, ctx) {
   const method = request.method;
-  const withCors = (res) => new Response(res.body, { status: res.status, headers: { ...CORS, ...Object.fromEntries(res.headers) } });
+  const withCors = (res) => new Response(res.body, { status: res.status, headers: { ...corsHeaders(request, env), ...Object.fromEntries(res.headers) } });
 
   if (method === 'GET' && path === '/healthz') {
     await env.DB.prepare('SELECT 1 FROM users LIMIT 1').first();
@@ -447,7 +472,7 @@ async function getConnectToken(request, env) {
     token,
     last_report_at: row?.last_report_at ?? null,
     sync_health: await syncHealth(env, user.id),
-    install_command: `npx tokenrank-client@latest connect ${userOrigin(env, request)} ${token}`,
+    ...installCommands(env, request, token),
   });
 }
 
@@ -464,7 +489,7 @@ async function createConnectToken(request, env) {
     env.DB.prepare('INSERT INTO connect_tokens (token, user_id, created_at) VALUES (?1, ?2, ?3)').bind(token, user.id, now),
   ];
   await env.DB.batch(batch);
-  return Response.json({ token, install_command: `npx tokenrank-client@latest connect ${userOrigin(env, request)} ${token}` });
+  return Response.json({ token, ...installCommands(env, request, token) });
 }
 
 /** 采集端 v2：原版 total_tokens，北京时间日桶，输入/输出/缓存分别保留。 */

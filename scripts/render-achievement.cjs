@@ -1,9 +1,10 @@
-// Preview an existing public share from the production API. Never invent usage.
-// CANVAS_MODULE=/path/to/@napi-rs/canvas CARD_FONT=/path/to/PingFang.ttc node scripts/render-achievement.cjs <share-id> [output-dir]
+// Preview an existing public share from a TokenRank server. Never invent usage.
+// TOKENRANK_API=https://your-server CANVAS_MODULE=/path/to/@napi-rs/canvas CARD_FONT=/path/to/PingFang.ttc node scripts/render-achievement.cjs <share-id> [output-dir]
 const fs = require('node:fs'), path = require('node:path');
 const { drawAchievementPoster, ACHIEVEMENT_HEIGHT } = require('../miniprogram/utils/achievement-poster');
 const { drawToolsPoster, drawComparisonPoster, SOCIAL_HEIGHT } = require('../miniprogram/utils/social-poster');
-const API = 'https://tokenrank.xmasdong.cn';
+const API = process.env.TOKENRANK_API;
+if (!API) throw new Error('请设置 TOKENRANK_API=<服务端地址>，不要把请求发到默认外部域名');
 async function main() {
   const id = process.argv[2];
   if (!/^[0-9a-f]{24}$/.test(id || '')) throw new Error('请提供正式分享记录 ID：node scripts/render-achievement.cjs <share-id> [output-dir]');

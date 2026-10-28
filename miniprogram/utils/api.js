@@ -5,7 +5,7 @@
  * 本地联调：BASE_URL = 'http://127.0.0.1:8799'，开发者工具勾选
  * 「详情 → 本地设置 → 不校验合法域名」。
  */
-const BASE_URL = 'https://tokenrank.xmasdong.cn';
+const { BASE_URL, assertConfigured } = require('./env');
 const { formatTokens: fmtTokens } = require('./usage');
 
 const KEY = 'session_token';
@@ -161,6 +161,7 @@ function usageShare(period, style = 'usage', groupId = '', options = {}) {
 }
 function rawRequest(path, { method = 'GET', data = null, auth = true, header = {}, timeout = 15000, deleting = false } = {}) {
   const epoch = authEpoch;
+  try { assertConfigured(); } catch (err) { return Promise.reject(err); }
   if (auth && !deleting) { try { assertActive(); } catch (err) { return Promise.reject(err); } }
   return new Promise((resolve, reject) => {
     wx.request({
@@ -263,6 +264,7 @@ async function ensureLogin(options = {}) {
 
 function rawUploadProfile(nickname, filePath) {
   const epoch = authEpoch;
+  try { assertConfigured(); } catch (err) { return Promise.reject(err); }
   try { assertActive(); } catch (err) { return Promise.reject(err); }
   return new Promise((resolve, reject) => {
     wx.uploadFile({ url: BASE_URL + '/api/profile', filePath, name: 'avatar',

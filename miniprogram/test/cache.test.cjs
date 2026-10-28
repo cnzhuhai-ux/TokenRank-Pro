@@ -6,7 +6,7 @@ function fixture() {
   let now = Date.parse('2026-10-16T01:00:00Z'); class Clock extends Date { static now() { return now; } }
   const calls=[],store=new Map([['session_token','session'],['account_known',true]]), module={exports:{}};
   const wx={getStorageSync:k=>store.get(k),setStorageSync:(k,v)=>store.set(k,v),removeStorageSync:k=>store.delete(k),clearStorageSync:()=>store.clear(),request:o=>calls.push(o)};
-  vm.runInNewContext(fs.readFileSync(path.join(__dirname,'../utils/api.js'),'utf8'),{wx,module,Date:Clock,require:id=>require(path.join(__dirname,'../utils',path.basename(id)))});
+  vm.runInNewContext(fs.readFileSync(path.join(__dirname,'../utils/api.js'),'utf8'),{wx,module,Date:Clock,require:id=>id==='./env'?{BASE_URL:'https://rank.test',isConfigured:()=>true,assertConfigured(){}}:require(path.join(__dirname,'../utils',path.basename(id)))});
   return {api:module.exports,calls,store,advance:ms=>now+=ms,now:()=>now};
 }
 function reply(f,data,status=200) { f.calls.at(-1).success({statusCode:status,data}); }

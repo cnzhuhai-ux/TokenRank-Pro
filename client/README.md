@@ -40,13 +40,13 @@ npm 发布后，仅注册 `tokenrank` 命令，不注册 `token-watcher` / `toke
 macOS / Linux：
 
 ```sh
-curl -fsSL https://tokenrank.xmasdong.cn/update.sh | sh
+curl -fsSL https://<你的域名>/update.sh | sh -s https://<你的域名>
 ```
 
 Windows PowerShell：
 
 ```powershell
-& ([scriptblock]::Create((irm 'https://tokenrank.xmasdong.cn/update.ps1')))
+& ([scriptblock]::Create((irm 'https://<你的域名>/update.ps1'))) 'https://<你的域名>'
 ```
 
 顺序：验证现有安装和后台归属 → 查询官方 npm 最新稳定版并下载 → 暂停同步与采集 → 备份统计库 → 升级原版和 `~/.tokenrank/app` 中的同步脚本 → 在副本中清除可从文件重建的事件与扫描游标 → 用原版 Scanner 从现存日志重新计算 → 校验并切换本地统计库 → 恢复采集 → 分批暂存全量数据 → 云端一次性清除本账号所有旧设备日统计及旧协议日统计、写入新结果 → 恢复每 5 分钟同步。

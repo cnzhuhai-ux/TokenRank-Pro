@@ -9,12 +9,15 @@
  *
  * 配置（~/.tokenrank-server/config.json 或环境变量，文件优先）：
  *   port                 监听端口（默认 8790）
+ *   host                 监听地址（默认 127.0.0.1；对外请用 HTTPS 反代）
+ *   allow_insecure_http  host 非回环且确需明文 HTTP 时设为 true
  *   db_path              SQLite 路径（默认 ~/.tokenrank-server/tokenrank.db）
- *   feishu_app_id / feishu_app_secret / feishu_verification_token（可选）
  *   public_origin        生成接入命令用的地址（默认 http://127.0.0.1:<port>）
+ *   feishu_app_id / feishu_app_secret / feishu_verification_token（可选）
+ *                        HTTP 回调必须配置 verification token 或 encrypt key
  */
 import { createServer } from 'node:http';
-import { existsSync, mkdirSync, readFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, chmodSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import worker from './src/worker.js';
@@ -24,15 +27,29 @@ const ROOT = join(homedir(), '.tokenrank-server');
 const configPath = process.env.TOKENRANK_SERVER_CONFIG || join(ROOT, 'config.json');
 let fileConfig = {};
 if (existsSync(configPath)) fileConfig = JSON.parse(readFileSync(configPath, 'utf8'));
+const LOOPBACK = new Set(['127.0.0.1', '::1', 'localhost', '[::1]']);
 const cfg = {
   port: Number(fileConfig.port || process.env.PORT || 8790),
+  // 默认只监听回环地址；对外服务请用 nginx/caddy 终止 TLS 后反代到本机。
+  host: fileConfig.host || process.env.TOKENRANK_HOST || '127.0.0.1',
+  allowInsecureHttp: fileConfig.allow_insecure_http === true || process.env.TOKENRANK_ALLOW_INSECURE_HTTP === '1',
   dbPath: fileConfig.db_path || process.env.TOKENRANK_DB || join(ROOT, 'tokenrank.db'),
   publicOrigin: fileConfig.public_origin || process.env.PUBLIC_ORIGIN,
   feishuAppId: fileConfig.feishu_app_id || process.env.FEISHU_APP_ID,
   feishuAppSecret: fileConfig.feishu_app_secret || process.env.FEISHU_APP_SECRET,
   feishuVerificationToken: fileConfig.feishu_verification_token || process.env.FEISHU_VERIFICATION_TOKEN,
 };
-mkdirSync(ROOT, { recursive: true });
+mkdirSync(ROOT, { recursive: true, mode: 0o700 });
+if (process.platform !== 'win32') {
+  // 配置里有飞书应用密钥，目录和文件只允许当前用户读取。
+  try { chmodSync(ROOT, 0o700); } catch {}
+  try { if (existsSync(configPath)) chmodSync(configPath, 0o600); } catch {}
+}
+if (!LOOPBACK.has(cfg.host) && !cfg.allowInsecureHttp) {
+  console.error(`拒绝在 ${cfg.host} 上以明文 HTTP 监听。请保持 host=127.0.0.1 并用 HTTPS 反向代理，`);
+  console.error('或确认风险后设置 TOKENRANK_ALLOW_INSECURE_HTTP=1。');
+  process.exit(1);
+}
 if (!existsSync(cfg.dbPath)) {
   console.error(`数据库不存在：${cfg.dbPath}。请先用 schema.sql 初始化：`);
   console.error(`  node --experimental-strip-types -e "…" 或 sqlite3 ${cfg.dbPath} < schema.sql`);
@@ -46,34 +63,61 @@ const env = {
   ...(cfg.feishuAppSecret ? { FEISHU_APP_SECRET: cfg.feishuAppSecret } : {}),
   ...(cfg.feishuVerificationToken ? { FEISHU_VERIFICATION_TOKEN: cfg.feishuVerificationToken } : {}),
 };
+if (process.platform !== 'win32') { try { chmodSync(cfg.dbPath, 0o600); } catch {} }
 
 const ctxOf = () => ({ waitUntil: (p) => { p.catch((err) => console.error('async:', err?.message)); } });
+const MAX_BODY_BYTES = Number(process.env.TOKENRANK_MAX_BODY_BYTES || 1024 * 1024);
+const SECURITY_HEADERS = { 'x-content-type-options': 'nosniff', 'referrer-policy': 'no-referrer', 'x-frame-options': 'DENY' };
+// 不信任客户端 Host，生成接入命令等 URL 时只使用显式配置的 public_origin。
+const baseOrigin = cfg.publicOrigin || `http://127.0.0.1:${cfg.port}`;
 
 const server = createServer(async (req, res) => {
   try {
-    const url = `http://${req.headers.host || '127.0.0.1'}${req.url}`;
+    const declared = Number(req.headers['content-length'] || 0);
+    if (declared > MAX_BODY_BYTES) {
+      res.writeHead(413, { ...SECURITY_HEADERS, 'content-type': 'application/json', connection: 'close' });
+      res.end(JSON.stringify({ error: 'payload too large' }));
+      req.destroy();
+      return;
+    }
     const chunks = [];
-    for await (const chunk of req) chunks.push(chunk);
-    const request = new Request(url, {
+    let size = 0;
+    for await (const chunk of req) {
+      size += chunk.length;
+      if (size > MAX_BODY_BYTES) {
+        res.writeHead(413, { ...SECURITY_HEADERS, 'content-type': 'application/json', connection: 'close' });
+        res.end(JSON.stringify({ error: 'payload too large' }));
+        req.destroy();
+        return;
+      }
+      chunks.push(chunk);
+    }
+    // 只接受 origin-form 路径，避免绝对形式请求绕过 public_origin 造成 Host 注入。
+    const target = String(req.url || '/');
+    const request = new Request(new URL(target.startsWith('/') ? target : '/', baseOrigin), {
       method: req.method,
       headers: req.headers,
       body: ['GET', 'HEAD'].includes(req.method) ? undefined : Buffer.concat(chunks),
     });
     const response = await worker.fetch(request, env, ctxOf());
-    const headers = {};
+    const headers = { ...SECURITY_HEADERS };
     response.headers.forEach((v, k) => { headers[k] = v; });
     res.writeHead(response.status, headers);
     if (response.body) for await (const chunk of response.body) res.write(chunk);
     res.end();
   } catch (err) {
     console.error('http:', err?.message);
-    res.writeHead(500, { 'content-type': 'application/json' });
+    res.writeHead(500, { ...SECURITY_HEADERS, 'content-type': 'application/json' });
     res.end(JSON.stringify({ error: 'internal error' }));
   }
 });
+server.requestTimeout = 30_000;
+server.headersTimeout = 15_000;
+server.keepAliveTimeout = 5_000;
 
-server.listen(cfg.port, '0.0.0.0', () => {
-  console.log(`[tokenrank] http://0.0.0.0:${cfg.port}  db=${cfg.dbPath}`);
+server.listen(cfg.port, cfg.host, () => {
+  console.log(`[tokenrank] http://${cfg.host}:${cfg.port}  db=${cfg.dbPath}`);
+  if (!LOOPBACK.has(cfg.host)) console.warn('[tokenrank] 当前直接以明文 HTTP 对外监听，请确保前面有 HTTPS 反向代理。');
 });
 
 // 定时任务：对齐 Worker 的 */5 cron

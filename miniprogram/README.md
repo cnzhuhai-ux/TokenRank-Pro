@@ -29,7 +29,7 @@
 
 `POST /api/shares` 可选 `group_id`，仅允许分享者使用本人已加入的群。服务端从同一用量口径计算 `usage.group_standing`，只公开群名、本人的名次、上榜人数与已加入人数，不公开群 ID、群身份、其他成员、凭证或个人历史。隐藏或零用量不虚构名次；数据在查询中发生变化时返回 409，客户端只自动重试一次。新字段保存在现有分享 JSON 中，无需数据库迁移；已有分享内容不变。先发布新版 Worker，再上传相应小程序。
 
-开发者工具的产品验收直接打开本仓库 `miniprogram/`，`utils/api.js` 使用正式域名 `https://tokenrank.xmasdong.cn`；接口失败时保留错误状态，不替换成示例用量。独立成绩图预览运行 `node scripts/render-achievement.cjs <share-id> [output-dir]`（需安装 `@napi-rs/canvas`，可通过 `CANVAS_MODULE` 指定模块位置、`CARD_FONT` 指定中文字体）。脚本只从正式公开分享接口读取现有记录，缺少记录 ID 或接口失败即报错，不内置示例数字；默认输出到已忽略的 `artifacts/`，同时保留接口记录及来源时间，不能提交用户预览数据。
+开发者工具的产品验收直接打开本仓库 `miniprogram/`，先在 `utils/env.js` 填入你的 HTTPS 域名（默认 `example.com` 占位会拒绝请求）；接口失败时保留错误状态，不替换成示例用量。独立成绩图预览运行 `node scripts/render-achievement.cjs <share-id> [output-dir]`（需设置 `TOKENRANK_API` 指向服务端，需安装 `@napi-rs/canvas`，可通过 `CANVAS_MODULE` 指定模块位置、`CARD_FONT` 指定中文字体）。脚本只从公开分享接口读取现有记录，缺少记录 ID 或接口失败即报错，不内置示例数字；默认输出到已忽略的 `artifacts/`，同时保留接口记录及来源时间，不能提交用户预览数据。
 
 ## 好友对比与工具偏好
 
@@ -161,7 +161,7 @@ node --test miniprogram/test/*.test.cjs
 
 微信后台「设置 → 服务内容声明 → 用户隐私保护指引」必须声明 **“收集你的昵称、头像”**，同时覆盖 `chooseAvatar` 与 `input type="nickname"`。用途为“用于展示用户个人资料、Token 用量分享卡片及用户主动参与的群排行榜”。仅配置 request / uploadFile 域名不能启用头像；缺少声明时微信报 `chooseAvatar:fail api scope is not declared in the privacy agreement`，在回调前直接拦截，表现为点击无反应。声明保存后按微信文档等待约 5 分钟生效，再重新打开小程序验收；代码不能绕过这项配置。依据：[隐私接口与信息类型对应表](https://developers.weixin.qq.com/miniprogram/dev/framework/user-privacy/miniprogram-intro.html)、[微信隐私协议开发指南](https://developers.weixin.qq.com/miniprogram/dev/framework/user-privacy/PrivacyAuthorize.html)。
 
-项目默认启用合法域名校验。2026-09-28 用户补充微信后台配置后，重新打开项目并保持 `urlCheck: true`，真实登录用量、分享摘要、海报和作者展示页均验证成功，原 request 域名阻塞已解除。request 和 uploadFile 合法域名应包含 `https://tokenrank.xmasdong.cn`；头像上传、相册保存和真实微信转发仍须手机验收。不要以关闭校验作为发布验收。
+项目默认启用合法域名校验。2026-09-28 用户补充微信后台配置后，重新打开项目并保持 `urlCheck: true`，真实登录用量、分享摘要、海报和作者展示页均验证成功，原 request 域名阻塞已解除。request 和 uploadFile 合法域名应包含你在 `utils/env.js` 配置的 HTTPS 域名；头像上传、相册保存和真实微信转发仍须手机验收。不要以关闭校验作为发布验收。
 
 头像通过 wx.uploadFile 提交到 `/api/profile`，携带已有小程序会话，401 重登后只重试一次。图片压缩目标 256×256，服务端限制 256 KiB、检查图片签名并持久化至 D1，每用户一份；微信后台需配置 uploadFile 合法域名。建议基础库 2.26.0+，支持头像昵称原生安全检查和压缩尺寸参数。实际交互还需真机检查。
 

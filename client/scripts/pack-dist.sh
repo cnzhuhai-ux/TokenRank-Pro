@@ -12,6 +12,7 @@ tar -czf "$DL/tokenrank-client.tar.gz" -C "$TMP" .
 node -e 'process.stdout.write(JSON.parse(require("fs").readFileSync(process.argv[1])).version)' "$ROOT/package.json" > "$DL/version.txt"
 VERSION=$(cat "$DL/version.txt")
 cp "$DL/tokenrank-client.tar.gz" "$DL/tokenrank-client-$VERSION.tar.gz"
+node -e 'const c=require("crypto"),f=require("fs");process.stdout.write(c.createHash("sha256").update(f.readFileSync(process.argv[1])).digest("hex")+"\n")' "$DL/tokenrank-client-$VERSION.tar.gz" > "$DL/tokenrank-client-$VERSION.tar.gz.sha256"
 mkdir -p "$ROOT/../server/public/releases/$VERSION"
 cp "$ROOT/../server/public/install.sh" "$ROOT/../server/public/install.ps1" "$ROOT/../server/public/update.sh" "$ROOT/../server/public/update.ps1" "$ROOT/../server/public/releases/$VERSION/"
 echo "已打包独立同步器：$DL/tokenrank-client.tar.gz"

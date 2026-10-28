@@ -2,10 +2,12 @@
 // outdated (sync_health.update_available), so a new client release needs no mini-program change.
 // Armed on every App.onShow; shown at most once a day per release until the computer updates.
 const modalQueue = require('./modal-queue');
+const { BASE_URL } = require('./env');
 const KEY = 'update_prompt_seen_v1';
+// 更新脚本从当前小程序配置的服务端下载，避免把用户引到外部域名。
 const COMMANDS = {
-  mac: 'curl -fsSL https://tokenrank.xmasdong.cn/update.sh | sh',
-  win: "& ([scriptblock]::Create((irm 'https://tokenrank.xmasdong.cn/update.ps1')))",
+  mac: `curl -fsSL ${BASE_URL}/update.sh | sh -s ${BASE_URL}`,
+  win: `& ([scriptblock]::Create((irm '${BASE_URL}/update.ps1'))) '${BASE_URL}'`,
 };
 let due = false;
 let showing = false;
