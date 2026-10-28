@@ -81,6 +81,18 @@ spec:
           envFrom:
             - configMapRef:
                 name: tokenrank-config
+          env:
+            # 飞书机器人：长连接收事件 + 卡片发送。凭证走 Secret（见 README「启用飞书机器人」）
+            - name: FEISHU_APP_ID
+              valueFrom:
+                secretKeyRef:
+                  name: tokenrank-feishu
+                  key: app-id
+            - name: FEISHU_APP_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: tokenrank-feishu
+                  key: app-secret
           readinessProbe:
             httpGet:
               path: /healthz
@@ -152,6 +164,32 @@ spec:
       ports:
         - protocol: TCP
           port: 8790
+---
+# 出网放行：飞书长连接与开放平台 API（open.feishu.cn 走公网 443，CDN IP 不固定，
+# 故按端口放行并排除 pod 网段；DNS 由命名空间级 allow-egress-core 继续放行，
+# 多条 NetworkPolicy 为并集，不影响既有 apiserver 放行）。
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: tokenrank-allow-egress-feishu
+  namespace: ai-pj
+  labels:
+    app.kubernetes.io/name: tokenrank
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: tokenrank
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 172.20.0.0/16
+        ports:
+          - protocol: TCP
+            port: 443
 ---
 apiVersion: networking.k8s.io/v1
 kind: Ingress
