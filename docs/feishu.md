@@ -1,16 +1,34 @@
 # 在飞书里使用 Token 群排名
 
-飞书版通过**机器人**使用：把项目自带的机器人拉进飞书群，群成员在群里发命令看榜、上榜，在单聊里完成电脑接入。一个飞书群对应一张榜，与微信版共用同一个服务端和数据库。
+飞书版通过**机器人**使用：把项目自带的机器人拉进飞书群，群成员在群里发命令看榜、上榜，在单聊里完成电脑接入。一个飞书群对应一张榜，微信版与 Node 版共用同一套业务代码。
+
+## 两种服务端形态（先选一种）
+
+| 形态 | 事件接收方式 | 前置条件 |
+|---|---|---|
+| **Node 单进程（推荐，国内可用）** | **飞书长连接**：服务用 `@larksuiteoapi/node-sdk` 的 WSClient 主动连出收事件 | 一台能访问 open.feishu.cn 的机器即可，**无需公网 IP、无需域名、无需备案** |
+| Cloudflare Worker（原版） | 回调 URL：飞书向 `https://<域名>/feishu/event` 推事件 | 国内需自定义域名（`*.workers.dev` 被墙，飞书回调会超时） |
 
 ```
 本机 AI 工具日志 → token-watcher → TokenRank 同步器（client/sync，每 5 分钟）
                                         ↓ 每日汇总
-                          Cloudflare Worker + D1（server，不变）
+                 Node 单进程（server/node-service.mjs + SQLite）或 Cloudflare Worker + D1
                                         ↓
-                    飞书机器人（server/src/feishu.js，/feishu/event 回调）
+                    飞书机器人（长连接收事件 / 出站 API 回消息卡片）
 ```
 
-电脑端同步器与上报接口完全不变；已有的微信小程序流程不受影响，两端数据互通（同一个人在微信和飞书是两个独立账号）。
+### Node 单进程部署
+
+```sh
+cd server && npm install
+# 初始化数据库（默认 ~/.tokenrank-server/tokenrank.db）
+node -e "const{DatabaseSync}=require('node:sqlite');const{readFileSync}=require('fs');new DatabaseSync(process.env.USERPROFILE+'/.tokenrank-server/tokenrank.db').exec(readFileSync('schema.sql','utf8'))"
+# 写配置 ~/.tokenrank-server/config.json：
+# {"port":8790,"feishu_app_id":"cli_xxx","feishu_app_secret":"xxx"}
+node node-service.mjs          # HTTP + 每 5 分钟定时任务 + 飞书长连接一次全起
+```
+
+电脑端接入：`node client/bin/tokenrank.js connect http://127.0.0.1:8790 <接入码>`（同机用 127.0.0.1 可走 http；跨机需自备 HTTPS）。
 
 ## 使用方式
 

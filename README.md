@@ -2,9 +2,28 @@
 
 一个微信小程序，看自己用 Claude Code、Codex、Cursor 这些 AI 编程工具烧了多少 token，也能在微信群里排个榜。一个微信群对应一张榜，不想上榜可以关掉排名，只自己看。
 
-也支持**飞书**：自带机器人拉进飞书群，群里发「榜单」看排行、「加入」上榜，单聊发「绑定」接入电脑；一个飞书群同样对应一张榜，与微信版共用服务端。配置与用法见 [`docs/feishu.md`](docs/feishu.md)。
+也支持**飞书**：自带机器人拉进飞书群，群里发「榜单」看排行、「加入」上榜，单聊发「绑定」接入电脑；一个飞书群同样对应一张榜，与微信版共用服务端。部署与用法见 [`docs/feishu.md`](docs/feishu.md)。
 
 整个项目开源，包括电脑端同步器、服务端和小程序：https://github.com/xmasdong/tokenrank
+
+## 服务端两种部署形态
+
+| 形态 | 入口 | 适用场景 |
+|---|---|---|
+| Cloudflare Worker + D1（原版） | `server/src/worker.js`（`wrangler deploy`） | 海外网络 / 已有可达的 Cloudflare 域名 |
+| **Node 单进程**（本仓库新增） | `server/node-service.mjs` | 国内服务器或本机：无公网 IP 也可用——飞书事件走**长连接**（服务主动连出收事件，不需要回调地址），数据存本地 SQLite |
+
+Node 单进程部署（约 5 分钟）：
+
+```sh
+cd server
+npm install                                  # 含 @larksuiteoapi/node-sdk
+node -e "…用 schema.sql 初始化 ~/.tokenrank-server/tokenrank.db…"
+# 写 ~/.tokenrank-server/config.json（port / feishu_app_id / feishu_app_secret）
+node node-service.mjs
+```
+
+飞书侧（开放平台）：创建企业自建应用 → 添加机器人能力 → 开通权限 `im:message.p2p_msg:readonly`、`im:message.group_at_msg:readonly`、`im:message:send_as_bot`、`im:chat:readonly`（**消息事件必须开细粒度权限，总括 `im:message` 不够，事件不会下发**）→ 事件与回调的订阅方式选「**使用长连接接收事件**」→ 订阅「接收消息 im.message.receive_v1」→ 创建版本发布。详见 [`docs/feishu.md`](docs/feishu.md)。
 
 ## 支持采集的终端
 
@@ -100,7 +119,7 @@ tokenrank rank push --full --dry-run
 |---|---|
 | `client/sync` | 电脑端同步器（当前 0.2.16）：接入、只读同步、心跳、超时恢复、更新重算、备份清理；含 Oort 系工具补充采集（`client/sync/oort.js`，见 [`docs/oort-collection.md`](docs/oort-collection.md)） |
 | `client/bin/tokenrank.js` | 同步器命令行入口 |
-| `server` | Cloudflare Worker、D1 表结构与迁移、安装和更新脚本；含飞书机器人（`server/src/feishu.js`） |
+| `server` | Cloudflare Worker、D1 表结构与迁移、安装和更新脚本；含飞书机器人（`server/src/feishu.js`）与 Node 单进程部署入口（`server/node-service.mjs` + `server/src/d1-node.mjs`） |
 | `miniprogram` | 原生微信小程序 |
 | `scripts` | 生成分享封面、用量卡预览等辅助脚本 |
 
