@@ -27,12 +27,12 @@ const EVENT_LOG_TTL_MS = 7 * 86_400_000;
 
 export const PERIOD_LABELS = { day: '今日', week: '本周', month: '本月', all: '总榜' };
 
+/** 与小程序端 miniprogram/utils/usage.js 的 compact() 完全一致：亿两位小数、万去尾零、万以下千分位整数 */
 export function formatTokens(n) {
-  const v = Number(n) || 0;
-  if (v >= 1e9) return (v / 1e9).toFixed(2) + 'B';
-  if (v >= 1e6) return (v / 1e6).toFixed(2) + 'M';
-  if (v >= 1e3) return (v / 1e3).toFixed(1) + 'K';
-  return String(v);
+  const v = Math.max(0, Math.round(Number(n) || 0));
+  if (v >= 1e8) return (v / 1e8).toFixed(2) + ' 亿';
+  if (v >= 1e4) return (v / 1e4).toFixed(2).replace(/\.?0+$/, '') + ' 万';
+  return String(v).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
 }
 
 export function periodRange(period, nowMs = Date.now()) {

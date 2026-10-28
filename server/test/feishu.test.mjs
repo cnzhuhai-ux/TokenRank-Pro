@@ -106,12 +106,14 @@ async function fire(service, env, event) {
 
 // ───────────────────────────── 纯函数 ─────────────────────────────
 
-test('formatTokens 按数量级缩写', () => {
+test('formatTokens 中文计量单位（与小程序端一致）', () => {
   assert.equal(formatTokens(0), '0');
   assert.equal(formatTokens(999), '999');
-  assert.equal(formatTokens(1234), '1.2K');
-  assert.equal(formatTokens(3_000_000), '3.00M');
-  assert.equal(formatTokens(1.5e9), '1.50B');
+  assert.equal(formatTokens(1234), '1,234');
+  assert.equal(formatTokens(45_600), '4.56 万');
+  assert.equal(formatTokens(3_000_000), '300 万');
+  assert.equal(formatTokens(1_115_000), '111.5 万');
+  assert.equal(formatTokens(1.5e9), '15.00 亿');
 });
 
 test('parseCommand 识别中英文命令与周期参数', () => {
@@ -226,8 +228,8 @@ test('群里发「榜单」返回本群排行卡片（隐藏成员不计入）',
   assert.equal(cards.length, 1);
   assert.equal(JSON.parse(log.find((m) => m.url.includes('/im/v1/messages')).body).receive_id, 'oc_group');
   const text = cards[0].elements[0].text.content;
-  assert.match(text, /🥇 \*\*张三\*\*　3\.00M/);
-  assert.match(text, /🥈 \*\*李四\*\*　1\.20M.*gpt-5\.2/);
+  assert.match(text, /🥇 \*\*张三\*\*　300 万/);
+  assert.match(text, /🥈 \*\*李四\*\*　120 万.*gpt-5\.2/);
   assert.ok(!text.includes('王五'), '本群隐藏的成员不能出现在榜单上');
   assert.match(text, /claude-sonnet-4\.5/);
   const note = cards[0].elements.at(-1).elements[0].content;
@@ -243,7 +245,7 @@ test('「榜单 本周」按一周总量聚合', async (t) => {
   await fire(service, env, messageEvent({ openId: 'ou_2', text: '榜单 本周', eventId: 'evt-week' }));
   const text = sentCards(log)[0].elements[0].text.content;
   assert.match(sentTitles(log)[0], /（本周）/);
-  assert.match(text, /张三\*\*　5\.00M/); // 3M 今日 + 2M 一周前
+  assert.match(text, /张三\*\*　500 万/); // 3M 今日 + 2M 一周前
 });
 
 test('榜内成员附带自己的名次，未上榜成员收到加入提示', async (t) => {
@@ -253,7 +255,7 @@ test('榜内成员附带自己的名次，未上榜成员收到加入提示', as
   const log = [];
   const service = createFeishuService({ fetcher: fakeFeishuApi(log), now: () => NOW });
   await fire(service, env, messageEvent({ openId: 'ou_2', eventId: 'evt-me' }));
-  assert.match(sentCards(log)[0].elements[1].text.content, /你排第 \*\*2\*\* 名（1\.20M tokens）/);
+  assert.match(sentCards(log)[0].elements[1].text.content, /你排第 \*\*2\*\* 名（120 万 tokens）/);
   await fire(service, env, messageEvent({ openId: 'ou_9', eventId: 'evt-join-hint' }));
   assert.match(sentCards(log).at(-1).elements[1].text.content, /你还未上榜/);
 });
@@ -362,8 +364,8 @@ test('单聊「我的」返回用量卡片', async (t) => {
   const card = sentCards(log)[0];
   assert.match(card.header.title.content, /我的用量 · 张三/);
   const text = card.elements[0].text.content;
-  assert.match(text, /\*\*今日\*\*　3\.00M tokens　·　1 次调用/);
-  assert.match(text, /\*\*本周\*\*　5\.00M tokens/);
+  assert.match(text, /\*\*今日\*\*　300 万 tokens　·　1 次调用/);
+  assert.match(text, /\*\*本周\*\*　500 万 tokens/);
   assert.match(text, /claude-code \/ claude-sonnet-4\.5/);
   assert.match(text, /今日广场排名\*\*　第 2 名/); // 王五 5M 第一（仅本群隐藏，广场可见）
 });
@@ -375,7 +377,7 @@ test('群里「我的」引导到单聊，避免用量公开泄露', async (t) =
   const service = createFeishuService({ fetcher: fakeFeishuApi(log), now: () => NOW });
   await fire(service, env, messageEvent({ openId: 'ou_1', text: '我的', eventId: 'evt-my-group' }));
   const flat = JSON.stringify(sentCards(log)[0]);
-  assert.ok(!flat.includes('3.00M'), '群里不能出现个人用量数字');
+  assert.ok(!flat.includes('300 万'), '群里不能出现个人用量数字');
   assert.match(flat, /单聊/);
 });
 
