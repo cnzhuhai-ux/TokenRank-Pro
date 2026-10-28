@@ -81,7 +81,22 @@ function fakeFeishuApi(log) {
 const sentCards = (log) => log
   .filter((m) => m.url.includes('/im/v1/messages'))
   .map((m) => JSON.parse(JSON.parse(m.body).content));
-const sentTitles = (log) => sentCards(log).map((c) => c.header?.title?.content ?? '');
+const flat = (card) => {
+  const out = [];
+  const walk = (el) => {
+    if (Array.isArray(el)) { el.forEach(walk); return; }
+    if (!el || typeof el !== 'object') return;
+    if (el.tag === 'markdown') out.push(el.content);
+    if (el.tag === 'note') out.push(el.elements.map((x) => x.content).join(' '));
+    if (el.tag === 'img') out.push('[头像]');
+    walk(el.columns || []);
+    if (el.tag !== 'note') walk(el.elements || []);
+  };
+  walk(card.body?.elements || []);
+  return out.join('\n');
+};
+const sentTexts = (log) => sentCards(log).map(flat);
+const sentTitles = (log) => sentTexts(log).map((t) => (t.match(/^### (.+)$/m) || [])[1] || '');
 
 function messageEvent({ openId = 'ou_1', chatId = 'oc_group', chatType = 'group', text = '榜单', eventId = 'evt-1', createTime = NOW, token = 'v-token' } = {}) {
   return {
@@ -227,14 +242,14 @@ test('群里发「榜单」返回本群排行卡片（隐藏成员不计入）',
   const cards = sentCards(log);
   assert.equal(cards.length, 1);
   assert.equal(JSON.parse(log.find((m) => m.url.includes('/im/v1/messages')).body).receive_id, 'oc_group');
-  const text = cards[0].elements[0].text.content;
-  assert.match(text, /🥇 \*\*张三\*\*　300 万/);
-  assert.match(text, /🥈 \*\*李四\*\*　120 万.*gpt-5\.2/);
+  assert.equal(cards[0].schema, '2.0', '卡片为 schema 2.0');
+  const text = flat(cards[0]);
+  assert.match(text, /### 飞书测试群 · Token 排行榜（今日）/);
+  assert.ok(text.includes('张三') && text.includes('300 万'), '第一名成绩用中文单位');
+  assert.ok(text.includes('李四') && text.includes('120 万'));
   assert.ok(!text.includes('王五'), '本群隐藏的成员不能出现在榜单上');
-  assert.match(text, /claude-sonnet-4\.5/);
-  const note = cards[0].elements.at(-1).elements[0].content;
-  assert.match(note, /成员 3 人/);
-  assert.match(note, /更新于 1 分钟前/);
+  assert.match(text, /成员 3 人/);
+  assert.match(text, /更新于 1 分钟前/);
 });
 
 test('「榜单 本周」按一周总量聚合', async (t) => {
@@ -243,9 +258,9 @@ test('「榜单 本周」按一周总量聚合', async (t) => {
   const log = [];
   const service = createFeishuService({ fetcher: fakeFeishuApi(log), now: () => NOW });
   await fire(service, env, messageEvent({ openId: 'ou_2', text: '榜单 本周', eventId: 'evt-week' }));
-  const text = sentCards(log)[0].elements[0].text.content;
+  const text = sentTexts(log)[0];
   assert.match(sentTitles(log)[0], /（本周）/);
-  assert.match(text, /张三\*\*　500 万/); // 3M 今日 + 2M 一周前
+  assert.ok(text.includes('张三') && text.includes('500 万'), '3M 今日 + 2M 一周前');
 });
 
 test('榜内成员附带自己的名次，未上榜成员收到加入提示', async (t) => {
@@ -255,9 +270,9 @@ test('榜内成员附带自己的名次，未上榜成员收到加入提示', as
   const log = [];
   const service = createFeishuService({ fetcher: fakeFeishuApi(log), now: () => NOW });
   await fire(service, env, messageEvent({ openId: 'ou_2', eventId: 'evt-me' }));
-  assert.match(sentCards(log)[0].elements[1].text.content, /你排第 \*\*2\*\* 名（120 万 tokens）/);
+  assert.match(sentTexts(log)[0], /你排第 \*\*2\*\* 名 · 120 万 tokens/);
   await fire(service, env, messageEvent({ openId: 'ou_9', eventId: 'evt-join-hint' }));
-  assert.match(sentCards(log).at(-1).elements[1].text.content, /你还未上榜/);
+  assert.match(sentTexts(log).at(-1), /你还未上榜/);
 });
 
 test('未绑定群发「榜单」提示先接入', async (t) => {
@@ -275,8 +290,8 @@ test('单聊「榜单」返回广场榜（含未入群用户）', async (t) => {
   const service = createFeishuService({ fetcher: fakeFeishuApi(log), now: () => NOW });
   await fire(service, env, messageEvent({ chatId: 'oc_p2p', chatType: 'p2p', text: 'rank', eventId: 'evt-global' }));
   assert.match(sentTitles(log)[0], /广场 · Token 排行榜（今日）/);
-  const text = sentCards(log)[0].elements[0].text.content;
-  assert.match(text, /王五/); // 广场榜不受单群 hidden 影响（王五未全局隐藏，仅本群隐藏）
+  const text = sentTexts(log)[0];
+  assert.ok(text.includes('王五')); // 广场榜不受单群 hidden 影响（王五未全局隐藏，仅本群隐藏）
 });
 
 // ───────────────────────────── 绑定与账号 ─────────────────────────────
@@ -291,11 +306,11 @@ test('单聊「绑定」：创建账号、发接入码；重复绑定幂等不�
   assert.equal(user.nickname, '张三');
   assert.equal(user.avatar_url, 'https://img.example/new.png');
   const token = db.prepare('SELECT token FROM connect_tokens WHERE user_id=?').get(user.id).token;
-  assert.match(sentCards(log)[0].elements[0].text.content, new RegExp(`npx tokenrank-client@latest connect https://rank\\.example\\.com ${token}`));
+  assert.match(sentTexts(log)[0], new RegExp(`npx tokenrank-client@latest connect https://rank\\.example\\.com ${token}`));
   await fire(service, env, messageEvent({ chatId: 'oc_p2p', chatType: 'p2p', openId: 'ou_new', text: '绑定', eventId: 'evt-bind2' }));
   assert.equal(db.prepare('SELECT COUNT(*) c FROM users WHERE openid=?').get('feishu:ou_new').c, 1);
   assert.equal(db.prepare('SELECT COUNT(*) c FROM connect_tokens WHERE user_id=?').get(user.id).c, 1);
-  assert.match(sentCards(log).at(-1).elements[0].text.content, new RegExp(token));
+  assert.match(sentTexts(log).at(-1), new RegExp(token));
 });
 
 test('群里「绑定」绝不泄露接入码，只引导单聊', async (t) => {
@@ -306,9 +321,9 @@ test('群里「绑定」绝不泄露接入码，只引导单聊', async (t) => {
   await fire(service, env, messageEvent({ openId: 'ou_1', text: '绑定', eventId: 'evt-bind-group' }));
   const cards = sentCards(log);
   assert.equal(cards.length, 1);
-  const flat = JSON.stringify(cards[0]);
-  assert.ok(!flat.includes('ct-1'), '群里不能出现任何接入码');
-  assert.match(flat, /单聊/);
+  const whole = JSON.stringify(cards[0]);
+  assert.ok(!whole.includes('ct-1'), '群里不能出现任何接入码');
+  assert.match(flat(cards[0]), /单聊/);
 });
 
 // ───────────────────────────── 群管理 ─────────────────────────────
@@ -327,7 +342,7 @@ test('「加入」创建群榜并绑定 chat_id 哈希，重复加入幂等', as
   assert.ok(db.prepare('SELECT 1 FROM rank_group_members WHERE group_id=? AND user_id=1').get(group.id));
   await fire(service, env, messageEvent({ openId: 'ou_1', chatId: 'oc_new', text: '加入', eventId: 'evt-join2' }));
   assert.equal(db.prepare('SELECT COUNT(*) c FROM rank_group_members WHERE group_id=?').get(group.id).c, 1);
-  assert.match(sentCards(log).at(-1).elements[0].text.content, /已经在榜单里/);
+  assert.match(sentTexts(log).at(-1), /已经在榜单里/);
 });
 
 test('无账号用户「加入」被引导先绑定', async (t) => {
@@ -362,12 +377,13 @@ test('单聊「我的」返回用量卡片', async (t) => {
   const service = createFeishuService({ fetcher: fakeFeishuApi(log), now: () => NOW });
   await fire(service, env, messageEvent({ chatId: 'oc_p2p', chatType: 'p2p', openId: 'ou_1', text: '我的', eventId: 'evt-my' }));
   const card = sentCards(log)[0];
-  assert.match(card.header.title.content, /我的用量 · 张三/);
-  const text = card.elements[0].text.content;
-  assert.match(text, /\*\*今日\*\*　300 万 tokens　·　1 次调用/);
-  assert.match(text, /\*\*本周\*\*　500 万 tokens/);
+  const text = flat(card);
+  assert.match(text, /### 我的用量 · 张三/);
+  assert.match(text, /\*\*300\*\*/);              // 大数字
+  assert.match(text, /\*\*万\*\* tokens · <font color='grey'>今日<\/font>/);  // 单位小一号、右对齐
+  assert.match(text, /\*\*500 万\*\*/);            // 本周
   assert.match(text, /claude-code \/ claude-sonnet-4\.5/);
-  assert.match(text, /今日广场排名\*\*　第 2 名/); // 王五 5M 第一（仅本群隐藏，广场可见）
+  assert.match(text, /第 2 名/); // 王五 5M 第一（仅本群隐藏，广场可见）
 });
 
 test('群里「我的」引导到单聊，避免用量公开泄露', async (t) => {
@@ -376,9 +392,9 @@ test('群里「我的」引导到单聊，避免用量公开泄露', async (t) =
   const log = [];
   const service = createFeishuService({ fetcher: fakeFeishuApi(log), now: () => NOW });
   await fire(service, env, messageEvent({ openId: 'ou_1', text: '我的', eventId: 'evt-my-group' }));
-  const flat = JSON.stringify(sentCards(log)[0]);
-  assert.ok(!flat.includes('300 万'), '群里不能出现个人用量数字');
-  assert.match(flat, /单聊/);
+  const whole = JSON.stringify(sentCards(log)[0]);
+  assert.ok(!whole.includes('300'), '群里不能出现个人用量数字');
+  assert.match(whole, /单聊/);
 });
 
 test('单聊无账号发「我的」提示先绑定', async (t) => {
@@ -395,7 +411,7 @@ test('单聊未知命令回复帮助卡片，群里未知命令静默', async (t
   const log = [];
   const service = createFeishuService({ fetcher: fakeFeishuApi(log), now: () => NOW });
   await fire(service, env, messageEvent({ chatId: 'oc_p2p', chatType: 'p2p', openId: 'ou_1', text: '你是谁', eventId: 'evt-unknown' }));
-  assert.match(sentTitles(log)[0], /使用帮助/);
+  assert.match(sentTitles(log)[0], /Token 群排名 · 使用帮助/);
   await fire(service, env, messageEvent({ openId: 'ou_1', text: '今天天气不错', eventId: 'evt-unknown-g' }));
   assert.equal(log.filter((m) => m.url.includes('/im/v1/messages')).length, 1);
 });
@@ -414,4 +430,33 @@ test('非文本消息被忽略', async (t) => {
 
 test('周期标签覆盖全部取值', () => {
   assert.deepEqual(Object.keys(PERIOD_LABELS).sort(), ['all', 'day', 'month', 'week']);
+});
+
+test('ensureAvatarKey 上传头像换 img_key 并按来源缓存，命中后不再上传', async (t) => {
+  const { db, env } = fixture(t);
+  await seedGroupBoard(db);
+  const uploads = [];
+  const fetcher = async (url, init = {}) => {
+    if (String(url).includes('/auth/v3/tenant_access_token/internal')) {
+      return Response.json({ code: 0, tenant_access_token: 't-token', expire: 7200 });
+    }
+    if (String(url).includes('/im/v1/images')) {
+      uploads.push(String(url));
+      return Response.json({ code: 0, data: { image_key: 'img_v2_avatar' } });
+    }
+    if (String(url).includes('img.example/1.png')) {
+      return new Response(new Uint8Array([1, 2, 3]), { headers: { 'content-type': 'image/png' } });
+    }
+    return Response.json({ code: 0, data: {} });
+  };
+  const service = createFeishuService({ fetcher, now: () => NOW });
+  const entry = { uid: 1, avatar_path: null, avatar_url: 'https://img.example/1.png' };
+  assert.equal(await service._internals.ensureAvatarKey(env, entry), 'img_v2_avatar');
+  assert.equal(await service._internals.ensureAvatarKey(env, entry), 'img_v2_avatar');
+  assert.equal(uploads.length, 1, '缓存命中后不再重复上传');
+  const cached = db.prepare('SELECT image_key, source FROM feishu_avatar_cache WHERE user_id=1').get();
+  assert.equal(cached.image_key, 'img_v2_avatar');
+  assert.equal(cached.source, 'https://img.example/1.png');
+  // 无头像来源返回 null，不报错
+  assert.equal(await service._internals.ensureAvatarKey(env, { uid: 2, avatar_path: null, avatar_url: null }), null);
 });

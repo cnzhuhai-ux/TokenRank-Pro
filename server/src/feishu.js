@@ -48,7 +48,6 @@ export async function feishuChatHash(chatId) {
   return [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, '0')).join('');
 }
 
-const md = (s) => String(s ?? '').replace(/[*`]/g, '');
 
 // ───────────────────────────── 命令解析（纯函数，测试直测） ─────────────────────────────
 
@@ -91,69 +90,107 @@ export function parseCommand(raw) {
   return period ? { cmd: 'rank', period: period[0] } : null;
 }
 
-// ───────────────────────────── 卡片（纯函数，测试直测） ─────────────────────────────
+// ───────────────────────────── 卡片（飞书卡片 JSON 2.0，复刻小程序白底列表规范） ─────────────────────────────
+// 小程序视觉规范：白底、普通数字名次、圆头像、单行昵称、右对齐橙色成绩、细分隔线、
+// 本人行突出（卡片不支持行底色，用整体加粗替代）、数字主导、无口号文案。
 
-function card(template, title, elements) {
-  return { config: { wide_screen_mode: true }, header: { template, title: { tag: 'plain_text', content: title } }, elements };
+const mdEscape = (s) => String(s ?? '').replace(/[*`_[\]]/g, '');
+
+function markdown(content, { size = 'normal' } = {}) {
+  return { tag: 'markdown', content, ...(size !== 'normal' ? { text_size: size } : {}) };
+}
+function rowOf(columns) {
+  return { tag: 'column_set', flex_mode: 'none', background_style: 'default', columns };
+}
+function col(weight, elements, { vertical = 'center' } = {}) {
+  return { tag: 'column', width: 'weighted', weight, vertical_align: vertical, elements };
+}
+const divider = () => ({ tag: 'hr' });
+const noteEl = (text) => markdown(`<font color='grey'>${mdEscape(text)}</font>`);
+const cardBody = (elements) => ({
+  schema: '2.0',
+  config: { update_multi: true },
+  body: { elements },
+});
+
+/** 把 formatTokens 的结果拆成数字与单位两段，供大数字排版（数字大、单位小） */
+export function splitAmount(n) {
+  const text = formatTokens(n);
+  const at = text.lastIndexOf(' ');
+  return at < 0 ? { num: text, unit: '' } : { num: text.slice(0, at), unit: text.slice(at + 1) };
 }
 
 export function helpCard({ groupReady }) {
   const lines = [
-    '**群内命令**（先把我拉进群，@我 或直接发）',
-    '**榜单 [今日|本周|本月|总榜]** — 看本群 Token 排行',
-    '**加入** — 上榜本群（需先在单聊里完成电脑接入）',
-    '**隐藏 / 显示** — 不退出地在本群隐藏/恢复自己的排名　**退出** — 退出本群榜',
-    '**单聊命令**',
-    '**绑定** — 获取电脑接入码和安装命令（接入码只发单聊）',
-    '**我的** — 查看自己的用量日报　**榜单** — 看广场总榜',
+    '### Token 群排名 · 使用帮助', '',
+    '**群内命令**（把我拉进群后直接发）', '',
+    '**榜单 [今日|本周|本月|总榜]**　看本群 Token 排行',
+    '**加入**　上榜本群（需先在单聊完成电脑接入）',
+    '**隐藏 / 显示**　在本群隐藏或恢复自己的排名',
+    '**退出**　退出本群榜单', '',
+    '**单聊命令**', '',
+    '**绑定**　获取电脑接入码和安装命令（接入码只发单聊）',
+    '**我的**　查看个人用量日报',
+    '**榜单**　看广场总榜',
   ];
   if (groupReady === false) lines.push('', '本群还没有榜单：先单聊我「绑定」接入电脑，再回群里发「加入」。');
-  return card('turquoise', 'Token 群排名 · 使用帮助', [
-    { tag: 'div', text: { tag: 'lark_md', content: lines.join('\n') } },
-    { tag: 'note', elements: [{ tag: 'plain_text', content: '用量是各成员电脑自报的聚合数字，仅作交流参考，不等于厂商账单' }] },
+  return cardBody([
+    markdown(lines.join('\n')),
+    divider(),
+    noteEl('用量是各成员电脑自报的按天汇总数字，仅作交流参考，不等于厂商账单'),
   ]);
 }
 
-export function leaderboardCard({ title, entries, members, updatedAt, nowMs, footer }) {
-  const medals = ['🥇', '🥈', '🥉'];
-  const lines = entries.slice(0, BOARD_LIMIT).map((e, i) => {
-    const mark = medals[i] || `${i + 1}.`;
-    const model = e.top_model ? ` ｜ \`${md(e.top_model)}\`` : '';
-    return `${mark} **${md(e.nickname)}**　${formatTokens(e.tokens)}${model}`;
-  });
-  const elements = [];
-  if (lines.length) {
-    elements.push({ tag: 'div', text: { tag: 'lark_md', content: lines.join('\n') } });
-    if (entries.length > BOARD_LIMIT) {
-      elements.push({ tag: 'note', elements: [{ tag: 'plain_text', content: `仅展示前 ${BOARD_LIMIT} 名，共 ${entries.length} 人有用量` }] });
-    }
-  } else {
-    elements.push({ tag: 'div', text: { tag: 'lark_md', content: '这个时间段还没有人上报用量。先单聊我「绑定」接入电脑，再回来发「加入」上榜。' } });
+/** 榜单：每行 = 数字名次 + 圆头像 + 单行昵称 + 右对齐橙色成绩，行间细分隔线 */
+export function leaderboardCard({ title, entries, members, updatedAt, nowMs, meUid, footer }) {
+  const elements = [markdown(`### ${mdEscape(title)}`), divider()];
+  if (!entries.length) {
+    elements.push(markdown('这个时间段还没有人上报用量。先单聊我「**绑定**」接入电脑，再回来发「**加入**」上榜。'));
   }
-  if (footer) elements.push({ tag: 'div', text: { tag: 'lark_md', content: footer } });
+  const shown = entries.slice(0, BOARD_LIMIT);
+  shown.forEach((e, i) => {
+    const mine = meUid != null && e.uid === meUid;
+    const bold = mine ? '**' : '';
+    const nick = `${bold}${mdEscape(e.nickname)}${bold}`.slice(0, 24);
+    const score = `<font color='orange'>${bold}${formatTokens(e.tokens)}${bold}</font>`;
+    const columns = [
+      col(1, [markdown(String(i + 1))]),
+      ...(e.img_key ? [col(1, [{ tag: 'img', img_key: e.img_key, alt: { tag: 'plain_text', content: '头像' }, custom_width: 24, corner_radius: '12px' }])] : []),
+      col(e.img_key ? 6 : 7, [markdown(nick)]),
+      col(3, [markdown(score)]),
+    ];
+    elements.push(rowOf(columns), divider());
+  });
+  if (entries.length > BOARD_LIMIT) {
+    elements.push(noteEl(`仅展示前 ${BOARD_LIMIT} 名，共 ${entries.length} 人有用量`));
+  }
+  if (footer) elements.push(markdown(footer));
   const bits = [];
   if (members != null) bits.push(`成员 ${members} 人`);
+  if (meUid != null) bits.push('加粗的是你');
   if (updatedAt && nowMs && nowMs > updatedAt) bits.push(`更新于 ${Math.max(1, Math.round((nowMs - updatedAt) / 60000))} 分钟前`);
-  if (bits.length) elements.push({ tag: 'note', elements: [{ tag: 'plain_text', content: bits.join(' · ') }] });
-  return card('blue', title, elements);
+  if (bits.length) elements.push(noteEl(bits.join(' · ')));
+  return cardBody(elements);
 }
 
 export function connectCard(origin, token) {
   const command = `npx tokenrank-client@latest connect ${origin} ${token}`;
-  return card('green', '电脑接入 · Token 群排名', [
-    { tag: 'div', text: { tag: 'lark_md', content:
-      '电脑装好 [Node.js 22+](https://nodejs.org) 后，在终端运行：\n`' + command + '`\n'
-      + '运行一次即可，之后每 5 分钟自动上报一次按天汇总的数字。' } },
-    { tag: 'div', text: { tag: 'lark_md', content:
-      '**接入码**（重置即作废旧码，请勿转发）：\n`' + token + '`' } },
-    { tag: 'hr' },
-    { tag: 'div', text: { tag: 'lark_md', content: '接入后在群里发「**加入**」上榜，发「**榜单**」看排行。' } },
-    { tag: 'note', elements: [{ tag: 'plain_text', content: '只上报每天的 token 数、调用次数和工具/模型名，不含代码、对话和文件路径' }] },
+  return cardBody([
+    markdown('### 电脑接入'),
+    divider(),
+    markdown('电脑装好 [Node.js 22+](https://nodejs.org) 后，在终端运行：'),
+    markdown('`' + command + '`'),
+    markdown('运行一次即可，之后每 5 分钟自动上报一次按天汇总的数字。'),
+    divider(),
+    markdown(`**接入码**（重置即作废旧码，请勿转发）：\n\`${token}\``),
+    divider(),
+    markdown('接入后在群里发「**加入**」上榜，发「**榜单**」看排行。'),
+    noteEl('只上报每天的 token 数、调用次数和工具/模型名，不含代码、对话和文件路径'),
   ]);
 }
 
-export function textCard(title, content, template = 'grey') {
-  return card(template, title, [{ tag: 'div', text: { tag: 'lark_md', content } }]);
+export function textCard(title, content) {
+  return cardBody([markdown(`### ${mdEscape(title)}`), divider(), markdown(content)]);
 }
 
 // ───────────────────────────── 服务（可注入 fetcher/now 供测试） ─────────────────────────────
@@ -210,6 +247,57 @@ export function createFeishuService({ fetcher = (...args) => fetch(...args), now
 
   async function feishuUser(env, openId) {
     return (await callApi(env, `/open-apis/contact/v3/users/${encodeURIComponent(openId)}?user_id_type=open_id`))?.data?.user || null;
+  }
+
+  // ── 头像：上传飞书换 img_key（卡片里展示圆形小头像），按来源缓存避免重复上传 ──
+
+  async function uploadImage(env, bytes, mime) {
+    const token = await tenantToken(env);
+    const form = new FormData();
+    form.append('image_type', 'message');
+    form.append('image', new Blob([bytes], { type: mime || 'image/png' }), 'avatar.png');
+    let res;
+    try {
+      res = await fetcher(`${FEISHU_BASE}/open-apis/im/v1/images?image_type=message`, {
+        method: 'POST', headers: { authorization: `Bearer ${token}` }, body: form, signal: AbortSignal.timeout(15000),
+      });
+    } catch { throw new Error('feishu image upload unreachable'); }
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || data.code !== 0 || !data?.data?.image_key) throw new Error(`feishu image upload failed: ${data.code ?? res.status}`);
+    return data.data.image_key;
+  }
+
+  async function avatarBytes(env, entry) {
+    if (entry.avatar_path) {
+      const row = await env.DB.prepare('SELECT content, mime_type FROM user_avatars WHERE user_id = ?1').bind(entry.uid).first();
+      if (row?.content?.length) return { bytes: new Uint8Array(row.content), mime: row.mime_type };
+    }
+    if (entry.avatar_url) {
+      try {
+        const res = await fetcher(entry.avatar_url, { signal: AbortSignal.timeout(10000) });
+        if (res.ok) return { bytes: new Uint8Array(await res.arrayBuffer()), mime: res.headers.get('content-type') || 'image/png' };
+      } catch { /* 头像拉不到就退化为无头像 */ }
+    }
+    return null;
+  }
+
+  /** 失败返回 null（榜单退化为无头像列），不影响主流程 */
+  async function ensureAvatarKey(env, entry) {
+    try {
+      const source = entry.avatar_path || entry.avatar_url;
+      if (!source) return null;
+      const cached = await env.DB.prepare('SELECT image_key, source FROM feishu_avatar_cache WHERE user_id = ?1').bind(entry.uid).first();
+      if (cached && cached.source === source) return cached.image_key;
+      const data = await avatarBytes(env, entry);
+      if (!data) return null;
+      const key = await uploadImage(env, data.bytes, data.mime);
+      await env.DB.prepare(`INSERT INTO feishu_avatar_cache (user_id, image_key, source, updated_at) VALUES (?1, ?2, ?3, ?4)
+        ON CONFLICT(user_id) DO UPDATE SET image_key = excluded.image_key, source = excluded.source, updated_at = excluded.updated_at`)
+        .bind(entry.uid, key, source, now()).run();
+      return key;
+    } catch {
+      return null;
+    }
   }
 
   // ── 账号与接入码（语义与 worker.js 的微信流程一致） ──
@@ -287,7 +375,8 @@ export function createFeishuService({ fetcher = (...args) => fetch(...args), now
     const memberFilter = gid ? ` AND ds.user_id IN (SELECT user_id FROM rank_group_members WHERE group_id = ?3 AND hidden = 0)` : '';
     const binds = gid ? [from, to, gid] : [from, to];
     const [rows, modelRows, upRow] = await Promise.all([
-      env.DB.prepare(`SELECT u.id AS uid, u.nickname, SUM(ds.tokens) AS tokens, SUM(ds.requests) AS requests
+      env.DB.prepare(`SELECT u.id AS uid, u.nickname, u.avatar_path, u.avatar_url,
+        SUM(ds.tokens) AS tokens, SUM(ds.requests) AS requests
         FROM public_usage ds JOIN users u ON u.id = ds.user_id
         WHERE ds.day >= ?1 AND ds.day <= ?2${memberFilter}
         GROUP BY ds.user_id HAVING tokens > 0 ORDER BY tokens DESC, uid ASC`).bind(...binds).all(),
@@ -307,6 +396,7 @@ export function createFeishuService({ fetcher = (...args) => fetch(...args), now
       entries: rows.results.map((r) => ({
         uid: r.uid,
         nickname: r.nickname || `飞书用户-${String(r.uid).slice(-4).padStart(4, '0')}`,
+        avatar_path: r.avatar_path ?? null, avatar_url: r.avatar_url ?? null,
         tokens: r.tokens, requests: r.requests,
         top_model: topModel.get(r.uid) ?? null,
       })),
@@ -367,28 +457,41 @@ export function createFeishuService({ fetcher = (...args) => fetch(...args), now
     };
   }
 
+  /** 个人用量卡：大数字主卡（数字大、单位小）+ 三列统计，复刻小程序「我的」页版式 */
   function personalCard(user, s, nowMs) {
     if (!s.lifetime && !s.today) {
-      return connectHintCard('还没有收到你的用量。先在单聊里发「**绑定**」拿到接入命令，在电脑上运行即可。');
+      return textCard('Token 群排名', '还没有收到你的用量。先在单聊里发「**绑定**」拿到接入命令，在电脑上运行即可。');
     }
-    const lines = [
-      `**今日**　${formatTokens(s.today)} tokens　·　${s.todayRequests} 次调用`,
-      `**本周**　${formatTokens(s.week)} tokens`,
-      `**累计**　${formatTokens(s.lifetime)} tokens　·　上报 ${s.days} 天` + (s.firstDay ? `（自 ${s.firstDay}）` : ''),
+    const today = splitAmount(s.today);
+    const statCell = (value, label) => col(4, [
+      markdown(`**${formatTokens(value)}**`),
+      markdown(`<font color='grey'>${label}</font>`),
+    ]);
+    const elements = [
+      markdown(`### 我的用量 · ${mdEscape(user.nickname || '')}`),
+      divider(),
+      rowOf([
+        col(6, [markdown(`**${today.num}**`, { size: 'big' })], { vertical: 'bottom' }),
+        col(6, [markdown(`${today.unit ? `**${today.unit}** ` : ''}tokens · <font color='grey'>今日</font>`)], { vertical: 'bottom' }),
+      ]),
+      divider(),
+      rowOf([
+        statCell(s.week, '本周'),
+        statCell(s.lifetime, '累计'),
+        statCell(s.days, '上报天数'),
+      ]),
+      divider(),
     ];
     if (s.topTool || s.topModel) {
-      lines.push(`**本周偏好**　${[s.topTool, s.topModel].filter(Boolean).map(md).join(' / ')}`);
+      elements.push(markdown(`**本周偏好**　${[s.topTool, s.topModel].filter(Boolean).map(mdEscape).join(' / ')}`));
     }
-    if (s.globalRankToday) lines.push(`**今日广场排名**　第 ${s.globalRankToday} 名`);
-    return card('violet', `我的用量 · ${md(user.nickname || '')}`, [
-      { tag: 'div', text: { tag: 'lark_md', content: lines.join('\n') } },
-      ...(s.lastReportAt ? [{ tag: 'note', elements: [{ tag: 'plain_text',
-        content: `最近上报 ${Math.max(1, Math.round((nowMs - s.lastReportAt) / 60000))} 分钟前（北京时间按天汇总）` }] }] : []),
-    ]);
-  }
-
-  function connectHintCard(content) {
-    return textCard('Token 群排名', content, 'orange');
+    if (s.globalRankToday) elements.push(markdown(`**今日广场排名**　第 ${s.globalRankToday} 名`));
+    if (s.lastReportAt) {
+      elements.push(noteEl(`最近上报 ${Math.max(1, Math.round((nowMs - s.lastReportAt) / 60000))} 分钟前 · 北京时间按天汇总`));
+    } else {
+      elements.push(noteEl('北京时间按天汇总 · 含缓存'));
+    }
+    return cardBody(elements);
   }
 
   // ── 事件分发 ──
@@ -415,41 +518,41 @@ export function createFeishuService({ fetcher = (...args) => fetch(...args), now
 
     if (command.cmd === 'bind') {
       if (isGroup) {
-        return reply(textCard('电脑接入', '接入码是私人凭证，不在群里发送。**请点我的头像进入单聊，发送「绑定」**。', 'orange'));
+        return reply(textCard('电脑接入', '接入码是私人凭证，不在群里发送。**请点我的头像进入单聊，发送「绑定」**。'));
       }
       const { user, token } = await bindAccount(env, openId);
       return reply(connectCard(origin, token));
     }
 
     if (command.cmd === 'my') {
-      if (isGroup) return reply(textCard('我的用量', '个人用量只发单聊。**请单聊我发送「我的」**。', 'grey'));
-      if (!account) return reply(connectHintCard('还没有你的账号。先发「**绑定**」接入电脑，再来查看用量。'));
+      if (isGroup) return reply(textCard('我的用量', '个人用量只发单聊。**请单聊我发送「我的」**。'));
+      if (!account) return reply(textCard('Token 群排名', '还没有你的账号。先发「**绑定**」接入电脑，再来查看用量。'));
       return reply(personalCard(account, await personalSummary(env, account.id, now()), now()));
     }
 
     if (command.cmd === 'join') {
-      if (!isGroup) return reply(textCard('加入群榜', '「加入」要在**群聊**里发：把我拉进群后，在群里发「加入」即可上榜。', 'grey'));
-      if (!account) return reply(connectHintCard('先单聊我发「**绑定**」接入电脑，再回群里发「加入」上榜。'));
+      if (!isGroup) return reply(textCard('加入群榜', '「加入」要在**群聊**里发：把我拉进群后，在群里发「加入」即可上榜。'));
+      if (!account) return reply(textCard('Token 群排名', '先单聊我发「**绑定**」接入电脑，再回群里发「加入」上榜。'));
       const result = await joinGroup(env, account, msg.chat_id);
       const verb = result.created ? '已创建本群榜单，并把你加入榜单' : result.already ? '你已经在榜单里了' : '已把你加入本群榜单';
-      return reply(textCard('加入群榜', `${verb}：**${md(result.group.name)}**。发「**榜单**」看看排名。`, 'green'));
+      return reply(textCard('加入群榜', `${verb}：**${mdEscape(result.group.name)}**。发「**榜单**」看看排名。`));
     }
 
     if (['leave', 'hide', 'show'].includes(command.cmd)) {
-      if (!isGroup) return reply(textCard('群设置', '「退出/隐藏/显示」要在**群聊**里发。', 'grey'));
-      if (!account) return reply(connectHintCard('先单聊我发「**绑定**」接入电脑，再回来设置。'));
+      if (!isGroup) return reply(textCard('群设置', '「退出/隐藏/显示」要在**群聊**里发。'));
+      if (!account) return reply(textCard('Token 群排名', '先单聊我发「**绑定**」接入电脑，再回来设置。'));
       const found = await groupByChatId(env, msg.chat_id);
-      if (!found.id) return reply(textCard('群设置', '本群还没有榜单，先发「**加入**」创建。', 'grey'));
+      if (!found.id) return reply(textCard('群设置', '本群还没有榜单，先发「**加入**」创建。'));
       if (command.cmd === 'leave') {
         const res = await env.DB.prepare('DELETE FROM rank_group_members WHERE group_id = ?1 AND user_id = ?2')
           .bind(found.id, account.id).run();
-        return reply(textCard('退出群榜', res.meta?.changes ? '已退出本群榜单，历史用量保留、不再出现在本群。' : '你本来就不在这张榜单里。', 'grey'));
+        return reply(textCard('退出群榜', res.meta?.changes ? '已退出本群榜单，历史用量保留、不再出现在本群。' : '你本来就不在这张榜单里。'));
       }
       const hidden = command.cmd === 'hide' ? 1 : 0;
       const res = await env.DB.prepare('UPDATE rank_group_members SET hidden = ?1 WHERE group_id = ?2 AND user_id = ?3')
         .bind(hidden, found.id, account.id).run();
-      if (!res.meta?.changes) return reply(textCard('群设置', '你还没加入本群榜单，先发「**加入**」。', 'grey'));
-      return reply(textCard('群排名可见性', hidden ? '已在本群隐藏你的排名；其他群和广场不受影响。' : '已恢复在本群显示你的排名。', 'grey'));
+      if (!res.meta?.changes) return reply(textCard('群设置', '你还没加入本群榜单，先发「**加入**」。'));
+      return reply(textCard('群排名可见性', hidden ? '已在本群隐藏你的排名；其他群和广场不受影响。' : '已恢复在本群显示你的排名。'));
     }
 
     // rank
@@ -458,7 +561,7 @@ export function createFeishuService({ fetcher = (...args) => fetch(...args), now
     if (isGroup) {
       const found = await groupByChatId(env, msg.chat_id);
       if (!found.id) {
-        return reply(textCard('本群还没有榜单', '先单聊我发「**绑定**」接入电脑，再回群里发「**加入**」创建本群榜单。', 'orange'));
+        return reply(textCard('本群还没有榜单', '先单聊我发「**绑定**」接入电脑，再回群里发「**加入**」创建本群榜单。'));
       }
       const [board, memberCount, mine] = await Promise.all([
         boardRows(env, { groupId: found.id, from, to }),
@@ -466,18 +569,25 @@ export function createFeishuService({ fetcher = (...args) => fetch(...args), now
         account ? myGroupStanding(env, found.id, account.id, from, to) : Promise.resolve(null),
       ]);
       const footerBits = [];
-      if (mine) footerBits.push(`你排第 **${mine.rank}** 名（${formatTokens(mine.tokens)} tokens）`);
+      if (mine) footerBits.push(`你排第 **${mine.rank}** 名 · ${formatTokens(mine.tokens)} tokens`);
       if (account && !(await membership(env, found.id, account.id))) footerBits.push('你还未上榜，发「**加入**」加入');
+      // 头像换 img_key（仅前 10 行；失败退化无头像列）
+      const shown = board.entries.slice(0, BOARD_LIMIT);
+      await Promise.all(shown.map(async (e) => { e.img_key = await ensureAvatarKey(env, e); }));
       return reply(leaderboardCard({
-        title: `${md(found.name)} · Token 排行榜（${PERIOD_LABELS[command.period]}）`,
+        title: `${mdEscape(found.name)} · Token 排行榜（${PERIOD_LABELS[command.period]}）`,
         entries: board.entries, members: memberCount?.c ?? null, updatedAt: board.updatedAt, nowMs,
+        meUid: account?.id ?? null,
         footer: footerBits.join('\n') || null,
       }));
     }
     const board = await boardRows(env, { from, to });
+    const shownAll = board.entries.slice(0, BOARD_LIMIT);
+    await Promise.all(shownAll.map(async (e) => { e.img_key = await ensureAvatarKey(env, e); }));
     return reply(leaderboardCard({
       title: `广场 · Token 排行榜（${PERIOD_LABELS[command.period]}）`,
-      entries: board.entries, members: null, updatedAt: board.updatedAt, nowMs, footer: null,
+      entries: board.entries, members: null, updatedAt: board.updatedAt, nowMs,
+      meUid: account?.id ?? null, footer: null,
     }));
   }
 
@@ -531,7 +641,7 @@ export function createFeishuService({ fetcher = (...args) => fetch(...args), now
     return respond();
   }
 
-  return { handle, _internals: { dispatch, boardRows, personalSummary, bindAccount, joinGroup } };
+  return { handle, _internals: { dispatch, boardRows, personalSummary, bindAccount, joinGroup, ensureAvatarKey } };
 }
 
 export const feishu = createFeishuService();

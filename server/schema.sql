@@ -417,3 +417,11 @@ CREATE TABLE IF NOT EXISTS feishu_event_log (
   event_id TEXT PRIMARY KEY,
   seen_at INTEGER NOT NULL
 );
+
+-- 飞书卡片头像缓存：头像需上传飞书换取 img_key 才能在卡片里展示（圆形小图）
+CREATE TABLE IF NOT EXISTS feishu_avatar_cache (
+  user_id INTEGER PRIMARY KEY,
+  image_key TEXT NOT NULL,
+  source TEXT NOT NULL,
+  updated_at INTEGER NOT NULL
+);
