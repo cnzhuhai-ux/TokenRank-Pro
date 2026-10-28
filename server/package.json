@@ -13,5 +13,8 @@
   },
   "devDependencies": {
     "wrangler": "^4.0.0"
+  },
+  "dependencies": {
+    "@larksuiteoapi/node-sdk": "^1.76.0"
   }
 }
