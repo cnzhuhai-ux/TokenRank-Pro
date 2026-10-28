@@ -58,7 +58,7 @@ spec:
         fsGroup: 10001
       initContainers:
         - name: init-db
-          image: hb.oortcloudsmart.com/ai/tokenrank:61713ec-b1
+          image: hb.oortcloudsmart.com/ai/tokenrank:2d2ab97-b1
           command: ["node", "/app/server/init-db.mjs"]
           envFrom:
             - configMapRef:
@@ -72,7 +72,7 @@ spec:
               drop: ["ALL"]
         # 把镜像内的安装脚本与客户端分发包铺到共享静态目录，供 nginx 直接下载
         - name: fill-webroot
-          image: hb.oortcloudsmart.com/ai/tokenrank:61713ec-b1
+          image: hb.oortcloudsmart.com/ai/tokenrank:2d2ab97-b1
           command:
             - sh
             - -c
@@ -91,7 +91,7 @@ spec:
               drop: ["ALL"]
       containers:
         - name: tokenrank
-          image: hb.oortcloudsmart.com/ai/tokenrank:61713ec-b1
+          image: hb.oortcloudsmart.com/ai/tokenrank:2d2ab97-b1
           imagePullPolicy: IfNotPresent
           ports:
             - name: app

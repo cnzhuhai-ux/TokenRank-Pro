@@ -8,10 +8,11 @@
 https://tokenrank.oortcloudsmart.com:30443
 ```
 
-- 域名由公网 DNS 解析到局域网节点 `192.168.50.15`；Service 是 NodePort，集群**任意节点**都能接（Pod 实际跑在 `192.168.50.13`），换节点不用改客户端配置。
+- 域名由公网 DNS 解析到局域网节点 `192.168.88.118`；Service 是 NodePort，集群**任意节点**都能接（Pod 实际跑在 `192.168.88.115`），换节点不用改客户端配置。
+- 服务部署在单租户集群（API `192.168.88.112`）的 `ai-pj` 命名空间。
 - 链路：`域名:30443` → nginx（TLS 终止 + 静态分发）→ Node 服务 `127.0.0.1:8790` → SQLite（PVC `tokenrank-data`）。
-- `http://tokenrank.oortcloudsmart.com:32748` 也能连通，但**只用于排障**：客户端与安装脚本都强制 HTTPS（私网明文等于把接入码和用量裸奔）。
-- 当前证书由**内网自签 CA** 签发，SAN 覆盖 `tokenrank.oortcloudsmart.com` 与 `192.168.50.13/.11/.15`、`127.0.0.1`。**客户端必须信任这个 CA**，否则 TLS 校验失败。
+- Service 另有一个明文端口（NodePort 由集群分配，当前 `30685`），**只用于排障**：客户端与安装脚本都强制 HTTPS（私网明文等于把接入码和用量裸奔）。
+- 当前证书由**内网自签 CA** 签发，SAN 覆盖 `tokenrank.oortcloudsmart.com` 与 `192.168.88.118`、`192.168.88.112`、`127.0.0.1`。**客户端必须信任这个 CA**，否则 TLS 校验失败。
 
 > 想让客户端「开箱即用、不用装 CA」，把证书换成公信证书即可，见第 7 节。
 
@@ -184,7 +185,7 @@ kubectl --kubeconfig=<kubeconfig> -n ai-pj logs deploy/tokenrank -c web --tail=5
 | 现象 | 原因 | 处理 |
 |---|---|---|
 | `npm error 404 ... tokenrank-client` | 用了 `npx`，npm 上没有这个包 | 改用第 3 步的 `install.sh` / `install.ps1` |
-| `服务器需使用 HTTPS` / `服务器地址或接入码无效` | 传了 `http://...:32748` | 用 `https://tokenrank.oortcloudsmart.com:30443` |
+| `服务器需使用 HTTPS` / `服务器地址或接入码无效` | 传了 `http://...`（明文端口） | 用 `https://tokenrank.oortcloudsmart.com:30443` |
 | `curl: (60) SSL certificate problem` | 客户端没信任 CA | 第 2 步（Linux 可临时 `--cacert ./ca.crt`） |
 | `curl: (6) Could not resolve host` | DNS 未生效/无外网 DNS | 在 hosts 里加 `<节点IP> tokenrank.oortcloudsmart.com` |
 | `connect` 报 `fetch failed`，但 `/healthz` 能通 | Node 未设置 `NODE_EXTRA_CA_CERTS` | 设置环境变量并**重开终端**/重启后台服务 |
@@ -201,7 +202,7 @@ kubectl --kubeconfig=<kubeconfig> -n ai-pj logs deploy/tokenrank -c web --tail=5
 1. **接入码 = 上报凭证**，泄露即可伪造用量；泄露后重新签发即作废旧码。
 2. **CA 私钥只在服务端管理员手里**（`tokenrank-certs/ca.key`，未入库）。客户端只需要 `ca.crt`。
 3. 客户端**只读**本机统计库，不改写原版 token-watcher 数据；上报内容为日桶用量（模型/工具/token 数），不含提示词与代码内容。
-4. 域名解析到内网 IP 只影响「从哪进」，不改变安全边界：**NodePort 明文端口 32748 应只在内网开放**。
+4. 域名解析到内网 IP 只影响「从哪进」，不改变安全边界：**Service 的明文端口（非 30443）应只在内网开放**。
 
 ---
 
@@ -243,4 +244,4 @@ kubectl --kubeconfig=<kubeconfig> -n ai-pj create secret tls tokenrank-tls \
 kubectl --kubeconfig=<kubeconfig> -n ai-pj rollout restart deploy/tokenrank
 ```
 
-> 注意：换成公信证书后，原先通过 `https://192.168.50.13:30443`（IP 直连）访问会出现证书与主机名不匹配，客户端应统一改用域名。
+> 注意：换成公信证书后，原先通过 IP 直连（如 `https://192.168.88.118:30443`）访问会出现证书与主机名不匹配，客户端应统一改用域名。

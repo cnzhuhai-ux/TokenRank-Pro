@@ -39,10 +39,10 @@ docker push hb.oortcloudsmart.com/ai/tokenrank:$TAG
 
 ```bash
 # 首次：生成内网 CA + 服务端证书（SAN 需含对外域名与客户端可能直连的节点 IP）
-sh deploy/k8s/gen-certs.sh /path/to/tokenrank-certs 192.168.50.13,192.168.50.11,192.168.50.15 tokenrank.oortcloudsmart.com
+sh deploy/k8s/gen-certs.sh /path/to/tokenrank-certs 192.168.88.118,192.168.88.112 tokenrank.oortcloudsmart.com
 
 # 换证（不换 CA）：目录里已有 ca.crt/ca.key 时只重签服务端证书，客户端无需重新装 CA
-sh deploy/k8s/gen-certs.sh /path/to/tokenrank-certs 192.168.50.13,192.168.50.11,192.168.50.15 tokenrank.oortcloudsmart.com
+sh deploy/k8s/gen-certs.sh /path/to/tokenrank-certs 192.168.88.118,192.168.88.112 tokenrank.oortcloudsmart.com
 
 # 生成/更新 nginx ConfigMap + TLS Secret，并应用清单
 K=<kubectl 路径> KC='<kubeconfig 路径>' sh deploy/k8s/apply-config.sh /path/to/tokenrank-certs
@@ -50,7 +50,7 @@ K=<kubectl 路径> KC='<kubeconfig 路径>' sh deploy/k8s/apply-config.sh /path/
 kubectl --kubeconfig=<kubeconfig> -n ai-pj rollout status deploy/tokenrank
 ```
 
-- 对外入口：`https://tokenrank.oortcloudsmart.com:30443`。域名解析到 `192.168.50.15`，Pod 实际跑在 `192.168.50.13`；NodePort 在集群任意节点都可接入，换节点不用改客户端。
+- 对外入口：`https://tokenrank.oortcloudsmart.com:30443`。部署在单租户集群（API `192.168.88.112`，v1.31.2）的 `ai-pj` 命名空间；域名解析到局域网节点 `192.168.88.118`，Pod 实际跑在 `192.168.88.115`；NodePort 在集群任意节点都可接入，换节点不用改客户端。
 - `ca.crt` 分发给客户端使用；`ca.key` 仅管理员持有，不要入仓、不要外发。
 - 证书 825 天到期；只换服务端证书时沿用同一 CA，客户端无需重装。
 - **改成公信证书（推荐，客户端免装 CA）**：集群已有 cert-manager，用 DNS-01 的 ClusterIssuer 签发 `Certificate`，或直接替换 `tokenrank-tls` Secret，步骤见 [CLIENT-CONNECT.md](CLIENT-CONNECT.md) 第 7 节。
@@ -63,7 +63,7 @@ kubectl --kubeconfig=<kubeconfig> -n ai-pj rollout status deploy/tokenrank
 - 非 root：app 容器 uid/gid 10001 + `fsGroup: 10001`；nginx 容器 uid/gid 101；均 `capabilities: drop ALL`。
 - 副本数固定 1 + `Recreate`：SQLite 不支持多写。
 - 探针：app 用 exec 自检（`fetch 127.0.0.1:8790/healthz`，因为 kubelet 从 pod IP 连不到回环）；web 用 httpGet 8080。
-- Service：`http 8790→8080(NodePort 32748)` 仅排障用，`https 443→8443(NodePort 30443)` 是对外入口，客户端统一用 `https://tokenrank.oortcloudsmart.com:30443`。
+- Service：`https 443→8443(NodePort 30443)` 是对外入口，客户端统一用 `https://tokenrank.oortcloudsmart.com:30443`；另一个明文端口（`port 8790→8080`，NodePort 由集群分配）仅排障用，实际端口以 `kubectl get svc tokenrank` 为准。
 
 ## 5. 已验证 / 未验证
 
