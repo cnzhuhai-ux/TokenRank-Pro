@@ -32,6 +32,8 @@ RUN rm -rf ./server/node_modules ./server/test ./server/wrangler.toml.example \
 COPY --from=deps /build/server/node_modules ./server/node_modules
 # 用 dist 阶段已还原 LF 并打好包的 public 覆盖（含 dl/ 分发包与 releases/ 历史脚本）
 COPY --from=dist /build/server/public ./server/public
+# /version.txt 供客户端与更新脚本比对版本
+RUN cp ./server/public/dl/version.txt ./server/public/version.txt
 USER 10001:10001
 EXPOSE 8790
 WORKDIR /app/server

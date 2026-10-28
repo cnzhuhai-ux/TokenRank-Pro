@@ -17,9 +17,10 @@
  *                        HTTP 回调必须配置 verification token 或 encrypt key
  */
 import { createServer } from 'node:http';
-import { existsSync, mkdirSync, readFileSync, chmodSync } from 'node:fs';
+import { createReadStream, existsSync, mkdirSync, readFileSync, chmodSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, extname, join, sep } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import worker from './src/worker.js';
 import { openD1 } from './src/d1-node.mjs';
 
@@ -71,6 +72,34 @@ const SECURITY_HEADERS = { 'x-content-type-options': 'nosniff', 'referrer-policy
 // 不信任客户端 Host，生成接入命令等 URL 时只使用显式配置的 public_origin。
 const baseOrigin = cfg.publicOrigin || `http://127.0.0.1:${cfg.port}`;
 
+// 安装脚本与分发包：只放行固定几种路径，其余一律走 API 路由。
+// 白名单 + 目录归属校验，避免路径穿越；对外 TLS 由前置反代/Ingress 终止。
+const PUBLIC_DIR = join(dirname(fileURLToPath(import.meta.url)), 'public');
+const STATIC_TYPES = {
+  '.sh': 'text/x-shellscript; charset=utf-8',
+  '.ps1': 'text/plain; charset=utf-8',
+  '.txt': 'text/plain; charset=utf-8',
+  '.sha256': 'text/plain; charset=utf-8',
+  '.gz': 'application/gzip',
+};
+const STATIC_ALLOW = [
+  /^\/(?:install|update)\.(?:sh|ps1)$/,
+  /^\/version\.txt$/,
+  /^\/dl\/[\w.+-]+$/,
+  /^\/releases\/[\w.]+\/[\w.+-]+$/,
+];
+function staticFile(pathname) {
+  if (!STATIC_ALLOW.some((re) => re.test(pathname))) return null;
+  const abs = join(PUBLIC_DIR, pathname.replace(/^\/+/, ''));
+  if (!abs.startsWith(PUBLIC_DIR + sep)) return null;
+  try {
+    const st = statSync(abs);
+    return st.isFile() ? { abs, size: st.size } : null;
+  } catch {
+    return null;
+  }
+}
+
 const server = createServer(async (req, res) => {
   try {
     const declared = Number(req.headers['content-length'] || 0);
@@ -94,6 +123,20 @@ const server = createServer(async (req, res) => {
     }
     // 只接受 origin-form 路径，避免绝对形式请求绕过 public_origin 造成 Host 注入。
     const target = String(req.url || '/');
+    if (req.method === 'GET' || req.method === 'HEAD') {
+      const hit = staticFile(target.split('?')[0]);
+      if (hit) {
+        res.writeHead(200, {
+          ...SECURITY_HEADERS,
+          'content-type': STATIC_TYPES[extname(hit.abs)] || 'application/octet-stream',
+          'content-length': String(hit.size),
+          'cache-control': 'no-store',
+        });
+        if (req.method === 'HEAD') { res.end(); return; }
+        createReadStream(hit.abs).on('error', () => res.destroy()).pipe(res);
+        return;
+      }
+    }
     const request = new Request(new URL(target.startsWith('/') ? target : '/', baseOrigin), {
       method: req.method,
       headers: req.headers,

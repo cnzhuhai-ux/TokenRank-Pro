@@ -1,6 +1,6 @@
 # TokenRank 服务端 · Kubernetes 部署清单（命名空间 ai-pj）
-# 先跑 deploy/k8s/apply-config.sh 生成 ConfigMap（nginx 配置）与 TLS Secret，再 apply 本文件。
-# 结构：nginx sidecar 负责 TLS 终止 + 安装脚本/分发包静态下载，其余请求反代到 Node 服务。
+# 形态：Ingress（cert-manager 签发证书 + TLS 终止）→ Service(ClusterIP) → Node 单进程（自带静态分发）
+# 部署：kubectl --kubeconfig=<kubeconfig> apply -f deploy/k8s/manifests.yaml
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
@@ -13,7 +13,7 @@ spec:
   resources:
     requests:
       storage: 5Gi
-  # 留空使用集群默认 StorageClass（当前为 nfs-storage）；SQLite 单副本写入，勿开多副本
+  # 留空使用集群默认 StorageClass（nfs-storage）；SQLite 单副本写入，勿开多副本
 ---
 apiVersion: v1
 kind: ConfigMap
@@ -24,12 +24,13 @@ metadata:
     app.kubernetes.io/name: tokenrank
 data:
   PORT: "8790"
-  # 集群内需让 nginx sidecar 经 127.0.0.1 访问；对外只暴露 nginx 的 HTTPS
-  TOKENRANK_HOST: "127.0.0.1"
+  # TLS 在 Ingress 终止，集群内到 pod 是明文，故监听 0.0.0.0 并显式允许明文
+  TOKENRANK_HOST: "0.0.0.0"
+  TOKENRANK_ALLOW_INSECURE_HTTP: "1"
   TOKENRANK_DB: "/data/tokenrank.db"
   TOKENRANK_MAX_BODY_BYTES: "1048576"
-  # 客户端接入地址：对外域名（DNS 解析到局域网节点 IP，NodePort 任意节点均可达）
-  PUBLIC_ORIGIN: "https://tokenrank.oortcloudsmart.com:30443"
+  # 客户端接入地址：对外域名（生成安装命令用），不带端口
+  PUBLIC_ORIGIN: "https://tokenrank.oortcloudsmart.com:2443"
   CORS_ORIGIN: ""
   # 飞书凭证请用 Secret 引用：FEISHU_APP_ID / FEISHU_APP_SECRET / FEISHU_VERIFICATION_TOKEN / FEISHU_ENCRYPT_KEY
 ---
@@ -58,7 +59,7 @@ spec:
         fsGroup: 10001
       initContainers:
         - name: init-db
-          image: hb.oortcloudsmart.com/ai/tokenrank:2d2ab97-b1
+          image: hb.oortcloudsmart.com/ai/tokenrank:2d2ab97-b2
           command: ["node", "/app/server/init-db.mjs"]
           envFrom:
             - configMapRef:
@@ -70,47 +71,29 @@ spec:
             allowPrivilegeEscalation: false
             capabilities:
               drop: ["ALL"]
-        # 把镜像内的安装脚本与客户端分发包铺到共享静态目录，供 nginx 直接下载
-        - name: fill-webroot
-          image: hb.oortcloudsmart.com/ai/tokenrank:2d2ab97-b1
-          command:
-            - sh
-            - -c
-            - |
-              set -e
-              cp -r /app/server/public/install.sh /app/server/public/install.ps1 \
-                    /app/server/public/update.sh /app/server/public/update.ps1 /webroot/
-              cp -r /app/server/public/dl /webroot/dl
-              node -e 'const p=require("/app/client/package.json");require("fs").writeFileSync("/webroot/version.txt",p.version)'
-          volumeMounts:
-            - name: webroot
-              mountPath: /webroot
-          securityContext:
-            allowPrivilegeEscalation: false
-            capabilities:
-              drop: ["ALL"]
       containers:
         - name: tokenrank
-          image: hb.oortcloudsmart.com/ai/tokenrank:2d2ab97-b1
+          image: hb.oortcloudsmart.com/ai/tokenrank:2d2ab97-b2
           imagePullPolicy: IfNotPresent
           ports:
-            - name: app
+            - name: http
               containerPort: 8790
           envFrom:
             - configMapRef:
                 name: tokenrank-config
-          # Node 只监听 127.0.0.1（明文不出 pod），kubelet 探针从 pod IP 连不上，故用容器内自检
           readinessProbe:
-            exec:
-              command: ["node", "-e", "fetch('http://127.0.0.1:8790/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+            httpGet:
+              path: /healthz
+              port: http
             periodSeconds: 10
-            timeoutSeconds: 5
+            timeoutSeconds: 3
           livenessProbe:
-            exec:
-              command: ["node", "-e", "fetch('http://127.0.0.1:8790/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+            httpGet:
+              path: /healthz
+              port: http
             initialDelaySeconds: 20
             periodSeconds: 20
-            timeoutSeconds: 5
+            timeoutSeconds: 3
           resources:
             requests:
               cpu: 50m
@@ -125,56 +108,10 @@ spec:
           volumeMounts:
             - name: data
               mountPath: /data
-        - name: web
-          image: hb.oortcloudsmart.com/base/nginx:1.23.4-alpine
-          imagePullPolicy: IfNotPresent
-          command: ["nginx", "-g", "daemon off;", "-c", "/etc/nginx/tokenrank/nginx.conf"]
-          ports:
-            - name: http
-              containerPort: 8080
-            - name: https
-              containerPort: 8443
-          readinessProbe:
-            httpGet:
-              path: /healthz
-              port: 8080
-            periodSeconds: 10
-            timeoutSeconds: 3
-          resources:
-            requests:
-              cpu: 20m
-              memory: 32Mi
-            limits:
-              cpu: 500m
-              memory: 128Mi
-          securityContext:
-            runAsUser: 101
-            runAsGroup: 101
-            allowPrivilegeEscalation: false
-            capabilities:
-              drop: ["ALL"]
-          volumeMounts:
-            - name: nginx-conf
-              mountPath: /etc/nginx/tokenrank
-              readOnly: true
-            - name: tls
-              mountPath: /etc/nginx/tokenrank-tls
-              readOnly: true
-            - name: webroot
-              mountPath: /webroot
-              readOnly: true
       volumes:
         - name: data
           persistentVolumeClaim:
             claimName: tokenrank-data
-        - name: webroot
-          emptyDir: {}
-        - name: nginx-conf
-          configMap:
-            name: tokenrank-nginx-conf
-        - name: tls
-          secret:
-            secretName: tokenrank-tls
 ---
 apiVersion: v1
 kind: Service
@@ -184,14 +121,64 @@ metadata:
   labels:
     app.kubernetes.io/name: tokenrank
 spec:
-  type: NodePort
+  type: ClusterIP
   selector:
     app.kubernetes.io/name: tokenrank
   ports:
     - name: http
-      port: 8790
+      port: 80
       targetPort: http
-    - name: https
-      port: 443
-      targetPort: https
-      nodePort: 30443
+---
+# 命名空间自带 default-deny-all，且既有放行策略的 ipBlock 排除了 pod 网段（172.20.0.0/16），
+# 因此 ingress-nginx 的 pod 访问不到本 pod。这里只为本应用放行一个来源+端口。
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: tokenrank-allow-ingress-nginx
+  namespace: ai-pj
+  labels:
+    app.kubernetes.io/name: tokenrank
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: tokenrank
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: ingress-nginx
+      ports:
+        - protocol: TCP
+          port: 8790
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: tokenrank
+  namespace: ai-pj
+  labels:
+    app.kubernetes.io/name: tokenrank
+  annotations:
+    # 对照集群里 vls-lite-ssl 的写法：DNS-01 由 DNSPod webhook 校验，证书自动签发与续期
+    cert-manager.io/cluster-issuer: dnspod-cert-manager-webhook-dnspod-cluster-issuer
+    nginx.ingress.kubernetes.io/proxy-body-size: 2m
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "60"
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        - tokenrank.oortcloudsmart.com
+      secretName: tokenrank-oortcloudsmart-tls
+  rules:
+    - host: tokenrank.oortcloudsmart.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: tokenrank
+                port:
+                  number: 80
