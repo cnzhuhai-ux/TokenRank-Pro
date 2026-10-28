@@ -155,9 +155,30 @@ export function helpCard({ groupReady }) {
   ]);
 }
 
-/** 榜单：每行 = 数字名次 + 圆头像 + 单行昵称 + 右对齐橙色成绩，行间细分隔线 */
-export function leaderboardCard({ title, entries, members, updatedAt, nowMs, meUid, footer }) {
-  const elements = [markdown(`### ${mdEscape(title)}`), divider()];
+/** 千分位整数（对标小程序 integer()） */
+export function integer(n) {
+  return String(Math.max(0, Math.round(Number(n) || 0))).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+}
+
+const avatarImg = (imgKey) => ({
+  tag: 'img', img_key: imgKey, alt: { tag: 'plain_text', content: '头像' },
+  custom_width: 24, corner_radius: '12px',
+});
+
+const PERIOD_TABS = [['day', '今日'], ['week', '本周'], ['month', '本月'], ['all', '总榜']];
+
+/** 榜单：对标小程序排行榜——表头行、名次+圆头像+昵称/灰色模型名+橙色成绩、本人灰底置顶行 */
+export function leaderboardCard({ title, entries, members, updatedAt, nowMs, period = 'day', meUid, me, footer }) {
+  const elements = [];
+  elements.push(markdown(`### ${mdEscape(title)}`));
+  // 周期 Tab 行（仿小程序 tabs）：当前周期橙色加粗，其余灰色
+  elements.push(markdown(PERIOD_TABS.map(([k, label]) =>
+    k === period ? `**<font color='orange'>${label}</font>**` : `<font color='grey'>${label}</font>`).join('　')));
+  elements.push(divider());
+  elements.push(rowOf([
+    col(9, [markdown(`<font color='grey'>排名 · ${members ?? entries.length} 人</font>`)]),
+    col(3, [markdown(`<font color='grey'>Token 用量</font>`)]),
+  ]));
   if (!entries.length) {
     elements.push(markdown('这个时间段还没有人上报用量。先单聊我「**绑定**」接入电脑，再回来发「**加入**」上榜。'));
   }
@@ -165,25 +186,32 @@ export function leaderboardCard({ title, entries, members, updatedAt, nowMs, meU
   shown.forEach((e, i) => {
     const mine = meUid != null && e.uid === meUid;
     const bold = mine ? '**' : '';
-    const nick = `${bold}${mdEscape(e.nickname)}${bold}`.slice(0, 24);
-    const score = `<font color='orange'>${bold}${formatTokens(e.tokens)}${bold}</font>`;
-    const columns = [
+    const model = e.top_model ? `\n<font color='grey'>${mdEscape(e.top_model)}</font>` : '';
+    elements.push(rowOf([
       col(1, [markdown(String(i + 1))]),
-      ...(e.img_key ? [col(1, [{ tag: 'img', img_key: e.img_key, alt: { tag: 'plain_text', content: '头像' }, custom_width: 24, corner_radius: '12px' }])] : []),
-      col(e.img_key ? 6 : 7, [markdown(nick)]),
-      col(3, [markdown(score)]),
-    ];
-    elements.push(rowOf(columns), divider());
+      ...(e.img_key ? [col(1, [avatarImg(e.img_key)])] : []),
+      col(e.img_key ? 6 : 7, [markdown(`${bold}${mdEscape(e.nickname).slice(0, 20)}${bold}${model}`)]),
+      col(3, [markdown(`<font color='orange'>${bold}${formatTokens(e.tokens)}${bold}</font>`)]),
+    ]), divider());
   });
+  // 我的行：置顶灰底（对标小程序底部浅灰高亮的本人行）
+  if (me) {
+    const model = me.top_model ? `\n<font color='grey'>${mdEscape(me.top_model)}</font>` : '';
+    elements.push({ tag: 'column_set', flex_mode: 'none', background_style: 'grey', columns: [
+      col(1, [markdown(String(me.rank))]),
+      col(5, [markdown(`**${mdEscape(me.nickname)}** 我${model}`)]),
+      col(3, [markdown(`<font color='orange'>**${formatTokens(me.tokens)}**</font>`)]),
+      col(3, [markdown(`<font color='grey'>我的排名</font>`)]),
+    ] });
+  }
   if (entries.length > BOARD_LIMIT) {
     elements.push(noteEl(`仅展示前 ${BOARD_LIMIT} 名，共 ${entries.length} 人有用量`));
   }
   if (footer) elements.push(markdown(footer));
   const bits = [];
-  if (members != null) bits.push(`成员 ${members} 人`);
-  if (meUid != null) bits.push('加粗的是你');
   if (updatedAt && nowMs && nowMs > updatedAt) bits.push(`更新于 ${Math.max(1, Math.round((nowMs - updatedAt) / 60000))} 分钟前`);
-  if (bits.length) elements.push(noteEl(bits.join(' · ')));
+  bits.push('数据由用户电脑上报，仅供参考');
+  elements.push(noteEl(bits.join(' · ')));
   return cardBody(elements);
 }
 
@@ -421,6 +449,20 @@ export function createFeishuService({ fetcher = (...args) => fetch(...args), now
     };
   }
 
+  /** 广场（全站）口径下的我的名次，供榜单置顶“我的行” */
+  async function globalStanding(env, userId, from, to) {
+    const mine = await env.DB.prepare('SELECT SUM(ds.tokens) AS t FROM public_usage ds WHERE ds.user_id = ?1 AND ds.day >= ?2 AND ds.day <= ?3')
+      .bind(userId, from, to).first();
+    const myTokens = mine?.t || 0;
+    if (!myTokens) return null;
+    const ahead = await env.DB.prepare(`SELECT COUNT(*) AS c FROM (
+      SELECT ds.user_id, SUM(ds.tokens) AS total FROM public_usage ds
+      WHERE ds.day >= ?2 AND ds.day <= ?3
+      GROUP BY ds.user_id HAVING total > ?1 OR (total = ?1 AND ds.user_id < ?4))`)
+      .bind(myTokens, from, to, userId).first();
+    return { rank: (ahead?.c || 0) + 1, tokens: myTokens };
+  }
+
   async function myGroupStanding(env, gid, userId, from, to) {
     const mine = await env.DB.prepare(`SELECT SUM(ds.tokens) AS t FROM public_usage ds
       WHERE ds.user_id = ?1 AND ds.day >= ?2 AND ds.day <= ?3
@@ -474,28 +516,30 @@ export function createFeishuService({ fetcher = (...args) => fetch(...args), now
     };
   }
 
-  /** 个人用量卡：大数字主卡（数字大、单位小）+ 三列统计，复刻小程序「我的」页版式 */
+  /** 个人用量卡：对标小程序「我的用量」——橙色大数字、完整整数、日期区间、两列统计 */
   function personalCard(user, s, nowMs) {
     if (!s.lifetime && !s.today) {
       return textCard('Token 群排名', '还没有收到你的用量。先在单聊里发「**绑定**」拿到接入命令，在电脑上运行即可。');
     }
-    const today = splitAmount(s.today);
+    const hero = splitAmount(s.today);
+    const today = beijingDay(nowMs);
+    const syncTime = s.lastReportAt
+      ? new Date(s.lastReportAt + 8 * 3600000).toISOString().slice(5, 16).replace('T', ' ')
+      : null;
     const statCell = (value, label) => col(4, [
-      markdown(`**${formatTokens(value)}**`),
+      markdown(`**${value}**`),
       markdown(`<font color='grey'>${label}</font>`),
     ]);
     const elements = [
-      markdown(`### 我的用量 · ${mdEscape(user.nickname || '')}`),
+      markdown(`<font color='grey'>我的用量 · 今日 · 总用量 · 含缓存</font>`),
+      markdown(`## <font color='orange'>${hero.num}${hero.unit ? ' ' + hero.unit : ''}</font>`),
+      markdown(`<font color='grey'>tokens · ${integer(s.todayRequests)} 次调用 · 累计 ${formatTokens(s.lifetime)} · ${integer(s.lifetime)} tokens</font>`),
+      markdown(`<font color='grey'>${s.firstDay ? `${s.firstDay} — ` : ''}${today} · 北京时间${syncTime ? ` · 同步于 ${syncTime}` : ''}</font>`),
       divider(),
       rowOf([
-        col(6, [markdown(`**${today.num}**`, { size: 'big' })], { vertical: 'bottom' }),
-        col(6, [markdown(`${today.unit ? `**${today.unit}** ` : ''}tokens · <font color='grey'>今日</font>`)], { vertical: 'bottom' }),
-      ]),
-      divider(),
-      rowOf([
-        statCell(s.week, '本周'),
-        statCell(s.lifetime, '累计'),
-        statCell(s.days, '上报天数'),
+        statCell(integer(s.todayRequests), '今日调用'),
+        statCell(formatTokens(s.week), '本周'),
+        statCell(s.days, '活跃天数'),
       ]),
       divider(),
     ];
@@ -503,10 +547,10 @@ export function createFeishuService({ fetcher = (...args) => fetch(...args), now
       elements.push(markdown(`**本周偏好**　${[s.topTool, s.topModel].filter(Boolean).map(mdEscape).join(' / ')}`));
     }
     if (s.globalRankToday) elements.push(markdown(`**今日广场排名**　第 ${s.globalRankToday} 名`));
-    if (s.lastReportAt) {
-      elements.push(noteEl(`最近上报 ${Math.max(1, Math.round((nowMs - s.lastReportAt) / 60000))} 分钟前 · 北京时间按天汇总`));
+    if (s.lastReportAt && nowMs > s.lastReportAt) {
+      elements.push(noteEl(`最近上报 ${Math.max(1, Math.round((nowMs - s.lastReportAt) / 60000))} 分钟前`));
     } else {
-      elements.push(noteEl('北京时间按天汇总 · 含缓存'));
+      elements.push(noteEl('数据由用户电脑上报，仅供参考'));
     }
     return cardBody(elements);
   }
@@ -591,20 +635,25 @@ export function createFeishuService({ fetcher = (...args) => fetch(...args), now
       // 头像换 img_key（仅前 10 行；失败退化无头像列）
       const shown = board.entries.slice(0, BOARD_LIMIT);
       await Promise.all(shown.map(async (e) => { e.img_key = await ensureAvatarKey(env, e); }));
+      const meEntry = mine && account ? board.entries.find((e) => e.uid === account.id) : null;
+      const me = mine ? { rank: mine.rank, tokens: mine.tokens, nickname: account.nickname, top_model: meEntry?.top_model ?? null } : null;
       return reply(leaderboardCard({
-        title: `${mdEscape(found.name)} · Token 排行榜（${PERIOD_LABELS[command.period]}）`,
+        title: `${mdEscape(found.name)} · Token 排行榜`,
         entries: board.entries, members: memberCount?.c ?? null, updatedAt: board.updatedAt, nowMs,
-        meUid: account?.id ?? null,
+        period: command.period, meUid: account?.id ?? null, me,
         footer: footerBits.join('\n') || null,
       }));
     }
     const board = await boardRows(env, { from, to });
     const shownAll = board.entries.slice(0, BOARD_LIMIT);
     await Promise.all(shownAll.map(async (e) => { e.img_key = await ensureAvatarKey(env, e); }));
+    const mine = account ? await globalStanding(env, account.id, from, to) : null;
+    const meEntry = mine ? board.entries.find((e) => e.uid === account.id) : null;
+    const me = mine ? { rank: mine.rank, tokens: mine.tokens, nickname: account.nickname, top_model: meEntry?.top_model ?? null } : null;
     return reply(leaderboardCard({
-      title: `广场 · Token 排行榜（${PERIOD_LABELS[command.period]}）`,
-      entries: board.entries, members: null, updatedAt: board.updatedAt, nowMs,
-      meUid: account?.id ?? null, footer: null,
+      title: `广场 · Token 排行榜`,
+      entries: board.entries, members: board.entries.length, updatedAt: board.updatedAt, nowMs,
+      period: command.period, meUid: account?.id ?? null, me, footer: null,
     }));
   }
 
