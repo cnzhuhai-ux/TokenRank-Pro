@@ -81,23 +81,36 @@ const STATIC_TYPES = {
   '.txt': 'text/plain; charset=utf-8',
   '.sha256': 'text/plain; charset=utf-8',
   '.gz': 'application/gzip',
+  '.html': 'text/html; charset=utf-8',
+  '.css': 'text/css; charset=utf-8',
+  '.js': 'text/javascript; charset=utf-8',
+  '.svg': 'image/svg+xml',
+  '.png': 'image/png',
 };
 const STATIC_ALLOW = [
   /^\/(?:install|update)\.(?:sh|ps1)$/,
   /^\/version\.txt$/,
   /^\/dl\/[\w.+-]+$/,
   /^\/releases\/[\w.]+\/[\w.+-]+$/,
+  // 飞书网页应用（复刻小程序界面）：/app/ 入口与其静态资源
+  /^\/app\/$/,
+  /^\/app\/[\w-]+\.(?:html|css|js|svg|png)$/,
 ];
 function staticFile(pathname) {
   if (!STATIC_ALLOW.some((re) => re.test(pathname))) return null;
-  const abs = join(PUBLIC_DIR, pathname.replace(/^\/+/, ''));
-  if (!abs.startsWith(PUBLIC_DIR + sep)) return null;
-  try {
-    const st = statSync(abs);
-    return st.isFile() ? { abs, size: st.size } : null;
-  } catch {
-    return null;
+  const rel = pathname.replace(/^\/+/, '');
+  const candidates = rel.endsWith('/') ? [rel + 'index.html', rel.replace(/\/$/, '')] : [rel];
+  for (const candidate of candidates) {
+    const abs = join(PUBLIC_DIR, candidate);
+    if (!abs.startsWith(PUBLIC_DIR + sep)) continue;
+    try {
+      const st = statSync(abs);
+      if (st.isFile()) return { abs, size: st.size };
+    } catch {
+      // 尝试下一个候选
+    }
   }
+  return null;
 }
 
 const server = createServer(async (req, res) => {

@@ -19,6 +19,7 @@ import { emailRegistrationStatus, saveEmailRegistration, removeEmailRegistration
 import { listSubscriptions, createSubscription, updateSubscription, deleteSubscription, getRates } from './subscriptions.js';
 import { createTopup, updateTopup, deleteTopup } from './topups.js';
 import { feishu } from './feishu.js';
+import { createFeishuWebService } from './feishu-web.js';
 
 /**
  * 「Token 群排名」Cloudflare Worker。
@@ -116,6 +117,33 @@ async function route(request, env, url, path, ctx) {
 
   // ---- 飞书机器人事件回调（回调处理放 waitUntil，先回 200 防飞书重试风暴） ----
   if (method === 'POST' && path === '/feishu/event') return withCors(await feishu.handle(request, env, ctx));
+
+  // ---- 飞书网页应用登录：GET 取授权配置，POST 用授权码换会话（复用 users/mp_sessions） ----
+  if (path === '/api/feishu/session') {
+    const web = createFeishuWebService();
+    if (method === 'GET') return withCors(Response.json(web.webConfig(env, userOrigin(env, request))));
+    if (method !== 'POST') return withCors(jsonError(405, 'method not allowed'));
+    if (!env.FEISHU_APP_ID || !env.FEISHU_APP_SECRET) return withCors(jsonError(503, '登录服务未配置'));
+    const body = await readJson(request, 4096);
+    const code = String(body?.code ?? '').trim();
+    if (!code || code.length > 512) return withCors(jsonError(400, 'code required'));
+    let identity;
+    try { identity = await web.userInfo(env, await web.exchangeCode(env, code)); }
+    catch (err) { return withCors(jsonError(401, err?.message || '飞书登录失败')); }
+    // 与机器人共用同一账号锚点（openid='feishu:<open_id>'），昵称/头像随登录刷新
+    const { user } = await feishu._internals.bindAccount(env, identity.openId);
+    const fallbackNick = `飞书用户-${String(identity.openId).replace(/[^a-zA-Z0-9]/g, '').slice(-4).padStart(4, '0')}`;
+    await env.DB.prepare(`UPDATE users SET
+      nickname = CASE WHEN ?2 != '' THEN ?2 ELSE COALESCE(nickname, ?3) END,
+      avatar_url = CASE WHEN ?4 != '' THEN ?4 ELSE COALESCE(avatar_url, '') END,
+      updated_at = ?5
+      WHERE id = ?1 AND openid = ?6`)
+      .bind(user.id, identity.name, fallbackNick, identity.avatarUrl, Date.now(), `feishu:${identity.openId}`).run();
+    const token = crypto.randomUUID();
+    await env.DB.prepare('INSERT INTO mp_sessions (token, user_id, expires_at) VALUES (?1, ?2, ?3)')
+      .bind(token, user.id, Date.now() + MP_SESSION_TTL_MS).run();
+    return withCors(Response.json({ token, user: await publicUser(env, user.id, userOrigin(env, request)) }));
+  }
 
   const subscriptionPath = path.match(/^\/api\/subscriptions(?:\/([a-f0-9]{32}))?$/);
   if (subscriptionPath) {

@@ -134,7 +134,7 @@ export function splitAmount(n) {
   return at < 0 ? { num: text, unit: '' } : { num: text.slice(0, at), unit: text.slice(at + 1) };
 }
 
-export function helpCard({ groupReady }) {
+export function helpCard({ groupReady, appUrl }) {
   const lines = [
     '### Token 群排名 · 使用帮助', '',
     '**群内命令**（把我拉进群后直接发）', '',
@@ -168,7 +168,7 @@ const avatarImg = (imgKey) => ({
 const PERIOD_TABS = [['day', '今日'], ['week', '本周'], ['month', '本月'], ['all', '总榜']];
 
 /** 榜单：对标小程序排行榜——表头行、名次+圆头像+昵称/灰色模型名+橙色成绩、本人灰底置顶行 */
-export function leaderboardCard({ title, entries, members, updatedAt, nowMs, period = 'day', meUid, me, footer }) {
+export function leaderboardCard({ title, entries, members, updatedAt, nowMs, period = 'day', meUid, me, footer, appUrl }) {
   const elements = [];
   elements.push(markdown(`### ${mdEscape(title)}`));
   // 周期 Tab 行（仿小程序 tabs）：当前周期橙色加粗，其余灰色
@@ -208,6 +208,7 @@ export function leaderboardCard({ title, entries, members, updatedAt, nowMs, per
     elements.push(noteEl(`仅展示前 ${BOARD_LIMIT} 名，共 ${entries.length} 人有用量`));
   }
   if (footer) elements.push(markdown(footer));
+  if (appUrl) elements.push(markdown(`[打开网页版完整界面（工具 / 模型分布图）](${appUrl})`));
   const bits = [];
   if (updatedAt && nowMs && nowMs > updatedAt) bits.push(`更新于 ${Math.max(1, Math.round((nowMs - updatedAt) / 60000))} 分钟前`);
   bits.push('数据由用户电脑上报，仅供参考');
@@ -517,7 +518,7 @@ export function createFeishuService({ fetcher = (...args) => fetch(...args), now
   }
 
   /** 个人用量卡：对标小程序「我的用量」——橙色大数字、完整整数、日期区间、两列统计 */
-  function personalCard(user, s, nowMs) {
+  function personalCard(user, s, nowMs, appUrl) {
     if (!s.lifetime && !s.today) {
       return textCard('Token 群排名', '还没有收到你的用量。先在单聊里发「**绑定**」拿到接入命令，在电脑上运行即可。');
     }
@@ -552,6 +553,7 @@ export function createFeishuService({ fetcher = (...args) => fetch(...args), now
     } else {
       elements.push(noteEl('数据由用户电脑上报，仅供参考'));
     }
+    if (appUrl) elements.push(markdown(`[打开网页版完整界面（日报 / 日历 / 走势）](${appUrl})`));
     return cardBody(elements);
   }
 
@@ -569,13 +571,13 @@ export function createFeishuService({ fetcher = (...args) => fetch(...args), now
     const command = parseCommand(text);
     const reply = (cardBody) => sendCard(env, msg.chat_id, cardBody);
     if (!command) {
-      if (!isGroup) await reply(helpCard({}));
+      if (!isGroup) await reply(helpCard({ appUrl: `${origin}/app` }));
       return;
     }
     const account = ['rank', 'my', 'join', 'leave', 'hide', 'show'].includes(command.cmd)
       ? await accountByOpenId(env, openId) : null;
 
-    if (command.cmd === 'help') return reply(helpCard({ groupReady: isGroup ? undefined : null }));
+    if (command.cmd === 'help') return reply(helpCard({ groupReady: isGroup ? undefined : null, appUrl: `${origin}/app` }));
 
     if (command.cmd === 'bind') {
       if (isGroup) {
@@ -588,7 +590,7 @@ export function createFeishuService({ fetcher = (...args) => fetch(...args), now
     if (command.cmd === 'my') {
       if (isGroup) return reply(textCard('我的用量', '个人用量只发单聊。**请单聊我发送「我的」**。'));
       if (!account) return reply(textCard('Token 群排名', '还没有你的账号。先发「**绑定**」接入电脑，再来查看用量。'));
-      return reply(personalCard(account, await personalSummary(env, account.id, now()), now()));
+      return reply(personalCard(account, await personalSummary(env, account.id, now()), now(), `${origin}/app`));
     }
 
     if (command.cmd === 'join') {
@@ -653,7 +655,7 @@ export function createFeishuService({ fetcher = (...args) => fetch(...args), now
     return reply(leaderboardCard({
       title: `广场 · Token 排行榜`,
       entries: board.entries, members: board.entries.length, updatedAt: board.updatedAt, nowMs,
-      period: command.period, meUid: account?.id ?? null, me, footer: null,
+      period: command.period, meUid: account?.id ?? null, me, footer: null, appUrl: `${origin}/app`,
     }));
   }
 

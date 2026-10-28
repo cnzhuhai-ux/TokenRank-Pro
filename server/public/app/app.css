@@ -1,0 +1,114 @@
+/* Token 群排名 · 飞书网页应用 —— 一比一复刻小程序白底界面 */
+:root {
+  --green: #07c160;
+  --orange: #fa8919;
+  --text: #111;
+  --text2: #808080;
+  --line: #ececec;
+  --bg: #fff;
+  --bg2: #f7f7f7;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+html, body { height: 100%; }
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Helvetica Neue", "Microsoft YaHei", sans-serif;
+  background: var(--bg); color: var(--text); font-size: 15px;
+  -webkit-font-smoothing: antialiased;
+}
+.page { padding-bottom: 58px; min-height: 100%; }
+.num { font-family: "DIN Alternate", "Avenir Next", "Helvetica Neue", sans-serif; font-variant-numeric: tabular-nums; }
+
+/* ── 顶部标题与 Tab ── */
+.pagebar { text-align: center; padding: 14px 0 4px; font-size: 17px; font-weight: 600; }
+.tabs { display: flex; border-bottom: 1px solid var(--line); position: sticky; top: 0; background: var(--bg); z-index: 2; }
+.tabs + .tabs { border-bottom: none; }
+.tab { flex: 1; text-align: center; padding: 11px 0 9px; color: var(--text); font-size: 15px; cursor: pointer; position: relative; background: none; border: none; }
+.tab.active { font-weight: 600; }
+.tab.active::after { content: ""; position: absolute; left: 50%; transform: translateX(-50%); bottom: 0; width: 28px; height: 3px; border-radius: 2px; background: var(--green); }
+.tab.grey { color: var(--text); }
+
+/* ── 区块 ── */
+.section { padding: 14px 16px 4px; display: flex; justify-content: space-between; align-items: baseline; }
+.section .t { font-size: 17px; font-weight: 600; }
+.section .more { color: var(--green); font-size: 13px; text-decoration: none; }
+.caption { padding: 6px 16px 10px; color: var(--text2); font-size: 12px; }
+
+/* ── 榜单 ── */
+.list-header { display: flex; justify-content: space-between; padding: 8px 16px; background: var(--bg2); color: var(--text2); font-size: 12px; }
+.row { display: flex; align-items: center; gap: 12px; padding: 12px 16px; border-bottom: 1px solid var(--line); }
+.row .rank { width: 20px; text-align: center; color: var(--text); font-size: 15px; flex: none; }
+.row .avatar { width: 40px; height: 40px; border-radius: 50%; flex: none; object-fit: cover; background: var(--bg2); }
+.row .avatar-ph { width: 40px; height: 40px; border-radius: 50%; flex: none; background: var(--bg2); color: var(--text2); display: flex; align-items: center; justify-content: center; font-size: 17px; }
+.row .who { flex: 1; min-width: 0; }
+.row .nick { font-size: 15px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.row .sub { color: var(--text2); font-size: 12px; margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.row .amt { color: var(--orange); font-size: 19px; font-weight: 600; flex: none; }
+.row.me { background: var(--bg2); }
+
+/* ── 大数字 ── */
+.hero { padding: 10px 16px 4px; }
+.hero .label { color: var(--text2); font-size: 13px; }
+.hero .num-line { display: flex; align-items: baseline; gap: 6px; margin-top: 6px; }
+.hero .big { color: var(--orange); font-size: 44px; font-weight: 700; line-height: 1.1; }
+.hero .unit { color: var(--orange); font-size: 20px; font-weight: 600; }
+.hero .tail { color: var(--text2); font-size: 13px; }
+.hero .full { color: var(--text2); font-size: 13px; margin-top: 2px; }
+
+/* ── 统计与按钮 ── */
+.stats { display: flex; border-top: 1px solid var(--line); margin-top: 14px; }
+.stats > div { flex: 1; padding: 14px 16px; }
+.stats > div + div { border-left: 1px solid var(--line); }
+.stats .v { font-size: 22px; font-weight: 600; }
+.stats .k { color: var(--text2); font-size: 12px; margin-top: 3px; }
+.btn { display: block; width: calc(100% - 32px); margin: 16px auto 0; padding: 12px 0; border-radius: 6px; border: none;
+  background: var(--green); color: #fff; font-size: 16px; font-weight: 600; text-align: center; cursor: pointer; text-decoration: none; }
+.btn.ghost { background: var(--bg); color: var(--green); border: 1px solid var(--green); }
+.links { display: flex; flex-wrap: wrap; }
+.links > a { flex: 1 1 45%; padding: 14px 16px; color: var(--text); font-size: 15px; text-decoration: none; border-bottom: 1px solid var(--line); display: flex; justify-content: space-between; }
+.links > a::after { content: "›"; color: var(--text2); }
+.footnote { text-align: center; color: var(--text2); font-size: 12px; padding: 14px 0 20px; }
+.dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: #e64340; margin-right: 6px; }
+
+/* ── 分布图 ── */
+.donut-wrap { display: flex; justify-content: center; padding: 10px 0 4px; position: relative; }
+.donut-center { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); text-align: center; }
+.donut-center .v { font-size: 22px; font-weight: 700; }
+.donut-center .k { color: var(--text2); font-size: 12px; margin-top: 2px; }
+.dist { padding: 4px 16px; }
+.dist .head { display: flex; justify-content: space-between; align-items: baseline; margin-top: 14px; }
+.dist .name { font-size: 15px; }
+.dist .pct { color: var(--orange); font-size: 15px; }
+.dist .bar { height: 6px; border-radius: 3px; background: var(--bg2); margin: 8px 0 6px; overflow: hidden; }
+.dist .bar i { display: block; height: 100%; background: var(--orange); border-radius: 3px; }
+.dist .meta { display: flex; justify-content: space-between; color: var(--text2); font-size: 12px; }
+
+/* ── 群行 ── */
+.group-row { padding: 12px 16px; border-bottom: 1px solid var(--line); }
+.group-row .l1 { display: flex; justify-content: space-between; align-items: center; }
+.group-row .name { font-size: 16px; font-weight: 600; }
+.group-row .when { color: var(--text2); font-size: 12px; }
+.group-row .l2 { display: flex; justify-content: space-between; margin-top: 6px; font-size: 13px; }
+.group-row .rank .num { color: var(--orange); font-weight: 600; font-size: 17px; }
+.group-row .members { color: var(--text2); }
+.empty { text-align: center; color: var(--text2); padding: 40px 16px; font-size: 14px; }
+.empty .btn { width: auto; padding: 10px 22px; margin-top: 14px; display: inline-block; }
+
+/* ── 说明页 ── */
+.help { padding: 6px 16px 20px; }
+.help h3 { font-size: 16px; margin: 18px 0 8px; }
+.help p { font-size: 14px; line-height: 1.7; margin: 6px 0; }
+.help code { display: block; background: var(--bg2); border-radius: 4px; padding: 10px 12px; font-size: 12px; word-break: break-all; margin: 8px 0; }
+.cmd { user-select: all; }
+
+/* ── 底部 Tab ── */
+.tabbar { position: fixed; bottom: 0; left: 0; right: 0; display: flex; background: #fafafa; border-top: 1px solid var(--line); z-index: 10; padding-bottom: env(safe-area-inset-bottom); }
+.tabbar button { flex: 1; background: none; border: none; padding: 9px 0 8px; font-size: 13px; color: var(--text); cursor: pointer; }
+.tabbar button.active { color: var(--green); font-weight: 600; }
+
+/* ── 登录遮罩 ── */
+.login-mask { position: fixed; inset: 0; background: var(--bg); z-index: 99; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 14px; }
+.login-mask .t { font-size: 17px; font-weight: 600; }
+.login-mask .s { color: var(--text2); font-size: 13px; }
+
+.toast { position: fixed; left: 50%; bottom: 90px; transform: translateX(-50%); background: rgba(0,0,0,.75); color: #fff;
+  font-size: 13px; padding: 8px 16px; border-radius: 6px; z-index: 100; }
