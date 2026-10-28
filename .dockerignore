@@ -1,0 +1,7 @@
+.git
+**/node_modules
+client/test-sync
+client/.github
+miniprogram
+docs
+server/test
