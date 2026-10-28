@@ -1,5 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+// 本用例驱动真实客户端：禁止 Oort 补充采集读到宿主机上的产品状态目录
+process.env.TOKENRANK_OORT_DISABLE = '1';
 import { DatabaseSync } from 'node:sqlite';
 import { readFileSync, mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';

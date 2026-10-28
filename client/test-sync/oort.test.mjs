@@ -1,0 +1,156 @@
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { mkdtempSync, mkdirSync, writeFileSync, utimesSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { collectOortDays, mergeOortDays, TOOL_NAMES } from '../sync/oort.js';
+
+const DAY_MS = 86_400_000;
+// 2026-10-28 12:00 UTC = 北京时间 2026-10-28 20:00
+const NOW = Date.parse('2026-10-28T12:00:00.000Z');
+const beijing = (ms) => new Date(ms + 8 * 3600000).toISOString().slice(0, 10);
+
+function makeHome() {
+  const home = mkdtempSync(join(tmpdir(), 'oort-test-'));
+  return { home, done: () => rmSync(home, { recursive: true, force: true }) };
+}
+
+function writeDshSession(home, name, totals, mtime) {
+  const dir = join(home, '.dsh-oortcloud-work', 'storages', 'session_projcache', 'sessions');
+  mkdirSync(dir, { recursive: true });
+  const file = join(dir, name);
+  writeFileSync(file, JSON.stringify({ version: 7, record: { rows: { tokenUsage: { ver: 2, val: { totals } } } } }));
+  utimesSync(file, new Date(mtime), new Date(mtime));
+}
+
+function writeAiStudioTask(appData, ext, task, apiReqs, mtime) {
+  const dir = join(appData, 'OortCloud AI Studio', 'User', 'globalStorage', ext, 'tasks', task);
+  mkdirSync(dir, { recursive: true });
+  const messages = [];
+  for (const req of apiReqs) {
+    const payload = req.usage ? { request: 'x', ...req.usage } : { request: 'x' };
+    messages.push({ say: 'api_req_started', ts: req.ts, text: req.text ?? JSON.stringify(payload) });
+  }
+  const file = join(dir, 'ui_messages.json');
+  writeFileSync(file, JSON.stringify(messages));
+  utimesSync(file, new Date(mtime), new Date(mtime));
+}
+
+test('collectOortDays 汇总 DSH 会话累计（按 mtime 归因，零用量与坏文件跳过）', (t) => {
+  const { home, done } = makeHome();
+  t.after(done);
+  writeDshSession(home, 'a.json', { uncachedInputTokens: 1000, outputTokens: 200, cacheReadTokens: 5000, cacheWriteTokens: 0 }, NOW);
+  writeDshSession(home, 'b.json', { uncachedInputTokens: 10, outputTokens: 5, cacheReadTokens: 0, cacheWriteTokens: 7 }, NOW - 2 * DAY_MS);
+  writeDshSession(home, 'zero.json', { uncachedInputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 }, NOW);
+  const dir = join(home, '.dsh-oortcloud-work', 'storages', 'session_projcache', 'sessions');
+  writeFileSync(join(dir, 'broken.json'), '{not json');
+
+  const days = collectOortDays({ home, appData: null, log: () => {} });
+  assert.equal(days.length, 2);
+  const today = days.find((d) => d.day === beijing(NOW));
+  assert.equal(today.tokens, 6200);
+  assert.equal(today.input_tokens, 1000);
+  assert.equal(today.output_tokens, 200);
+  assert.equal(today.cache_read, 5000);
+  assert.equal(today.requests, 1);
+  assert.deepEqual(today.tools, [[TOOL_NAMES.dsh, 6200]]);
+  const other = days.find((d) => d.day === beijing(NOW - 2 * DAY_MS));
+  assert.equal(other.tokens, 22);
+  assert.equal(other.requests, 1);
+  // 协议形态：models/tool_models 为空数组
+  assert.deepEqual(today.models, []);
+  assert.deepEqual(today.tool_models, []);
+});
+
+test('collectOortDays 解析 AI Studio 的 Cline/Roo 请求记录（跨扩展、按 ts 分日）', (t) => {
+  const { home, done } = makeHome();
+  t.after(done);
+  const appData = join(home, 'appdata');
+  writeAiStudioTask(appData, 'saoudrizwan.claude-dev', 'task-1', [
+    { ts: NOW, usage: { tokensIn: 5000, tokensOut: 100, cacheWrites: 0, cacheReads: 3000, cost: 0 } },
+    { ts: NOW - DAY_MS, usage: { tokensIn: 800, tokensOut: 20, cacheWrites: 0, cacheReads: 0, cost: 0 } },
+    { ts: NOW + 1000 }, // 未完成请求：没有 tokensIn 字段，不计
+  ], NOW);
+  writeAiStudioTask(appData, 'rooveterinaryinc.roo-cline', 'task-2', [
+    { ts: NOW, text: '{"request":"...前缀截断的非法 JSON..." ,"tokensIn":120,"tokensOut":30,"cacheReads":600,"cacheWrites":10,"cost":0}' },
+  ], NOW);
+
+  const days = collectOortDays({ home, appData, log: () => {} });
+  assert.equal(days.length, 2);
+  const today = days.find((d) => d.day === beijing(NOW));
+  // claude-dev 8100 + roo 760
+  assert.equal(today.tokens, 8860);
+  assert.equal(today.requests, 2);
+  assert.deepEqual(today.tools, [[TOOL_NAMES.aiStudio, 8860]]);
+  const yesterday = days.find((d) => d.day === beijing(NOW - DAY_MS));
+  assert.equal(yesterday.tokens, 820);
+  assert.equal(yesterday.requests, 1);
+});
+
+test('collectOortDays 同日多源合并、无数据目录时返回空', (t) => {
+  const { home, done } = makeHome();
+  t.after(done);
+  assert.deepEqual(collectOortDays({ home, appData: null, log: () => {} }), []);
+  const appData = join(home, 'appdata');
+  writeDshSession(home, 'dsh.json', { uncachedInputTokens: 100, outputTokens: 50, cacheReadTokens: 0, cacheWriteTokens: 0 }, NOW);
+  writeAiStudioTask(appData, 'saoudrizwan.claude-dev', 't', [
+    { ts: NOW, usage: { tokensIn: 10, tokensOut: 5, cacheWrites: 0, cacheReads: 0, cost: 0 } },
+  ], NOW);
+  const days = collectOortDays({ home, appData, log: () => {} });
+  assert.equal(days.length, 1);
+  assert.equal(days[0].tokens, 165);
+  assert.equal(days[0].requests, 2);
+  assert.equal(days[0].tools.length, 2);
+});
+
+test('mergeOortDays 重命名 zcode→OortCodex（含 tool_models）并叠加 Oort 用量', () => {
+  const base = [{
+    day: '2026-10-28', tokens: 1000, input_tokens: 600, output_tokens: 400, cache_read: 0, cache_write: 0,
+    requests: 10, models: [['glm-5.3', 1000]], tools: [['zcode', 700], ['workbuddy', 300]],
+    tool_models: [['zcode', 'glm-5.3', 700]], cost: { basis: 'token_watcher_api_estimate', currency: 'USD', usd_micros: 1, models: [['glm-5.3', 1]], unpriced_models: [], unpriced_tokens: 0 },
+  }];
+  const oort = [{
+    day: '2026-10-28', tokens: 500, input_tokens: 300, output_tokens: 200, cache_read: 0, cache_write: 0,
+    requests: 2, models: [], tools: [[TOOL_NAMES.dsh, 500]], tool_models: [],
+  }];
+  const merged = mergeOortDays(base, oort);
+  assert.equal(merged.length, 1);
+  const day = merged[0];
+  assert.equal(day.tokens, 1500);
+  assert.equal(day.requests, 12);
+  // zcode 改名为 OortCodex，workbuddy 保留，Oort 新工具并入，按量降序
+  assert.deepEqual(day.tools.map(([n]) => n), [TOOL_NAMES.oortCodex, TOOL_NAMES.dsh, 'workbuddy']);
+  assert.deepEqual(day.tool_models, [[TOOL_NAMES.oortCodex, 'glm-5.3', 700]]);
+  // cost 原样保留（Oort 增量不计价），其余字段不影响
+  assert.equal(day.cost.usd_micros, 1);
+  // 入参未被修改
+  assert.deepEqual(base[0].tools, [['zcode', 700], ['workbuddy', 300]]);
+});
+
+test('mergeOortDays 为 Oort 独有的日子补新行，tools 超过 8 个按量截断', () => {
+  const oortOnly = [{
+    day: '2026-10-20', tokens: 90, input_tokens: 90, output_tokens: 0, cache_read: 0, cache_write: 0,
+    requests: 9, models: [], tools: [], tool_models: [],
+  }];
+  const merged = mergeOortDays([], oortOnly);
+  assert.equal(merged.length, 1);
+  assert.equal(merged[0].day, '2026-10-20');
+  assert.equal(merged[0].tokens, 90);
+
+  const manyTools = Array.from({ length: 10 }, (_, i) => [`tool${i}`, (i + 1) * 10]);
+  const base = [{ day: '2026-10-28', tokens: 550, input_tokens: 550, output_tokens: 0, cache_read: 0, cache_write: 0, requests: 0, models: [], tools: manyTools, tool_models: [] }];
+  const result = mergeOortDays(base, []);
+  assert.equal(result[0].tools.length, 8);
+  // 保留量最大的 8 个（tool9..tool2），最小的 tool0/tool1 被裁掉
+  assert.ok(result[0].tools.every(([name]) => !['tool0', 'tool1'].includes(name)));
+  assert.deepEqual(base[0].tools, manyTools);
+});
+
+test('mergeOortDays 输出可被 JSON 序列化（tools 为数组而非 Map）', () => {
+  const base = [{ day: '2026-10-28', tokens: 1, input_tokens: 1, output_tokens: 0, cache_read: 0, cache_write: 0, requests: 1, models: [], tools: [['zcode', 1]], tool_models: [] }];
+  const oort = [{ day: '2026-10-28', tokens: 2, input_tokens: 2, output_tokens: 0, cache_read: 0, cache_write: 0, requests: 1, models: [], tools: [[TOOL_NAMES.aiStudio, 2]], tool_models: [] }];
+  const json = JSON.stringify(mergeOortDays(base, oort));
+  assert.match(json, /OortCodex/);
+  assert.match(json, /OortCloud AI Studio/);
+  assert.ok(!json.includes('{}') || !/"tools":\s*{}/.test(json));
+});
