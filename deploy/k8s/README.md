@@ -68,7 +68,7 @@ kubectl --kubeconfig=<kubeconfig> -n ai-pj rollout status deploy/tokenrank
 kubectl --kubeconfig=<kubeconfig> -n ai-pj logs deploy/tokenrank --tail=20
 ```
 
-注意：同一飞书应用只允许一处长连接实例。集群启用后，请停掉本地开发实例（否则消息事件会在两处之间随机分流）。
+注意：同一飞书应用只允许一处长连接实例。集群启用后，请停掉本地开发实例（否则消息事件会在两处之间随机分流）。**本机实例的下线、App Secret 轮换与数据迁移的完整步骤见 [LOCAL-MIGRATION.md](LOCAL-MIGRATION.md)。**
 
 安全提醒：该 App Secret 曾出现在公开的会话分享链接里（2026-10-29），建议在飞书开放平台重置一次 App Secret，并按上面第 1 步更新 Secret 后 `rollout restart`。
 
