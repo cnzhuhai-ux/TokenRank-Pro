@@ -137,7 +137,15 @@ const server = createServer(async (req, res) => {
     // 只接受 origin-form 路径，避免绝对形式请求绕过 public_origin 造成 Host 注入。
     const target = String(req.url || '/');
     if (req.method === 'GET' || req.method === 'HEAD') {
-      const hit = staticFile(target.split('?')[0]);
+      const queryAt = target.indexOf('?');
+      const pathname = queryAt === -1 ? target : target.slice(0, queryAt);
+      // 飞书工作台入口配的是 /app（无尾斜杠）：补斜杠跳转，且保留 ?code=&state= 供 OAuth 换会话
+      if (pathname === '/app') {
+        res.writeHead(301, { ...SECURITY_HEADERS, location: '/app/' + (queryAt === -1 ? '' : target.slice(queryAt)) });
+        res.end();
+        return;
+      }
+      const hit = staticFile(pathname);
       if (hit) {
         res.writeHead(200, {
           ...SECURITY_HEADERS,

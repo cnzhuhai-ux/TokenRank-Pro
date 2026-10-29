@@ -181,17 +181,13 @@ export function leaderboardCard({ title, entries, members, updatedAt, nowMs, per
   const credits2 = (n) => (Number(n) || 0).toFixed(2);
   const W_RANK = 1, W_AVATAR = 1, W_NAME = 5, W_MODEL = 4, W_VALUE = 3; // 合计 14
   const empty = "<font color='grey'></font>";
-  const boardRow = ({ rank, entry, nameHtml, suffix = '', modelText, valueText, bold, grey, creditsBoard }) => {
+  const boardRow = ({ rank, entry, nameHtml, suffix = '', modelText, valueText, bold, grey }) => {
     const text = (content) => markdown(content);
-    const nameCells = creditsBoard
-      // Credits 榜没有模型列：成员列合并「成员+模型」宽度，保持与 Token 榜同样的左右边界
-      ? [col(W_NAME + W_MODEL, [text(`${bold ? `**${nameHtml}**` : nameHtml}${suffix}`)])]
-      : [col(W_NAME, [text(`${bold ? `**${nameHtml}**` : nameHtml}${suffix}`)]),
-         col(W_MODEL, [text(modelText ? `<font color='grey'>${mdEscape(modelText)}</font>` : empty)])];
     const columns = [
       col(W_RANK, [text(String(rank))]),
       col(W_AVATAR, [entry.img_key ? avatarImg(entry.img_key) : text(empty)]),
-      ...nameCells,
+      col(W_NAME, [text(`${bold ? `**${nameHtml}**` : nameHtml}${suffix}`)]),
+      col(W_MODEL, [text(modelText ? `<font color='grey'>${mdEscape(modelText)}</font>` : empty)]),
       col(W_VALUE, [text(`<font color='orange'>${bold ? '**' : ''}${valueText}${bold ? '**' : ''}</font>`)]),
     ];
     return grey
