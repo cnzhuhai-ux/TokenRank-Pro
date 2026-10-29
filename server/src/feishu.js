@@ -227,20 +227,21 @@ export function leaderboardCard({ title, entries, members, updatedAt, nowMs, per
     elements.push(rowOf([
       col(W_RANK, [markdown(`<font color='grey'>#</font>`)]),
       col(W_AVATAR, [markdown(empty)]),
-      col(W_NAME + W_MODEL, [markdown(`<font color='grey'>成员 · ${creditsEntries.length} 人</font>`)]),
+      col(W_NAME, [markdown(`<font color='grey'>成员 · ${creditsEntries.length} 人</font>`)]),
+      col(W_MODEL, [markdown(empty)]),
       col(W_VALUE, [markdown(`<font color='grey'>Credits</font>`)]),
     ]));
     creditsEntries.slice(0, BOARD_LIMIT).forEach((e, i) => {
       const mine = meUid != null && e.uid === meUid;
       elements.push(boardRow({ rank: i + 1, entry: e,
         nameHtml: mdEscape(String(e.nickname || '').slice(0, 14)), suffix: mine ? ' 我' : '',
-        modelText: '', valueText: `${credits2(e.credits)} Credits`, bold: mine, creditsBoard: true }));
+        modelText: '', valueText: `${credits2(e.credits)} Credits`, bold: mine }));
       elements.push(divider());
     });
     const meInCreditsBoard = meUid != null && creditsEntries.slice(0, BOARD_LIMIT).some((e) => e.uid === meUid);
     if (me && (me.credits || 0) > 0 && !meInCreditsBoard) {
       elements.push(boardRow({ rank: me.credits_rank ?? '-', entry: {}, nameHtml: mdEscape(me.nickname), suffix: ' 我',
-        modelText: '', valueText: `${credits2(me.credits)} Credits`, bold: true, grey: true, creditsBoard: true }));
+        modelText: '', valueText: `${credits2(me.credits)} Credits`, bold: true, grey: true }));
     }
     if (creditsEntries.length > BOARD_LIMIT) elements.push(noteEl(`Credits 榜单仅展示前 ${BOARD_LIMIT} 名，共 ${creditsEntries.length} 人有 Credits 用量`));
   }
