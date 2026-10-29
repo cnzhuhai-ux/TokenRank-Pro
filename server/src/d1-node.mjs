@@ -23,12 +23,15 @@ export function openD1(path) {
   function prepare(sql) {
     let args = [];
     const params = () => Object.fromEntries(args.map((v, i) => [String(i + 1), v]));
+    const isRead = /^\s*(?:SELECT|WITH)\b/i.test(sql);
     return {
       sql,
       bind(...values) { args = values; return this; },
       async first() { return statement(sql).get(params()) ?? null; },
       async all() { return { results: statement(sql).all(params()) }; },
       _run() { const r = statement(sql).run(params()); return { meta: { changes: r.changes, last_row_id: Number(r.lastInsertRowid) } }; },
+      // D1 batch 语义：SELECT 返回 {results}，写语句返回 {meta}（对齐 storeTotalReport 等调用方的检查）
+      _exec() { return isRead ? { results: statement(sql).all(params()), meta: { changes: 0 } } : this._run(); },
       async run() { return this._run(); },
     };
   }
@@ -37,7 +40,7 @@ export function openD1(path) {
     prepare,
     async batch(stmts) {
       db.exec('BEGIN');
-      try { const out = stmts.map((s) => s._run()); db.exec('COMMIT'); return out; }
+      try { const out = stmts.map((s) => s._exec()); db.exec('COMMIT'); return out; }
       catch (err) { db.exec('ROLLBACK'); throw err; }
     },
   };
