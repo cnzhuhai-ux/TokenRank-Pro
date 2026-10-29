@@ -199,9 +199,10 @@ export function leaderboardCard({ title, entries, members, updatedAt, nowMs, per
       i + 1, formatTokens(e.tokens)));
     elements.push(divider());
   });
-  // 我的行：只有本人没出现在上面列表里（50 名外/未展示）才补一行灰底，避免与榜内行重复
+  // 我的行：只有本人没出现在上面列表里（50 名外/未展示）才补一行灰底，避免与榜内行重复；
+  // 纯 Credits 用户没有 token 数字，不在 Token 榜补 0 值行
   const meInTokensBoard = meUid != null && tokenEntries.slice(0, BOARD_LIMIT).some((e) => e.uid === meUid);
-  if (me && !meInTokensBoard) {
+  if (me && (me.tokens || 0) > 0 && !meInTokensBoard) {
     elements.push({ tag: 'column_set', flex_mode: 'none', background_style: 'grey', columns: [
       col(1, [markdown(String(me.rank))]),
       col(1, [markdown('')]),
