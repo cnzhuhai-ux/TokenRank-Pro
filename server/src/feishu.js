@@ -150,6 +150,7 @@ export function helpCard({ groupReady, appUrl }) {
   if (groupReady === false) lines.push('', '本群还没有榜单：先单聊我「绑定」接入电脑，再回群里发「加入」。');
   return cardBody([
     markdown(lines.join('\n')),
+    ...(appUrl ? [divider(), markdown(`[打开网页应用（群榜 / 我的用量）](${appUrl})`)] : []),
     divider(),
     noteEl('用量是各成员电脑自报的按天汇总数字，仅作交流参考，不等于厂商账单'),
   ]);
@@ -264,12 +265,15 @@ export function connectCard(origin, token) {
     markdown(`**接入码**（重置即作废旧码，请勿转发）：\n\`${token}\``),
     divider(),
     markdown('接入后在群里发「**加入**」上榜，发「**榜单**」看排行。'),
+    divider(),
+    markdown(`[打开网页应用（群榜 / 我的用量）](${base}/app)`),
     noteEl('只上报每天的 token 数、调用次数和工具/模型名，不含代码、对话和文件路径'),
   ]);
 }
 
-export function textCard(title, content) {
-  return cardBody([markdown(`### ${mdEscape(title)}`), divider(), markdown(content)]);
+export function textCard(title, content, appUrl) {
+  return cardBody([markdown(`### ${mdEscape(title)}`), divider(), markdown(content),
+    ...(appUrl ? [divider(), markdown(`[打开网页应用](${appUrl})`)] : [])]);
 }
 
 // ───────────────────────────── 服务（可注入 fetcher/now 供测试） ─────────────────────────────
@@ -580,7 +584,7 @@ export function createFeishuService({ fetcher = (...args) => fetch(...args), now
   /** 个人用量卡：对标小程序「我的用量」——橙色大数字、完整整数、日期区间、两列统计 */
   function personalCard(user, s, nowMs, appUrl) {
     if (!s.lifetime && !s.today && !s.todayCredits && !s.weekCredits) {
-      return textCard('Token 群排名', '还没有收到你的用量。先在单聊里发「**绑定**」拿到接入命令，在电脑上运行即可。');
+      return textCard('Token 群排名', '还没有收到你的用量。先在单聊里发「**绑定**」拿到接入命令，在电脑上运行即可。', appUrl);
     }
     // 纯 Credits 计费用户（Qoder 等）没有 token 数字，大数字位直接显示今日 Credits
     const creditsOnly = !s.today && !s.lifetime && !s.todayRequests && (s.todayCredits || s.lifetimeCredits);
@@ -639,53 +643,54 @@ export function createFeishuService({ fetcher = (...args) => fetch(...args), now
     let text = '';
     try { text = String(JSON.parse(msg.content || '{}').text ?? ''); } catch { return; }
     const command = parseCommand(text);
+    const appUrl = `${origin}/app`;
     const reply = (cardBody) => sendCard(env, msg.chat_id, cardBody);
     if (!command) {
-      if (!isGroup) await reply(helpCard({ appUrl: `${origin}/app` }));
+      if (!isGroup) await reply(helpCard({ appUrl }));
       return;
     }
     const account = ['rank', 'my', 'join', 'leave', 'hide', 'show'].includes(command.cmd)
       ? await accountByOpenId(env, openId) : null;
 
-    if (command.cmd === 'help') return reply(helpCard({ groupReady: isGroup ? undefined : null, appUrl: `${origin}/app` }));
+    if (command.cmd === 'help') return reply(helpCard({ groupReady: isGroup ? undefined : null, appUrl }));
 
     if (command.cmd === 'bind') {
       if (isGroup) {
-        return reply(textCard('电脑接入', '接入码是私人凭证，不在群里发送。**请点我的头像进入单聊，发送「绑定」**。'));
+        return reply(textCard('电脑接入', '接入码是私人凭证，不在群里发送。**请点我的头像进入单聊，发送「绑定」**。', appUrl));
       }
       const { user, token } = await bindAccount(env, openId);
       return reply(connectCard(origin, token));
     }
 
     if (command.cmd === 'my') {
-      if (isGroup) return reply(textCard('我的用量', '个人用量只发单聊。**请单聊我发送「我的」**。'));
-      if (!account) return reply(textCard('Token 群排名', '还没有你的账号。先发「**绑定**」接入电脑，再来查看用量。'));
-      return reply(personalCard(account, await personalSummary(env, account.id, now()), now(), `${origin}/app`));
+      if (isGroup) return reply(textCard('我的用量', '个人用量只发单聊。**请单聊我发送「我的」**。', appUrl));
+      if (!account) return reply(textCard('Token 群排名', '还没有你的账号。先发「**绑定**」接入电脑，再来查看用量。', appUrl));
+      return reply(personalCard(account, await personalSummary(env, account.id, now()), now(), appUrl));
     }
 
     if (command.cmd === 'join') {
-      if (!isGroup) return reply(textCard('加入群榜', '「加入」要在**群聊**里发：把我拉进群后，在群里发「加入」即可上榜。'));
-      if (!account) return reply(textCard('Token 群排名', '先单聊我发「**绑定**」接入电脑，再回群里发「加入」上榜。'));
+      if (!isGroup) return reply(textCard('加入群榜', '「加入」要在**群聊**里发：把我拉进群后，在群里发「加入」即可上榜。', appUrl));
+      if (!account) return reply(textCard('Token 群排名', '先单聊我发「**绑定**」接入电脑，再回群里发「加入」上榜。', appUrl));
       const result = await joinGroup(env, account, msg.chat_id);
       const verb = result.created ? '已创建本群榜单，并把你加入榜单' : result.already ? '你已经在榜单里了' : '已把你加入本群榜单';
-      return reply(textCard('加入群榜', `${verb}：**${mdEscape(result.group.name)}**。发「**榜单**」看看排名。`));
+      return reply(textCard('加入群榜', `${verb}：**${mdEscape(result.group.name)}**。发「**榜单**」看看排名。`, appUrl));
     }
 
     if (['leave', 'hide', 'show'].includes(command.cmd)) {
-      if (!isGroup) return reply(textCard('群设置', '「退出/隐藏/显示」要在**群聊**里发。'));
-      if (!account) return reply(textCard('Token 群排名', '先单聊我发「**绑定**」接入电脑，再回来设置。'));
+      if (!isGroup) return reply(textCard('群设置', '「退出/隐藏/显示」要在**群聊**里发。', appUrl));
+      if (!account) return reply(textCard('Token 群排名', '先单聊我发「**绑定**」接入电脑，再回来设置。', appUrl));
       const found = await groupByChatId(env, msg.chat_id);
-      if (!found.id) return reply(textCard('群设置', '本群还没有榜单，先发「**加入**」创建。'));
+      if (!found.id) return reply(textCard('群设置', '本群还没有榜单，先发「**加入**」创建。', appUrl));
       if (command.cmd === 'leave') {
         const res = await env.DB.prepare('DELETE FROM rank_group_members WHERE group_id = ?1 AND user_id = ?2')
           .bind(found.id, account.id).run();
-        return reply(textCard('退出群榜', res.meta?.changes ? '已退出本群榜单，历史用量保留、不再出现在本群。' : '你本来就不在这张榜单里。'));
+        return reply(textCard('退出群榜', res.meta?.changes ? '已退出本群榜单，历史用量保留、不再出现在本群。' : '你本来就不在这张榜单里。', appUrl));
       }
       const hidden = command.cmd === 'hide' ? 1 : 0;
       const res = await env.DB.prepare('UPDATE rank_group_members SET hidden = ?1 WHERE group_id = ?2 AND user_id = ?3')
         .bind(hidden, found.id, account.id).run();
-      if (!res.meta?.changes) return reply(textCard('群设置', '你还没加入本群榜单，先发「**加入**」。'));
-      return reply(textCard('群排名可见性', hidden ? '已在本群隐藏你的排名；其他群和广场不受影响。' : '已恢复在本群显示你的排名。'));
+      if (!res.meta?.changes) return reply(textCard('群设置', '你还没加入本群榜单，先发「**加入**」。', appUrl));
+      return reply(textCard('群排名可见性', hidden ? '已在本群隐藏你的排名；其他群和广场不受影响。' : '已恢复在本群显示你的排名。', appUrl));
     }
 
     // rank
@@ -694,7 +699,7 @@ export function createFeishuService({ fetcher = (...args) => fetch(...args), now
     if (isGroup) {
       const found = await groupByChatId(env, msg.chat_id);
       if (!found.id) {
-        return reply(textCard('本群还没有榜单', '先单聊我发「**绑定**」接入电脑，再回群里发「**加入**」创建本群榜单。'));
+        return reply(textCard('本群还没有榜单', '先单聊我发「**绑定**」接入电脑，再回群里发「**加入**」创建本群榜单。', appUrl));
       }
       const [board, memberCount, mine] = await Promise.all([
         boardRows(env, { groupId: found.id, from, to }),
