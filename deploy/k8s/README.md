@@ -70,6 +70,8 @@ kubectl --kubeconfig=<kubeconfig> -n ai-pj logs deploy/tokenrank --tail=20
 
 注意：同一飞书应用只允许一处长连接实例。集群启用后，请停掉本地开发实例（否则消息事件会在两处之间随机分流）。
 
+安全提醒：该 App Secret 曾出现在公开的会话分享链接里（2026-10-29），建议在飞书开放平台重置一次 App Secret，并按上面第 1 步更新 Secret 后 `rollout restart`。
+
 ## 4. 运行时形态
 
 - 数据：SQLite `/data/tokenrank.db`（PVC `tokenrank-data` 5Gi，默认 SC `nfs-storage`）。

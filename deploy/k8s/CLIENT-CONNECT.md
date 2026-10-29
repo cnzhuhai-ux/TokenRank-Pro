@@ -61,7 +61,7 @@ Invoke-RestMethod https://tokenrank.oortcloudsmart.com:2443/healthz
 | 路径 | 是否可用 | 说明 |
 |---|---|---|
 | 小程序「接入电脑」页 | ❌ 当前不可用 | `server/node-service.mjs:61` 把 `WX_APPID` 置空，`/api/wx/session` 返回 503，微信登录在本部署被有意关闭 |
-| 飞书机器人 | ✅ 需配置 | 配好 `FEISHU_APP_ID` / `FEISHU_APP_SECRET` 后，按 open_id 绑定用户并下发/复用接入码（`server/src/feishu.js:328`）。注意本命名空间默认 Egress 只放行 DNS/apiserver，启用前需加出网策略 |
+| 飞书机器人 | ✅ 已启用 | 私聊机器人即可绑定账号并下发/复用接入码（`server/src/feishu.js:328`）；集群出网已放行，长连接由 pod 主动连出。也可以打开机器人卡片里的「网页版完整界面」入口（`/app/`） |
 | 运维手工签发 | ✅ 立即可用 | 试点期最快；重新签发会使该用户旧码失效 |
 
 手工签发（服务端执行，`<用户标识>` 仅用于在库里区分人）：
