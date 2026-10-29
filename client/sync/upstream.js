@@ -1,6 +1,6 @@
-import { existsSync, readFileSync, realpathSync, mkdirSync, writeFileSync, renameSync, lstatSync } from 'node:fs';
+import { existsSync, readFileSync, realpathSync, mkdirSync, writeFileSync, renameSync, lstatSync, mkdtempSync } from 'node:fs';
 import { join, dirname, resolve, delimiter } from 'node:path';
-import { homedir, totalmem } from 'node:os';
+import { homedir, totalmem, tmpdir } from 'node:os';
 import { execFileSync } from 'node:child_process';
 import { readConfig, writeConfig, SYNC_DIR, rejectSharedDirectory } from './config.js';
 import { readDays } from './source.js';
@@ -12,6 +12,12 @@ export const MIN_REPORT_VERSION = '1.8.2';
 export const FIXED_COMMIT = '7ed6f51aa64a80055169a82f91d569b2b0c200bf';
 export const FIXED_SOURCE = `https://codeload.github.com/luwill/token-watcher/tar.gz/${FIXED_COMMIT}`;
 export const REGISTRY = process.env.TOKENRANK_REGISTRY || 'https://registry.npmjs.org/';
+// 国内镜像：仅在未显式指定 TOKENRANK_REGISTRY 时作为回退（npmjs 超时/被墙时兜底）
+const MIRROR_REGISTRY = 'https://registry.npmmirror.com/';
+export const registryCandidates = () => {
+  if (process.env.TOKENRANK_REGISTRY || REGISTRY === MIRROR_REGISTRY) return [REGISTRY];
+  return [REGISTRY, MIRROR_REGISTRY];
+};
 const OWNER = 'tokenrank-upstream-bootstrap-v1';
 
 // Upstream's first scan reads whole tables (e.g. OpenCode `part`) into memory, and
@@ -44,14 +50,22 @@ export function compareVersions(a, b) {
 /** Versions without the duplicate-count fixes; unknown versions are left to the caller. */
 export const collectorOutdated = version => !!parts(version) && compareVersions(version, MIN_REPORT_VERSION) < 0;
 
-/** Latest official stable release, never older than the fixed release. */
+/** Latest official stable release, never older than the fixed release. Retries a China mirror when npmjs is unreachable. */
 export async function resolveUpdate(fetcher = fetch) {
-  const response = await fetcher(`${REGISTRY}token-watcher/latest`, { signal: AbortSignal.timeout(20000) });
-  if (!response.ok) throw new Error(`无法查询官方 npm 最新版本（HTTP ${response.status}），尚未修改原版安装`);
-  const pkg = await response.json();
-  if (pkg.name !== 'token-watcher' || !parts(pkg.version)) throw new Error('官方版本信息无效，尚未修改原版安装');
-  if (compareVersions(pkg.version, UPSTREAM_VERSION) >= 0) return { version: pkg.version, spec: `token-watcher@${pkg.version}`, source: 'npm' };
-  return { version: UPSTREAM_VERSION, spec: FIXED_SOURCE, source: `GitHub ${FIXED_COMMIT.slice(0, 7)}` };
+  let lastError = null;
+  for (const registry of registryCandidates()) {
+    try {
+      const response = await fetcher(`${registry}token-watcher/latest`, { signal: AbortSignal.timeout(20000) });
+      if (!response.ok) throw new Error(`无法查询官方 npm 最新版本（HTTP ${response.status}），尚未修改原版安装`);
+      const pkg = await response.json();
+      if (pkg.name !== 'token-watcher' || !parts(pkg.version)) throw new Error('官方版本信息无效，尚未修改原版安装');
+      if (compareVersions(pkg.version, UPSTREAM_VERSION) >= 0) return { version: pkg.version, spec: `token-watcher@${pkg.version}`, source: 'npm', registry };
+      return { version: UPSTREAM_VERSION, spec: FIXED_SOURCE, source: `GitHub ${FIXED_COMMIT.slice(0, 7)}`, registry };
+    } catch (err) {
+      lastError = err;
+    }
+  }
+  throw lastError || new Error('无法查询官方 npm 最新版本，尚未修改原版安装');
 }
 const ps = value => "'" + String(value).replaceAll("'", "''") + "'";
 
@@ -121,6 +135,33 @@ function saveState(prefix, state) {
   renameSync(temp, join(prefix, 'tokenrank-bootstrap.json'));
 }
 
+/**
+ * 安装原版到用户目录。两个加固：
+ * 1) --userconfig 指向空文件，隔离 ~/.npmrc 里残留的本机代理（如已关闭的 127.0.0.1:port 会导致 ECONNREFUSED）；
+ * 2) npmjs 失败时回退国内镜像重试。
+ */
+function installUpstreamPackage({ npm, prefix, spec, runner, log }) {
+  const userConfig = join(mkdtempSync(join(tmpdir(), 'tokenrank-npmrc-')), 'npmrc');
+  writeFileSync(userConfig, '');
+  const registries = registryCandidates();
+  let lastError = null;
+  for (const registry of registries) {
+    try {
+      runner(process.execPath, [npm, 'install', '--prefix', prefix, '--install-strategy=nested', '--no-audit', '--no-fund',
+        '--ignore-scripts', '--save-exact', '--userconfig', userConfig, '--registry', registry, spec], { stdio: 'inherit' });
+      return registry;
+    } catch (err) {
+      lastError = err;
+      if (registry !== registries.at(-1)) log(`从 ${registry} 安装失败，改用镜像重试…`);
+    }
+  }
+  const detail = String(lastError?.message || lastError || '');
+  const hint = /127\.0\.0\.1|ECONNREFUSED|proxy/i.test(detail)
+    ? '；检测到本机代理或网络配置异常，可执行 npm config delete proxy && npm config delete https-proxy 后重试'
+    : '';
+  throw new Error(`安装 token-watcher 失败${hint}`);
+}
+
 /** Dependency preparation is explicit; the read-only upload loop never installs or starts upstream. */
 export async function prepareUpstream({ home = homedir(), platform = process.platform, dir = SYNC_DIR, path, runner = run, fetcher = fetch, log = console.log } = {}) {
   const config = readConfig(dir), prefix = upstreamPrefix(home, platform);
@@ -140,8 +181,11 @@ export async function prepareUpstream({ home = homedir(), platform = process.pla
     state = { owner: OWNER, ready: false, scanned: false, collector: false };
     saveState(prefix, state); // Allows retry of interrupted downloads without touching global packages.
     log(`未检测到原版，安装 token-watcher ${target.version}（${target.source}）到用户目录（无需管理员权限）…`);
-    runner(process.execPath, [npm, 'install', '--prefix', prefix, '--install-strategy=nested', '--no-audit', '--no-fund', '--ignore-scripts', '--save-exact',
-      '--registry', REGISTRY, target.spec], { stdio: 'inherit' });
+    try {
+      installUpstreamPackage({ npm, prefix, spec: target.spec, runner, log });
+    } catch (err) {
+      throw new Error(`${err.message}${target.spec === FIXED_SOURCE ? '' : `（也可手动安装：npm install -g token-watcher@${target.version}）`}`);
+    }
     found = inspectUpstream(join(prefix, 'node_modules/token-watcher/bin/tokenwatcher.js'));
     if (!found || found.version !== target.version) throw new Error('原版安装未完成或版本不符合预期；尚未配置同步');
   } else if (collectorOutdated(found.version)) {
