@@ -875,8 +875,9 @@ async function myUsage(request, env, url, sharedRange = null) {
     WHERE user_id = ?1 AND day >= ?2 AND day <= ?3 ORDER BY day`).bind(user.id, readFrom, range.to).all();
   const historyTask = env.DB.prepare(`SELECT COUNT(*) AS days, SUM(tokens) AS tokens,
     MIN(day) AS first_day, MAX(updated_at) AS updated_at FROM ranked_usage
-    WHERE user_id = ?1 AND day <= ?2 AND (tokens > 0 OR requests > 0)`).bind(user.id, range.to).first();
-  const activityTask = env.DB.prepare('SELECT day, tokens, requests FROM ranked_usage WHERE user_id = ?1 AND day <= ?2 ORDER BY day')
+    WHERE user_id = ?1 AND day <= ?2 AND (tokens > 0 OR requests > 0 OR COALESCE(json_extract(credits_json,'$.total'),0) > 0)`).bind(user.id, range.to).first();
+  const activityTask = env.DB.prepare(`SELECT day, tokens, requests,
+    COALESCE(json_extract(credits_json,'$.total'),0) AS credits FROM ranked_usage WHERE user_id = ?1 AND day <= ?2 ORDER BY day`)
     .bind(user.id, range.to).all();
   const [rows, history, activityRows] = await Promise.all([rowsTask, historyTask, activityTask]);
   const usage = buildUsage(rows.results, range.period, now);

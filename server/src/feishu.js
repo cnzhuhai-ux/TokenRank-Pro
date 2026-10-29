@@ -175,62 +175,69 @@ export function leaderboardCard({ title, entries, members, updatedAt, nowMs, per
   elements.push(markdown(PERIOD_TABS.map(([k, label]) =>
     k === period ? `**<font color='orange'>${label}</font>**` : `<font color='grey'>${label}</font>`).join('　')));
   elements.push(divider());
+  // 统一四列结构（名次/头像/成员/用量），有无头像都占同一列宽，保证上下行左右对齐
+  const credits2 = (n) => (Number(n) || 0).toFixed(2);
+  const boardRow = (e, rank, valueText, header) => rowOf([
+    col(1, [markdown(`<font color='grey'>${rank}</font>`)]),
+    col(1, [e.img_key ? avatarImg(e.img_key) : markdown(`<font color='grey'>·</font>`)]),
+    col(7, [markdown(header || `${e.__bold ? '**' : ''}${mdEscape(e.nickname).slice(0, 18)}${e.__bold ? '** 我' : ''}${e.__model || ''}`)]),
+    col(3, [markdown(header || `<font color='orange'>${e.__bold ? '**' : ''}${valueText}${e.__bold ? '**' : ''}</font>`)]),
+  ]);
   elements.push(rowOf([
-    col(9, [markdown(`<font color='grey'>排名 · ${members ?? entries.length} 人</font>`)]),
+    col(1, [markdown(`<font color='grey'>#</font>`)]),
+    col(1, [markdown(`<font color='grey'></font>`)]),
+    col(7, [markdown(`<font color='grey'>成员 · ${members ?? entries.length} 人</font>`)]),
     col(3, [markdown(`<font color='grey'>Token 用量</font>`)]),
   ]));
-  if (!entries.length) {
-    elements.push(markdown('这个时间段还没有人上报用量。先单聊我「**绑定**」接入电脑，再回来发「**加入**」上榜。'));
+  const tokenEntries = entries.filter((e) => (e.tokens || 0) > 0);
+  if (!tokenEntries.length) {
+    elements.push(markdown('这个时间段还没有人上报 Token 用量。先单聊我「**绑定**」接入电脑，再回来发「**加入**」上榜。'));
   }
-  const shown = entries.slice(0, BOARD_LIMIT);
-  shown.forEach((e, i) => {
+  tokenEntries.slice(0, BOARD_LIMIT).forEach((e, i) => {
     const mine = meUid != null && e.uid === meUid;
-    const bold = mine ? '**' : '';
-    const model = e.top_model ? `\n<font color='grey'>${mdEscape(e.top_model)}</font>` : '';
-    elements.push(rowOf([
-      col(1, [markdown(String(i + 1))]),
-      ...(e.img_key ? [col(1, [avatarImg(e.img_key)])] : []),
-      col(e.img_key ? 6 : 7, [markdown(`${bold}${mdEscape(e.nickname).slice(0, 20)}${bold}${model}`)]),
-      col(3, [markdown(`<font color='orange'>${bold}${formatTokens(e.tokens)}${bold}</font>`)]),
-    ]), divider());
+    elements.push(boardRow({ ...e, __bold: mine, __model: e.top_model ? `\n<font color='grey'>${mdEscape(e.top_model)}</font>` : '' },
+      i + 1, formatTokens(e.tokens)));
+    elements.push(divider());
   });
-  // 我的行：置顶灰底（对标小程序底部浅灰高亮的本人行）
-  if (me) {
-    const model = me.top_model ? `\n<font color='grey'>${mdEscape(me.top_model)}</font>` : '';
+  // 我的行：只有本人没出现在上面列表里（50 名外/未展示）才补一行灰底，避免与榜内行重复
+  const meInTokensBoard = meUid != null && tokenEntries.slice(0, BOARD_LIMIT).some((e) => e.uid === meUid);
+  if (me && !meInTokensBoard) {
     elements.push({ tag: 'column_set', flex_mode: 'none', background_style: 'grey', columns: [
       col(1, [markdown(String(me.rank))]),
-      col(5, [markdown(`**${mdEscape(me.nickname)}** 我${model}`)]),
+      col(1, [markdown('')]),
+      col(7, [markdown(`**${mdEscape(me.nickname)}** 我`)]),
       col(3, [markdown(`<font color='orange'>**${formatTokens(me.tokens)}**</font>`)]),
-      col(3, [markdown(`<font color='grey'>我的排名</font>`)]),
     ] });
   }
-  // 积分榜（Qoder 等按积分计费的工具），tokens 与 credits 并列展示
+  // Credits 榜单（Qoder 等按 Credits 计费的工具），与 Token 榜并列
   const creditsEntries = entries.filter((e) => (e.credits || 0) > 0).sort((a, b) => b.credits - a.credits || a.uid - b.uid);
   if (creditsEntries.length) {
-    elements.push(markdown(`### <font color='grey'>积分榜</font>`));
-    elements.push(markdown(`<font color='grey'>Qoder 等按积分计费的工具</font>`));
+    elements.push(markdown(`### <font color='grey'>Credits 榜单</font>`));
+    elements.push(markdown(`<font color='grey'>Qoder 等按 Credits 计费的工具</font>`));
+    elements.push(rowOf([
+      col(1, [markdown(`<font color='grey'>#</font>`)]),
+      col(1, [markdown(`<font color='grey'></font>`)]),
+      col(7, [markdown(`<font color='grey'>成员 · ${creditsEntries.length} 人</font>`)]),
+      col(3, [markdown(`<font color='grey'>Credits</font>`)]),
+    ]));
     creditsEntries.slice(0, BOARD_LIMIT).forEach((e, i) => {
       const mine = meUid != null && e.uid === meUid;
-      const bold = mine ? '**' : '';
-      elements.push(rowOf([
-        col(1, [markdown(String(i + 1))]),
-        ...(e.img_key ? [col(1, [avatarImg(e.img_key)])] : []),
-        col(e.img_key ? 6 : 7, [markdown(`${bold}${mdEscape(e.nickname).slice(0, 20)}${bold}`)]),
-        col(3, [markdown(`<font color='orange'>${bold}${e.credits} 积分${bold}</font>`)]),
-      ]), divider());
+      elements.push(boardRow({ ...e, __bold: mine }, i + 1, `${credits2(e.credits)} Credits`));
+      elements.push(divider());
     });
-    if (me && (me.credits || 0) > 0 && !creditsEntries.slice(0, BOARD_LIMIT).some((e) => e.uid === meUid)) {
+    const meInCreditsBoard = meUid != null && creditsEntries.slice(0, BOARD_LIMIT).some((e) => e.uid === meUid);
+    if (me && (me.credits || 0) > 0 && !meInCreditsBoard) {
       elements.push({ tag: 'column_set', flex_mode: 'none', background_style: 'grey', columns: [
         col(1, [markdown(String(me.credits_rank ?? '-'))]),
-        col(5, [markdown(`**${mdEscape(me.nickname)}** 我`)]),
-        col(3, [markdown(`<font color='orange'>**${me.credits} 积分**</font>`)]),
-        col(3, [markdown(`<font color='grey'>积分排名</font>`)]),
+        col(1, [markdown('')]),
+        col(7, [markdown(`**${mdEscape(me.nickname)}** 我`)]),
+        col(3, [markdown(`<font color='orange'>**${credits2(me.credits)} Credits**</font>`)]),
       ] });
     }
-    if (creditsEntries.length > BOARD_LIMIT) elements.push(noteEl(`积分榜仅展示前 ${BOARD_LIMIT} 名，共 ${creditsEntries.length} 人有积分用量`));
+    if (creditsEntries.length > BOARD_LIMIT) elements.push(noteEl(`Credits 榜单仅展示前 ${BOARD_LIMIT} 名，共 ${creditsEntries.length} 人有 Credits 用量`));
   }
-  if (entries.length > BOARD_LIMIT) {
-    elements.push(noteEl(`仅展示前 ${BOARD_LIMIT} 名，共 ${entries.length} 人有用量`));
+  if (tokenEntries.length > BOARD_LIMIT) {
+    elements.push(noteEl(`Token 榜仅展示前 ${BOARD_LIMIT} 名，共 ${tokenEntries.length} 人有用量`));
   }
   if (footer) elements.push(markdown(footer));
   if (appUrl) elements.push(markdown(`[打开网页版完整界面（工具 / 模型分布图）](${appUrl})`));
@@ -534,8 +541,8 @@ export function createFeishuService({ fetcher = (...args) => fetch(...args), now
       env.DB.prepare(`SELECT SUM(tokens) AS t, SUM(COALESCE(json_extract(credits_json,'$.total'),0)) AS c
         FROM ranked_usage WHERE user_id = ?1 AND day >= ?2 AND day <= ?3`)
         .bind(userId, weekFrom, today).first(),
-      env.DB.prepare(`SELECT SUM(tokens) AS t, COUNT(*) AS days, MIN(day) AS first_day, MAX(updated_at) AS updated_at
-        FROM ranked_usage WHERE user_id = ?1 AND (tokens > 0 OR requests > 0)`).bind(userId).first(),
+      env.DB.prepare(`SELECT SUM(tokens) AS t, SUM(COALESCE(json_extract(credits_json,'$.total'),0)) AS c, COUNT(*) AS days, MIN(day) AS first_day, MAX(updated_at) AS updated_at
+        FROM ranked_usage WHERE user_id = ?1 AND (tokens > 0 OR requests > 0 OR COALESCE(json_extract(credits_json,'$.total'),0) > 0)`).bind(userId).first(),
       env.DB.prepare('SELECT models_json, tools_json FROM ranked_usage WHERE user_id = ?1 AND day >= ?2 AND day <= ?3')
         .bind(userId, weekFrom, today).all(),
       env.DB.prepare(`SELECT COUNT(*) AS c FROM (
@@ -560,6 +567,7 @@ export function createFeishuService({ fetcher = (...args) => fetch(...args), now
       week: weekRow?.t || 0,
       weekCredits: Math.round((weekRow?.c || 0) * 1e6) / 1e6,
       lifetime: lifeRow?.t || 0, days: lifeRow?.days || 0, firstDay: lifeRow?.first_day ?? null,
+      lifetimeCredits: Math.round((lifeRow?.c || 0) * 1e6) / 1e6,
       lastReportAt: lifeRow?.updated_at ?? null,
       topModel: tally(detailRows.results, (r) => JSON.parse(r.models_json || '[]')),
       topTool: tally(detailRows.results, (r) => JSON.parse(r.tools_json || '[]')),
@@ -573,7 +581,9 @@ export function createFeishuService({ fetcher = (...args) => fetch(...args), now
     if (!s.lifetime && !s.today && !s.todayCredits && !s.weekCredits) {
       return textCard('Token 群排名', '还没有收到你的用量。先在单聊里发「**绑定**」拿到接入命令，在电脑上运行即可。');
     }
-    const hero = splitAmount(s.today);
+    // 纯 Credits 计费用户（Qoder 等）没有 token 数字，大数字位直接显示今日 Credits
+    const creditsOnly = !s.today && !s.lifetime && !s.todayRequests && (s.todayCredits || s.lifetimeCredits);
+    const hero = creditsOnly ? { num: (s.todayCredits || 0).toFixed(2), unit: 'Credits' } : splitAmount(s.today);
     const today = beijingDay(nowMs);
     const syncTime = s.lastReportAt
       ? new Date(s.lastReportAt + 8 * 3600000).toISOString().slice(5, 16).replace('T', ' ')
@@ -583,14 +593,20 @@ export function createFeishuService({ fetcher = (...args) => fetch(...args), now
       markdown(`<font color='grey'>${label}</font>`),
     ]);
     const elements = [
-      markdown(`<font color='grey'>我的用量 · 今日 · 总用量 · 含缓存</font>`),
+      markdown(creditsOnly ? `<font color='grey'>我的用量 · 今日 · Credits</font>` : `<font color='grey'>我的用量 · 今日 · 总用量 · 含缓存</font>`),
       markdown(`## <font color='orange'>${hero.num}${hero.unit ? ' ' + hero.unit : ''}</font>`),
-      markdown(`<font color='grey'>tokens · ${integer(s.todayRequests)} 次调用 · 累计 ${formatTokens(s.lifetime)} · ${integer(s.lifetime)} tokens</font>`),
+      markdown(creditsOnly
+        ? `<font color='grey'>Credits · 本周 ${(s.weekCredits || 0).toFixed(2)} · 累计 ${(s.lifetimeCredits || 0).toFixed(2)}${s.creditsRankToday ? ` · 今日 Credits 榜第 ${s.creditsRankToday} 名` : ''}</font>`
+        : `<font color='grey'>tokens · ${integer(s.todayRequests)} 次调用 · 累计 ${formatTokens(s.lifetime)} · ${integer(s.lifetime)} tokens</font>`),
       markdown(`<font color='grey'>${s.firstDay ? `${s.firstDay} — ` : ''}${today} · 北京时间${syncTime ? ` · 同步于 ${syncTime}` : ''}</font>`),
-      ...((s.todayCredits || s.weekCredits) ? [markdown(
-        `<font color='grey'>积分（Qoder 等按积分计费）：今日 ${s.todayCredits} · 本周 ${s.weekCredits}${s.creditsRankToday ? ` · 积分榜第 ${s.creditsRankToday} 名` : ''}</font>`)] : []),
+      ...(!creditsOnly && (s.todayCredits || s.weekCredits) ? [markdown(
+        `<font color='grey'>Credits（Qoder 等按 Credits 计费）：今日 ${s.todayCredits} · 本周 ${s.weekCredits}${s.creditsRankToday ? ` · Credits 榜第 ${s.creditsRankToday} 名` : ''}</font>`)] : []),
       divider(),
-      rowOf([
+      rowOf(creditsOnly ? [
+        statCell((s.todayCredits || 0).toFixed(2), '今日 Credits'),
+        statCell((s.weekCredits || 0).toFixed(2), '本周 Credits'),
+        statCell(s.days, '活跃天数'),
+      ] : [
         statCell(integer(s.todayRequests), '今日调用'),
         statCell(formatTokens(s.week), '本周'),
         statCell(s.days, '活跃天数'),

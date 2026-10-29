@@ -10,7 +10,7 @@
       <view class="exact num-font">{{usage.exact}} tokens</view>
       <view class="range">{{usage.range}} · {{usage.timezoneLabel}}<text wx:if="{{usage.syncText}}"> · 同步于 {{usage.syncText}}</text></view>
       <view class="note" wx:if="{{usage.costDisplay.available}}">API 等值估算 <text class="num-font">${{usage.costDisplay.amount}}</text> USD<text wx:if="{{usage.costDisplay.note}}"> · {{usage.costDisplay.note}}</text></view>
-      <view class="note" wx:if="{{usage.creditsDisplay.available}}">积分计费工具（{{usage.creditsDisplay.note || 'Qoder 等'}}） <text class="num-font">{{usage.creditsDisplay.amount}}</text> 积分</view>
+      <view class="note" wx:if="{{usage.creditsDisplay.available}}">Credits 计费工具（{{usage.creditsDisplay.note || 'Qoder 等'}}） <text class="num-font">{{usage.creditsDisplay.amount}}</text> Credits</view>
       <button class="btn btn-primary share-button" wx:if="{{usage.has_history}}" open-type="share" disabled="{{!quickShareReady}}">{{quickSharePreparing ? '准备中' : '转发我的用量'}}</button>
       <view wx:if="{{usage.has_history}}" class="share-options"><button class="text-button" bindtap="goShare">分享图片</button><button wx:if="{{quickShareError}}" class="text-button" bindtap="retryQuickShare">转发重试</button></view>
       <view class="metrics"><view class="metric"><view class="metric-value num-font">{{usage.requestsText}}</view><view class="metric-label">调用次数</view></view><view wx:if="{{period !== 'day'}}" class="metric metric-secondary"><view class="metric-value num-font">{{usage.summary.active_days}}<text class="metric-unit"> 天</text></view><view class="metric-label">活跃天数</view></view></view>

@@ -1,10 +1,10 @@
 const { compact, formatTokens, integer } = require('./usage');
 
-// 积分（Qoder 等按积分计费工具）：保留两位小数，大数沿用紧凑格式
+// Credits（Qoder 等按 Credits 计费工具）：固定两位小数，大数沿用紧凑格式
 function formatCredits(value) {
   const v = Math.max(0, Number(value) || 0);
   if (v >= 1e4) return compact(Math.round(v)).value + (compact(Math.round(v)).unit || '');
-  return String(Math.round(v * 100) / 100);
+  return v.toFixed(2);
 }
 
 // The API's own rank identifies the current row, including ties and duplicate

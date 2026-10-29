@@ -292,7 +292,7 @@ test('群里发「榜单」返回本群排行卡片（隐藏成员不计入）',
   assert.ok(text.includes('张三') && text.includes('300 万'), '第一名成绩用中文单位');
   assert.ok(text.includes('李四') && text.includes('120 万'));
   assert.ok(!text.includes('王五'), '本群隐藏的成员不能出现在榜单上');
-  assert.match(text, /排名 · 3 人/);
+  assert.match(text, /成员 · 3 人/);
   assert.match(text, /更新于 1 分钟前/);
 });
 
@@ -336,7 +336,7 @@ test('单聊「榜单」返回广场榜（含未入群用户）', async (t) => {
   await fire(service, env, messageEvent({ chatId: 'oc_p2p', chatType: 'p2p', text: 'rank', eventId: 'evt-global' }));
   const text0 = sentTexts(log)[0];
   assert.match(text0, /### 广场 · Token 排行榜/);
-  assert.match(text0, /排名 · \d+ 人/);
+  assert.match(text0, /成员 · \d+ 人/);
   assert.match(text0, /Token 用量/);
   const text = sentTexts(log)[0];
   assert.ok(text0.includes('王五')); // 广场榜不受单群 hidden 影响（王五未全局隐藏，仅本群隐藏）

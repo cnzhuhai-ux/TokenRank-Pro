@@ -11,10 +11,10 @@ export function usageWindow(value, now = Date.now()) {
 
 const count = value => Math.max(0, Number.isFinite(Number(value)) ? Number(value) : 0);
 
-/** Activity uses Beijing days with real tokens or requests; an unfinished today does not break yesterday's streak. */
+/** Activity uses Beijing days with real tokens, requests or credits; an unfinished today does not break yesterday's streak. */
 export function buildActivity(rows, now = Date.now()) {
   const today = beijingDay(now), yesterday = daysAgo(1, now);
-  const days = [...new Set(rows.filter(r => r.day <= today && (count(r.tokens) > 0 || count(r.requests) > 0))
+  const days = [...new Set(rows.filter(r => r.day <= today && (count(r.tokens) > 0 || count(r.requests) > 0 || count(r.credits) > 0))
     .map(r => r.day).filter(day => /^\d{4}-\d{2}-\d{2}$/.test(day) && Number.isFinite(Date.parse(day + 'T00:00:00Z'))
       && new Date(day + 'T00:00:00Z').toISOString().slice(0, 10) === day))].sort();
   let longest = 0, run = 0, previous = null;
