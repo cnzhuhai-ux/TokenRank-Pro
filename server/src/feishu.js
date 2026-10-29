@@ -183,13 +183,13 @@ export function leaderboardCard({ title, entries, members, updatedAt, nowMs, per
     col(7, [markdown(header || `${e.__bold ? '**' : ''}${mdEscape(e.nickname).slice(0, 18)}${e.__bold ? '** 我' : ''}${e.__model || ''}`)]),
     col(3, [markdown(header || `<font color='orange'>${e.__bold ? '**' : ''}${valueText}${e.__bold ? '**' : ''}</font>`)]),
   ]);
+  const tokenEntries = entries.filter((e) => (e.tokens || 0) > 0);
   elements.push(rowOf([
     col(1, [markdown(`<font color='grey'>#</font>`)]),
     col(1, [markdown(`<font color='grey'></font>`)]),
-    col(7, [markdown(`<font color='grey'>成员 · ${members ?? entries.length} 人</font>`)]),
+    col(7, [markdown(`<font color='grey'>成员 · ${members ?? tokenEntries.length} 人</font>`)]),
     col(3, [markdown(`<font color='grey'>Token 用量</font>`)]),
   ]));
-  const tokenEntries = entries.filter((e) => (e.tokens || 0) > 0);
   if (!tokenEntries.length) {
     elements.push(markdown('这个时间段还没有人上报 Token 用量。先单聊我「**绑定**」接入电脑，再回来发「**加入**」上榜。'));
   }
