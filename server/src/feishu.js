@@ -163,7 +163,8 @@ export function integer(n) {
 
 const avatarImg = (imgKey) => ({
   tag: 'img', img_key: imgKey, alt: { tag: 'plain_text', content: '头像' },
-  custom_width: 24, corner_radius: '12px',
+  // 32px 更贴合 1/14 列宽，减少左右留白；单行行高与头像同高，避免上下错位
+  custom_width: 32, corner_radius: '16px',
 });
 
 const PERIOD_TABS = [['day', '今日'], ['week', '本周'], ['month', '本月'], ['all', '总榜']];
@@ -176,40 +177,51 @@ export function leaderboardCard({ title, entries, members, updatedAt, nowMs, per
   elements.push(markdown(PERIOD_TABS.map(([k, label]) =>
     k === period ? `**<font color='orange'>${label}</font>**` : `<font color='grey'>${label}</font>`).join('　')));
   elements.push(divider());
-  // 统一四列结构（名次/头像/成员/用量），有无头像都占同一列宽，保证上下行左右对齐
+  // 五列单行（序号/头像/成员/模型/用量）：单行等高，头像垂直居中，各列左右对齐
   const credits2 = (n) => (Number(n) || 0).toFixed(2);
-  const boardRow = (e, rank, valueText, header) => rowOf([
-    col(1, [markdown(`<font color='grey'>${rank}</font>`)]),
-    col(1, [e.img_key ? avatarImg(e.img_key) : markdown(`<font color='grey'>·</font>`)]),
-    col(7, [markdown(header || `${e.__bold ? '**' : ''}${mdEscape(e.nickname).slice(0, 18)}${e.__bold ? '** 我' : ''}${e.__model || ''}`)]),
-    col(3, [markdown(header || `<font color='orange'>${e.__bold ? '**' : ''}${valueText}${e.__bold ? '**' : ''}</font>`)]),
-  ]);
+  const W_RANK = 1, W_AVATAR = 1, W_NAME = 5, W_MODEL = 4, W_VALUE = 3; // 合计 14
+  const empty = "<font color='grey'></font>";
+  const boardRow = ({ rank, entry, nameHtml, suffix = '', modelText, valueText, bold, grey, creditsBoard }) => {
+    const text = (content) => markdown(content);
+    const nameCells = creditsBoard
+      // Credits 榜没有模型列：成员列合并「成员+模型」宽度，保持与 Token 榜同样的左右边界
+      ? [col(W_NAME + W_MODEL, [text(`${bold ? `**${nameHtml}**` : nameHtml}${suffix}`)])]
+      : [col(W_NAME, [text(`${bold ? `**${nameHtml}**` : nameHtml}${suffix}`)]),
+         col(W_MODEL, [text(modelText ? `<font color='grey'>${mdEscape(modelText)}</font>` : empty)])];
+    const columns = [
+      col(W_RANK, [text(String(rank))]),
+      col(W_AVATAR, [entry.img_key ? avatarImg(entry.img_key) : text(empty)]),
+      ...nameCells,
+      col(W_VALUE, [text(`<font color='orange'>${bold ? '**' : ''}${valueText}${bold ? '**' : ''}</font>`)]),
+    ];
+    return grey
+      ? { tag: 'column_set', flex_mode: 'none', background_style: 'grey', columns }
+      : rowOf(columns);
+  };
   const tokenEntries = entries.filter((e) => (e.tokens || 0) > 0);
   elements.push(rowOf([
-    col(1, [markdown(`<font color='grey'>#</font>`)]),
-    col(1, [markdown(`<font color='grey'></font>`)]),
-    col(7, [markdown(`<font color='grey'>成员 · ${members ?? tokenEntries.length} 人</font>`)]),
-    col(3, [markdown(`<font color='grey'>Token 用量</font>`)]),
+    col(W_RANK, [markdown(`<font color='grey'>#</font>`)]),
+    col(W_AVATAR, [markdown(empty)]),
+    col(W_NAME, [markdown(`<font color='grey'>成员 · ${members ?? tokenEntries.length} 人</font>`)]),
+    col(W_MODEL, [markdown(`<font color='grey'>模型</font>`)]),
+    col(W_VALUE, [markdown(`<font color='grey'>Token 用量</font>`)]),
   ]));
   if (!tokenEntries.length) {
     elements.push(markdown('这个时间段还没有人上报 Token 用量。先单聊我「**绑定**」接入电脑，再回来发「**加入**」上榜。'));
   }
   tokenEntries.slice(0, BOARD_LIMIT).forEach((e, i) => {
     const mine = meUid != null && e.uid === meUid;
-    elements.push(boardRow({ ...e, __bold: mine, __model: e.top_model ? `\n<font color='grey'>${mdEscape(e.top_model)}</font>` : '' },
-      i + 1, formatTokens(e.tokens)));
+    elements.push(boardRow({ rank: i + 1, entry: e,
+      nameHtml: mdEscape(String(e.nickname || '').slice(0, 14)), suffix: mine ? ' 我' : '',
+      modelText: e.top_model || '', valueText: formatTokens(e.tokens), bold: mine }));
     elements.push(divider());
   });
   // 我的行：只有本人没出现在上面列表里（50 名外/未展示）才补一行灰底，避免与榜内行重复；
   // 纯 Credits 用户没有 token 数字，不在 Token 榜补 0 值行
   const meInTokensBoard = meUid != null && tokenEntries.slice(0, BOARD_LIMIT).some((e) => e.uid === meUid);
   if (me && (me.tokens || 0) > 0 && !meInTokensBoard) {
-    elements.push({ tag: 'column_set', flex_mode: 'none', background_style: 'grey', columns: [
-      col(1, [markdown(String(me.rank))]),
-      col(1, [markdown('')]),
-      col(7, [markdown(`**${mdEscape(me.nickname)}** 我`)]),
-      col(3, [markdown(`<font color='orange'>**${formatTokens(me.tokens)}**</font>`)]),
-    ] });
+    elements.push(boardRow({ rank: me.rank, entry: {}, nameHtml: mdEscape(me.nickname), suffix: ' 我',
+      modelText: me.top_model || '', valueText: formatTokens(me.tokens), bold: true, grey: true }));
   }
   // Credits 榜单（Qoder 等按 Credits 计费的工具），与 Token 榜并列
   const creditsEntries = entries.filter((e) => (e.credits || 0) > 0).sort((a, b) => b.credits - a.credits || a.uid - b.uid);
@@ -217,24 +229,22 @@ export function leaderboardCard({ title, entries, members, updatedAt, nowMs, per
     elements.push(markdown(`### <font color='grey'>Credits 榜单</font>`));
     elements.push(markdown(`<font color='grey'>Qoder 等按 Credits 计费的工具</font>`));
     elements.push(rowOf([
-      col(1, [markdown(`<font color='grey'>#</font>`)]),
-      col(1, [markdown(`<font color='grey'></font>`)]),
-      col(7, [markdown(`<font color='grey'>成员 · ${creditsEntries.length} 人</font>`)]),
-      col(3, [markdown(`<font color='grey'>Credits</font>`)]),
+      col(W_RANK, [markdown(`<font color='grey'>#</font>`)]),
+      col(W_AVATAR, [markdown(empty)]),
+      col(W_NAME + W_MODEL, [markdown(`<font color='grey'>成员 · ${creditsEntries.length} 人</font>`)]),
+      col(W_VALUE, [markdown(`<font color='grey'>Credits</font>`)]),
     ]));
     creditsEntries.slice(0, BOARD_LIMIT).forEach((e, i) => {
       const mine = meUid != null && e.uid === meUid;
-      elements.push(boardRow({ ...e, __bold: mine }, i + 1, `${credits2(e.credits)} Credits`));
+      elements.push(boardRow({ rank: i + 1, entry: e,
+        nameHtml: mdEscape(String(e.nickname || '').slice(0, 14)), suffix: mine ? ' 我' : '',
+        modelText: '', valueText: `${credits2(e.credits)} Credits`, bold: mine, creditsBoard: true }));
       elements.push(divider());
     });
     const meInCreditsBoard = meUid != null && creditsEntries.slice(0, BOARD_LIMIT).some((e) => e.uid === meUid);
     if (me && (me.credits || 0) > 0 && !meInCreditsBoard) {
-      elements.push({ tag: 'column_set', flex_mode: 'none', background_style: 'grey', columns: [
-        col(1, [markdown(String(me.credits_rank ?? '-'))]),
-        col(1, [markdown('')]),
-        col(7, [markdown(`**${mdEscape(me.nickname)}** 我`)]),
-        col(3, [markdown(`<font color='orange'>**${credits2(me.credits)} Credits**</font>`)]),
-      ] });
+      elements.push(boardRow({ rank: me.credits_rank ?? '-', entry: {}, nameHtml: mdEscape(me.nickname), suffix: ' 我',
+        modelText: '', valueText: `${credits2(me.credits)} Credits`, bold: true, grey: true, creditsBoard: true }));
     }
     if (creditsEntries.length > BOARD_LIMIT) elements.push(noteEl(`Credits 榜单仅展示前 ${BOARD_LIMIT} 名，共 ${creditsEntries.length} 人有 Credits 用量`));
   }
