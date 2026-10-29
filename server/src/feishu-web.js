@@ -41,7 +41,10 @@ export function createFeishuWebService({ fetcher = (...args) => fetch(...args), 
     const data = await res.json().catch(() => ({}));
     // v1 响应为 {code:0, data:{access_token,...}}；兼容顶层 access_token 的写法
     const accessToken = data?.data?.access_token || data?.access_token;
-    if (!res.ok || data.code !== 0 || !accessToken) throw new Error('飞书登录失败，请重试');
+    if (!res.ok || data.code !== 0 || !accessToken) {
+      // 带上飞书返回的错误码/信息，便于定位（授权码过期、redirect_uri 不一致等各有不同文案）
+      throw new Error(`飞书登录失败（${data.code ?? res.status}${data.message ? ' ' + data.message : ''}），请重试`);
+    }
     return accessToken;
   }
 
