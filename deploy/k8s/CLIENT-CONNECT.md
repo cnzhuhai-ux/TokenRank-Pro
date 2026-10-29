@@ -148,6 +148,8 @@ kubectl --kubeconfig=<kubeconfig> -n ai-pj get networkpolicy                   #
 | `401 invalid connect token` | 接入码被重新签发或已失效 | 重新签发（1.1） |
 | `429 上报过于频繁` | 短时间重复推送 | 等 `retry-after` 秒数后再试 |
 | 提示 `token-watcher x.x.x 低于 1.8.2` | 采集内核太旧会重复计算 | 按提示运行更新命令（小程序「说明」页） |
+| 提示 `N 天的统计数字超出上报协议范围，已跳过不上传` | 上游采集库里有个别日期存在脏数据（负值/超大值/小数） | 正常现象：该日跳过、其余照常上报；如需修正该日请把日期与数值反馈给管理员 |
+| `npm error ECONNREFUSED 127.0.0.1:<端口>`（安装原版时） | 本机 `~/.npmrc` 残留了已关闭的代理 | `npm config delete proxy && npm config delete https-proxy`；0.2.18+ 安装器已自动隔离该配置并回退国内镜像 |
 | 证书过期告警 | cert-manager 续期失败 | 看 `kubectl -n ai-pj describe certificate` 与 challenge 事件 |
 
 ---
