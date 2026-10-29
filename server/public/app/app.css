@@ -112,3 +112,27 @@ body {
 
 .toast { position: fixed; left: 50%; bottom: 90px; transform: translateX(-50%); background: rgba(0,0,0,.75); color: #fff;
   font-size: 13px; padding: 8px 16px; border-radius: 6px; z-index: 100; }
+
+/* ── 我的页子视图：日报 / 日历 / 走势 ── */
+.nav-row { display: flex; align-items: center; justify-content: space-between; margin: 10px 16px 2px; }
+.nav-row .nav-btn { background: none; border: 1px solid var(--line); border-radius: 14px; padding: 5px 12px; font-size: 12px; color: var(--text); cursor: pointer; }
+.nav-row .nav-btn:disabled { opacity: 0.35; cursor: default; }
+.nav-row .nav-title { font-size: 13px; font-weight: 600; }
+.date-pick { border: 1px solid var(--line); border-radius: 6px; padding: 3px 8px; font-size: 12px; color: var(--text); background: var(--bg); }
+.cal-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 4px; margin: 8px 16px; }
+.cal-head { text-align: center; font-size: 11px; color: var(--text2); padding: 2px 0; }
+.cal-cell { min-height: 46px; border-radius: 8px; background: var(--bg2); display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 1px; font-size: 11px; }
+.cal-cell.pad { background: none; }
+.cal-cell .d { font-weight: 600; }
+.cal-cell .t { font-size: 9px; color: var(--green); }
+.cal-cell.has { background: #e8f7ec; }
+.cal-cell.zero { opacity: 0.55; }
+.cal-cell.future { opacity: 0.35; }
+.cal-cell.today { outline: 2px solid var(--orange); }
+.bars { display: flex; align-items: stretch; gap: 6px; height: 150px; margin: 14px 16px 4px; }
+.bar-col { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: flex-end; gap: 4px; min-width: 0; }
+.bar-col .v { font-size: 9px; color: var(--text2); max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bar-col .bar-fill { width: 68%; background: var(--orange); border-radius: 4px 4px 0 0; }
+.bar-col .k { font-size: 10px; color: var(--text2); }
+.change-up { color: #c62828; }
+.change-down { color: var(--green); }

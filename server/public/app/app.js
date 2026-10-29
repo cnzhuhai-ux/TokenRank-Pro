@@ -3,7 +3,7 @@
   'use strict';
   const $ = (sel) => document.querySelector(sel);
   const page = $('#page');
-  const state = { tab: 'groups', period: 'day', scope: 'all', token: localStorage.getItem('tr_token') || '', me: null };
+  const state = { tab: 'groups', period: 'day', scope: 'all', token: localStorage.getItem('tr_token') || '', me: null, meView: 'sum' };
 
   // ── 工具 ──
   const fmt = (n) => {
@@ -83,6 +83,23 @@
   function bindTabRow(row, attr, fn) {
     row.querySelectorAll('.tab').forEach((b) => b.addEventListener('click', () => fn(b.getAttribute(attr))));
   }
+  // 北京时间日期工具（与服务端口径一致：day 均为 YYYY-MM-DD）
+  const dayShift = (day, n) => new Date(Date.parse(day + 'T00:00:00Z') + n * 86400000).toISOString().slice(0, 10);
+  const mondayOf = (day) => dayShift(day, -((new Date(day + 'T00:00:00Z').getUTCDay() + 6) % 7));
+  const heroNum = (n) => {
+    const parts = fmt(n).split(' ');
+    return { big: parts.length > 1 ? parts.slice(0, -1).join(' ') : parts[0], unit: parts.length > 1 ? parts.at(-1) : '' };
+  };
+  const distBlock = (title, items, limit = 4) => {
+    const rows = (items || []).filter((x) => !x.unclassified).slice(0, limit);
+    if (!rows.length) return '';
+    return `<div class="section"><span class="t">${esc(title)}</span></div>` + rows.map((x) => `
+      <div class="dist">
+        <div class="head"><span class="name">${esc(x.name)}</span><span class="pct num">${(x.percent || 0).toFixed(1)}%</span></div>
+        <div class="bar"><i style="width:${Math.min(100, x.percent || 0)}%"></i></div>
+        <div class="meta"><span>${fmt(x.tokens)} tokens</span></div>
+      </div>`).join('');
+  };
 
   // ── 页面：广场（总榜/工具/模型） ──
   async function renderSquare() {
@@ -189,24 +206,37 @@
       <div class="footnote">数据由用户电脑上报，仅供参考</div>`;
   }
 
-  // ── 页面：我的 ──
+  // ── 页面：我的（汇总 / 日报 / 日历 / 走势） ──
+  const meViews = [['sum', '汇总'], ['daily', '日报'], ['cal', '日历'], ['trend', '走势']];
   async function renderMe() {
+    const view = state.meView || 'sum';
     page.innerHTML = `
       <div class="pagebar">我的用量</div>
-      ${tabsRow([...periods, ['all', '累计']], state.mePeriod || 'all')}
+      ${tabsRow(meViews, view, 'data-mv')}
+      ${view === 'sum' ? tabsRow([...periods, ['all', '累计']], state.mePeriod || 'all', 'data-p') : ''}
       <div id="body"></div>`;
+    bindTabRow(page.querySelector('.tabs'), 'data-mv', (v) => { state.meView = v; renderMe(); });
+    if (view === 'sum') bindTabRow(page.querySelectorAll('.tabs')[1], 'data-p', (p) => { state.mePeriod = p; renderMe(); });
+    const body = $('#body');
+    if (view === 'daily') return renderMeDaily(body);
+    if (view === 'cal') return renderMeCalendar(body);
+    if (view === 'trend') return renderMeTrend(body);
+    return renderMeSum(body);
+  }
+
+  async function renderMeSum(body) {
     const period = state.mePeriod || 'all';
     const d = await api(`/api/my/usage?period=${period}`);
     const labels = { day: '今日', week: '近7天', month: '近30天', all: '累计' };
-    const heroUnit = fmt(d.summary.tokens).split(' ');
+    const hero = heroNum(d.summary.tokens);
     const activeDays = d.activity?.active_days ?? 0;
     const cost = d.summary.cost && d.summary.cost.usd_micros != null ? `$${(d.summary.cost.usd_micros / 1e6).toFixed(4)}USD` : null;
-    $('#body').innerHTML = `
+    body.innerHTML = `
       <div class="hero">
         <div class="label">${labels[period]} · 总用量 · 含缓存</div>
         <div class="num-line">
-          <span class="big num">${esc(heroUnit.length > 1 ? heroUnit.slice(0, -1).join(' ') : heroUnit[0])}</span>
-          ${heroUnit.length > 1 ? `<span class="unit">${esc(heroUnit.at(-1))}</span>` : ''}
+          <span class="big num">${esc(hero.big)}</span>
+          ${hero.unit ? `<span class="unit">${esc(hero.unit)}</span>` : ''}
         </div>
         <div class="full num">${full(d.summary.tokens)} tokens</div>
         <div class="full">${d.from === '0000-01-01' ? (d.first_day || '') : d.from} — ${d.to} · 北京时间${d.last_report_at ? ' · 同步于 ' + bj(d.last_report_at).slice(5, 16).replace('T', ' ') : ''}</div>
@@ -223,7 +253,127 @@
         <a href="#" data-go="groups">我的群榜</a>
       </div>
       <div class="footnote">${d.has_history ? `已上报 ${d.reported_days || 0} 天 · 自 ${d.first_day || '—'}` : '暂无同步记录：单聊机器人发「绑定」接入电脑'}</div>`;
-    page.querySelectorAll('[data-go]').forEach((a) => a.addEventListener('click', (e) => { e.preventDefault(); switchTab(a.dataset.go); }));
+    body.querySelectorAll('[data-go]').forEach((a) => a.addEventListener('click', (e) => { e.preventDefault(); switchTab(a.dataset.go); }));
+  }
+
+  // 日报：默认昨天，前后切换 + 日期直选
+  async function renderMeDaily(body) {
+    state.dailyDay = state.dailyDay || dayShift(bjDay(), -1);
+    const day = state.dailyDay;
+    const d = await api(`/api/my/daily?day=${day}`);
+    const nav = `
+      <div class="nav-row">
+        <button class="nav-btn" id="d-prev" ${d.previous_day ? '' : 'disabled'}>‹ 前一天</button>
+        <span class="nav-title">${day}${day === dayShift(bjDay(), -1) ? '（昨天）' : ''}</span>
+        <button class="nav-btn" id="d-next" ${d.next_day ? '' : 'disabled'}>后一天 ›</button>
+      </div>
+      <div class="caption" style="text-align:center;padding-top:0">跳到 <input type="date" id="d-pick" class="date-pick" value="${day}" max="${dayShift(bjDay(), -1)}"></div>`;
+    if (!d.has_history) {
+      body.innerHTML = `${nav}
+        <div class="hero"><div class="label">${day} · 无上报记录</div>
+          <div class="full">这一天电脑没有同步数据（未开机或同步器未运行）</div></div>
+        <div class="footnote">日报只展示已经结束的自然日 · 北京时间</div>`;
+    } else {
+      const s = d.summary, hero = heroNum(s.tokens);
+      const cost = s.cost && s.cost.usd_micros != null ? '$' + (s.cost.usd_micros / 1e6).toFixed(2) : null;
+      body.innerHTML = `${nav}
+        <div class="hero">
+          <div class="label">${day} · 总用量 · 含缓存</div>
+          <div class="num-line"><span class="big num">${esc(hero.big)}</span>${hero.unit ? `<span class="unit">${esc(hero.unit)}</span>` : ''}</div>
+          <div class="full num">${full(s.tokens)} tokens</div>
+          ${cost ? `<div class="full">API 等值估算${cost}USD · 仅供参考，不等同账单</div>` : ''}
+        </div>
+        <div class="stats">
+          <div><div class="v num">${full(s.requests)}</div><div class="k">调用次数</div></div>
+          <div><div class="v num">${fmt(s.input_tokens)}</div><div class="k">输入</div></div>
+          <div><div class="v num">${fmt(s.output_tokens)}</div><div class="k">输出</div></div>
+        </div>
+        <div class="stats">
+          <div><div class="v num">${fmt(s.cache_read)}</div><div class="k">缓存读</div></div>
+          <div><div class="v num">${fmt(s.cache_write)}</div><div class="k">缓存写</div></div>
+          <div><div class="v" style="font-size:15px">${esc(d.top_tool ? d.top_tool.name : '—')}</div><div class="k">常用工具</div></div>
+        </div>
+        ${distBlock('工具分布', d.tools)}
+        ${distBlock('模型分布', d.models)}
+        <div class="footnote">首次上报 ${d.first_day || '—'} · 点击日历页的有记录日期也可到达这里</div>`;
+    }
+    if (d.previous_day) $('#d-prev').addEventListener('click', () => { state.dailyDay = d.previous_day; renderMeDaily(body); });
+    if (d.next_day) $('#d-next').addEventListener('click', () => { state.dailyDay = d.next_day; renderMeDaily(body); });
+    const pick = $('#d-pick');
+    pick.addEventListener('change', () => {
+      const v = pick.value;
+      if (v && v < bjDay()) { state.dailyDay = v; renderMeDaily(body); }
+    });
+  }
+
+  // 日历：整月格子，有记录的日期可点进日报
+  async function renderMeCalendar(body) {
+    state.calMonth = state.calMonth || bjDay().slice(0, 7);
+    const d = await api(`/api/my/calendar?month=${state.calMonth}`);
+    const firstDow = (new Date(d.month + '-01T00:00:00Z').getUTCDay() + 6) % 7;
+    const cells = [];
+    for (let i = 0; i < firstDow; i++) cells.push('<div class="cal-cell pad"></div>');
+    for (const day of d.daily) {
+      const cls = ['cal-cell', day.future ? 'future' : '', day.reported ? (day.tokens > 0 ? 'has' : 'zero') : '', day.day === d.today ? 'today' : ''].join(' ');
+      const clickable = day.reported && !day.future && day.day < d.today;
+      cells.push(`<div class="${cls}"${clickable ? ` data-day="${day.day}" style="cursor:pointer"` : ''}>
+        <span class="d">${Number(day.day.slice(-2))}</span>
+        ${day.reported && day.tokens > 0 ? `<span class="t num">${fmt(day.tokens)}</span>` : ''}</div>`);
+    }
+    body.innerHTML = `
+      <div class="nav-row">
+        <button class="nav-btn" id="c-prev" ${d.previous_month ? '' : 'disabled'}>‹ 上月</button>
+        <span class="nav-title">${d.month} · 使用日历</span>
+        <button class="nav-btn" id="c-next" ${d.next_month ? '' : 'disabled'}>下月 ›</button>
+      </div>
+      <div class="caption" style="text-align:center">月用量 ${d.summary.tokens != null ? fmt(d.summary.tokens) + ' tokens' : '暂无'} · 记录 ${d.summary.reported_days || 0}/${d.summary.elapsed_days || 0} 天 · 活跃 ${d.summary.active_days || 0} 天</div>
+      <div class="cal-grid">${['一', '二', '三', '四', '五', '六', '日'].map((w) => `<div class="cal-head">${w}</div>`).join('')}${cells.join('')}</div>
+      <div class="footnote">绿底为有上报的日期，点击可看当日日报 · 北京时间</div>`;
+    if (d.previous_month) $('#c-prev').addEventListener('click', () => { state.calMonth = d.previous_month; renderMeCalendar(body); });
+    if (d.next_month) $('#c-next').addEventListener('click', () => { state.calMonth = d.next_month; renderMeCalendar(body); });
+    body.querySelectorAll('[data-day]').forEach((el) => el.addEventListener('click', () => {
+      state.dailyDay = el.dataset.day; state.meView = 'daily'; renderMe();
+    }));
+  }
+
+  // 走势：按周 7 日柱状图 + 环比
+  async function renderMeTrend(body) {
+    state.weekStart = state.weekStart || dayShift(mondayOf(bjDay()), -7);
+    const d = await api(`/api/my/weekly?week=${state.weekStart}`);
+    const w = d.weekly;
+    const max = Math.max(1, ...d.daily.map((x) => x.tokens || 0));
+    const bars = d.daily.map((x) => `
+      <div class="bar-col" title="${x.day}${x.reported ? ' · ' + full(x.tokens) + ' tokens' : ''}">
+        <span class="v num">${x.reported && x.tokens ? fmt(x.tokens) : ''}</span>
+        <div class="bar-fill" style="height:${x.future ? 0 : Math.max(2, Math.round((x.tokens || 0) / max * 100))}%"></div>
+        <span class="k">${x.day.slice(8)}日</span>
+      </div>`).join('');
+    const change = w.comparison_status === 'comparable'
+      ? `<span class="${w.change_tokens >= 0 ? 'change-up' : 'change-down'}">${w.change_tokens >= 0 ? '▲' : '▼'} ${Math.abs(w.change_percent)}%（上期 ${fmt(w.previous_tokens)}）</span>`
+      : w.comparison_status === 'ongoing' ? '<span class="change-down">本周进行中</span>'
+      : '<span class="change-down">上期数据不足，暂无可比</span>';
+    const hero = heroNum(d.summary.tokens);
+    const cost = d.summary.cost && d.summary.cost.usd_micros != null ? '$' + (d.summary.cost.usd_micros / 1e6).toFixed(2) : null;
+    body.innerHTML = `
+      <div class="nav-row">
+        <button class="nav-btn" id="w-prev" ${d.previous_week ? '' : 'disabled'}>‹ 上周</button>
+        <span class="nav-title">${d.from} ~ ${d.to}${w.complete ? '' : '（进行中）'}</span>
+        <button class="nav-btn" id="w-next" ${d.next_week ? '' : 'disabled'}>下周 ›</button>
+      </div>
+      <div class="hero">
+        <div class="label">周走势 · 总用量 · 含缓存 · 较上期 ${change}</div>
+        <div class="num-line"><span class="big num">${esc(hero.big)}</span>${hero.unit ? `<span class="unit">${esc(hero.unit)}</span>` : ''}</div>
+        <div class="full num">${full(d.summary.tokens)} tokens · ${w.reported_days}/7 天有记录</div>
+      </div>
+      <div class="bars">${bars}</div>
+      <div class="stats">
+        <div><div class="v num">${w.peak ? fmt(w.peak.tokens) : '—'}</div><div class="k">单日峰值${w.peak ? ' · ' + w.peak.day.slice(5).replace('-', '/') : ''}</div></div>
+        <div><div class="v" style="font-size:15px">${esc(w.top_model ? w.top_model.name : '—')}</div><div class="k">常用模型</div></div>
+        <div><div class="v num">${cost ?? '—'}</div><div class="k">成本估算</div></div>
+      </div>
+      <div class="footnote">柱高按本周单日最大用量归一 · 走势按北京时间自然日</div>`;
+    if (d.previous_week) $('#w-prev').addEventListener('click', () => { state.weekStart = d.previous_week; renderMeTrend(body); });
+    if (d.next_week) $('#w-next').addEventListener('click', () => { state.weekStart = d.next_week; renderMeTrend(body); });
   }
 
   // ── 页面：说明 ──
