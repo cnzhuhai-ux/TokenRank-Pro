@@ -26,15 +26,23 @@ export function createFeishuWebService({ fetcher = (...args) => fetch(...args), 
   async function exchangeCode(env, code) {
     let res;
     try {
-      res = await fetcher(`${FEISHU_BASE}/open-apis/authen/v2/oauth2/token`, {
-        method: 'POST', headers: { 'content-type': 'application/json' }, signal: AbortSignal.timeout(10000),
-        body: JSON.stringify({ grant_type: 'authorization_code', client_id: env.FEISHU_APP_ID,
-          client_secret: env.FEISHU_APP_SECRET, code, redirect_uri: `${String(env.PUBLIC_BASE_URL || '').replace(/\/+$/, '')}/app/` }),
+      // 用 v1 oidc 端点：v2 oauth2/token 在当前飞书环境返回 404（实测），v1 仍被官方支持
+      res = await fetcher(`${FEISHU_BASE}/open-apis/authen/v1/oidc/access_token`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/x-www-form-urlencoded' },
+        signal: AbortSignal.timeout(10000),
+        body: new URLSearchParams({
+          grant_type: 'authorization_code', client_id: env.FEISHU_APP_ID,
+          client_secret: env.FEISHU_APP_SECRET, code,
+          redirect_uri: `${String(env.PUBLIC_BASE_URL || '').replace(/\/+$/, '')}/app/`,
+        }),
       });
     } catch { throw new Error('连接飞书服务超时，请稍后重试'); }
     const data = await res.json().catch(() => ({}));
-    if (!res.ok || data.code !== 0 || !data.access_token) throw new Error('飞书登录失败，请重试');
-    return data.access_token;
+    // v1 响应为 {code:0, data:{access_token,...}}；兼容顶层 access_token 的写法
+    const accessToken = data?.data?.access_token || data?.access_token;
+    if (!res.ok || data.code !== 0 || !accessToken) throw new Error('飞书登录失败，请重试');
+    return accessToken;
   }
 
   async function userInfo(env, userAccessToken) {
