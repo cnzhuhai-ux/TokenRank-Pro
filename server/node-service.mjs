@@ -58,6 +58,9 @@ if (!existsSync(cfg.dbPath)) {
 }
 const env = {
   DB: openD1(cfg.dbPath),
+  // 网页应用 OAuth 的 redirect_uri 依赖 PUBLIC_BASE_URL；Node 部署下默认取 public_origin，
+  // 保证授权跳转与 token 交换两处地址一致（Cloudflare 部署用 wrangler vars，不受影响）
+  PUBLIC_BASE_URL: process.env.PUBLIC_BASE_URL || cfg.publicOrigin,
   // 微信侧未部署：留空使 /api/wx/session 返回 503（不影响飞书与采集上报）
   WX_APPID: '', WX_REMINDERS_ENABLED: '0',
   ...(cfg.feishuAppId ? { FEISHU_APP_ID: cfg.feishuAppId } : {}),

@@ -31,6 +31,8 @@ data:
   TOKENRANK_MAX_BODY_BYTES: "1048576"
   # 客户端接入地址：对外域名（生成安装命令用），不带端口
   PUBLIC_ORIGIN: "https://tokenrank.oortcloudsmart.com:2443"
+  # 网页应用 OAuth redirect_uri 依赖此值（node-service 会透传给 worker）
+  PUBLIC_BASE_URL: "https://tokenrank.oortcloudsmart.com:2443"
   CORS_ORIGIN: ""
   # 飞书凭证请用 Secret 引用：FEISHU_APP_ID / FEISHU_APP_SECRET / FEISHU_VERIFICATION_TOKEN / FEISHU_ENCRYPT_KEY
 ---
