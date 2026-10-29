@@ -718,7 +718,7 @@ export function createFeishuService({ fetcher = (...args) => fetch(...args), now
         title: `${mdEscape(found.name)} · Token 排行榜`,
         entries: board.entries, members: memberCount?.c ?? null, updatedAt: board.updatedAt, nowMs,
         period: command.period, meUid: account?.id ?? null, me,
-        footer: footerBits.join('\n') || null,
+        footer: footerBits.join('\n') || null, appUrl,
       }));
     }
     const board = await boardRows(env, { from, to });
