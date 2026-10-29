@@ -19,7 +19,7 @@ const memory = new DatabaseSync(':memory:');
 memory.exec('CREATE TABLE events(ts INTEGER,tool TEXT,model TEXT,input_tokens INTEGER,cached_input INTEGER,cache_write INTEGER,output_tokens INTEGER)');
 const insert = memory.prepare('INSERT INTO events VALUES(?,?,?,?,?,?,?)');
 try {
-  const days = readDays(path, { now, costing(db, from, to) {
+  const days = readDays(path, { now, log: message => process.stderr.write(`[tokenrank] ${message}\n`), costing(db, from, to) {
     const rows = db.prepare(`SELECT CAST((ts+28800000)/86400000 AS INTEGER) daynum,
       MIN(ts) ts, tool, model, ${PEAK_SQL} peak, SUM(input_tokens) fi, SUM(cached_input) ci,
       SUM(cache_write) cw, SUM(output_tokens) oi, SUM(total_tokens) tokens

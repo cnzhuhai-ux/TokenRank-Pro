@@ -60,7 +60,17 @@ test('missing/incompatible schema and oversized metrics fail without creating or
   assert.throws(()=>readDays(f.path),/结构不兼容/);
   assert.ok(f.db.prepare('PRAGMA table_info(events)').all().some(x=>x.name==='future_model'));
   f.db.exec('ALTER TABLE events RENAME COLUMN future_model TO model; UPDATE events SET total_tokens=10000000000001');
-  assert.throws(()=>readDays(f.path),/不截断/);
+  // 脏数据日（超协议上限/负值）整日跳过并告警，不再中断整个同步；好数据照常上报，数字本身不改写
+  const warnings=[];
+  assert.deepEqual(readDays(f.path,{log:m=>warnings.push(m)}),[]);
+  assert.equal(warnings.length,1);assert.match(warnings[0],/tokens=10000000000001/);assert.match(warnings[0],/已跳过/);
+  f.db.exec('UPDATE events SET total_tokens=9999999999999');
+  const capped=readDays(f.path,{log:m=>warnings.push(m)});
+  assert.equal(capped.length,1);assert.equal(capped[0].tokens,9999999999999);assert.equal(warnings.length,1);
+  // 浮点噪声：范围内小数四舍五入；-1~0 的负噪声钳为 0
+  f.db.exec('UPDATE events SET total_tokens=100.4, input_tokens=-0.4');
+  const noisy=readDays(f.path)[0];
+  assert.equal(noisy.tokens,100);assert.equal(noisy.input_tokens,0);
 });
 
 test('more than 400 historical days all upload; old-day changes are detected; config independent',async t=>{

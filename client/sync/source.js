@@ -55,7 +55,7 @@ function readCreditsMap(db, from, now) {
 }
 
 /** All SELECTs share one snapshot, including committed WAL records. No upstream Store or scanner is loaded. */
-export function readDays(path, { now = Date.now(), fromDay = null, costing = null } = {}) {
+export function readDays(path, { now = Date.now(), fromDay = null, costing = null, log = null } = {}) {
   const db = openSource(path);
   try {
     db.exec('BEGIN');
@@ -94,19 +94,24 @@ export function readDays(path, { now = Date.now(), fromDay = null, costing = nul
     // Qoder 等纯 credits 工具不产生 events 行，日桶取两者并集
     const daynums = new Set([...rows.map(row => row.daynum), ...(creditsMap ? [...creditsMap.keys()] : [])]);
     const rowMap = new Map(rows.map(row => [row.daynum, row]));
-    const days = [...daynums].sort((a, b) => a - b).map(daynum => {
+    // 上游原始日志可能有脏数据（负值/超协议上限）：跳过该日并告警，好数据照常上报，数字本身不改写
+    const days = [], skipped = [];
+    for (const daynum of [...daynums].sort((a, b) => a - b)) {
       const row = rowMap.get(daynum) || { tokens: 0, input_tokens: 0, output_tokens: 0, requests: 0, cache_read: 0, cache_write: 0 };
       const day = new Date(daynum * 86400000).toISOString().slice(0, 10);
-      for (const [key, max] of Object.entries(MAX)) {
-        if (!Number.isSafeInteger(row[key]) || row[key] < 0 || row[key] > max)
-          throw new Error(`${day} 的 ${key} 超出当前上报协议范围；已停止同步，不截断或改写原始数据`);
+      const bad = Object.entries(MAX).filter(([key, max]) => !Number.isFinite(row[key]) || row[key] < -1 || row[key] > max);
+      if (bad.length) {
+        skipped.push(`${day}（${bad.map(([key]) => `${key}=${row[key]}`).join('、')}）`);
+        continue;
       }
-      return { day, tokens: row.tokens, input_tokens: row.input_tokens, output_tokens: row.output_tokens, requests: row.requests, cache_read: row.cache_read, cache_write: row.cache_write,
+      const norm = key => (Number.isSafeInteger(row[key]) ? row[key] : Math.max(0, Math.round(row[key])));
+      days.push({ day, tokens: norm('tokens'), input_tokens: norm('input_tokens'), output_tokens: norm('output_tokens'), requests: norm('requests'), cache_read: norm('cache_read'), cache_write: norm('cache_write'),
         models: modelMap.get(daynum) || [], tools: toolMap.get(daynum) || [],
         tool_models: toolModels.get(daynum) || [],
         ...(costs?.has(daynum) ? { cost: costs.get(daynum) } : {}),
-        ...(creditsMap?.has(daynum) ? { credits: creditsMap.get(daynum) } : {}) };
-    });
+        ...(creditsMap?.has(daynum) ? { credits: creditsMap.get(daynum) } : {}) });
+    }
+    if (skipped.length) log?.(`警告：${skipped.length} 天的统计数字超出上报协议范围，已跳过不上传（原始数据未改动）：${skipped.join('；')}`);
     db.exec('COMMIT');
     return days;
   } finally { db.close(); }

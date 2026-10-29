@@ -10,7 +10,7 @@ const exec = promisify(execFile);
 /** Reuse upstream pricing in an offline child; its cache writes stay in a disposable home. */
 export async function readCostedDays(path, { entry, now = Date.now(), log = () => {} } = {}) {
   const original = inspectUpstream(entry);
-  if (!original || !existsSync(join(original.root, 'src/pricing.js'))) return readDays(path, { now });
+  if (!original || !existsSync(join(original.root, 'src/pricing.js'))) return readDays(path, { now, log });
   const home = mkdtempSync(join(tmpdir(), 'tokenrank-pricing-'));
   try {
     const cache = join(home, '.tokenmeter'); mkdirSync(cache);
@@ -29,6 +29,6 @@ export async function readCostedDays(path, { entry, now = Date.now(), log = () =
   } catch {
     // Missing/incompatible pricing must not stop ordinary token uploads or look like a $0 bill.
     log('金额估算暂不可用，本次仅同步 Token 用量。');
-    return readDays(path, { now });
+    return readDays(path, { now, log });
   } finally { rmSync(home, { recursive: true, force: true }); }
 }
