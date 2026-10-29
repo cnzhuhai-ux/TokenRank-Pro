@@ -204,6 +204,31 @@ export function leaderboardCard({ title, entries, members, updatedAt, nowMs, per
       col(3, [markdown(`<font color='grey'>我的排名</font>`)]),
     ] });
   }
+  // 积分榜（Qoder 等按积分计费的工具），tokens 与 credits 并列展示
+  const creditsEntries = entries.filter((e) => (e.credits || 0) > 0).sort((a, b) => b.credits - a.credits || a.uid - b.uid);
+  if (creditsEntries.length) {
+    elements.push(markdown(`### <font color='grey'>积分榜</font>`));
+    elements.push(markdown(`<font color='grey'>Qoder 等按积分计费的工具</font>`));
+    creditsEntries.slice(0, BOARD_LIMIT).forEach((e, i) => {
+      const mine = meUid != null && e.uid === meUid;
+      const bold = mine ? '**' : '';
+      elements.push(rowOf([
+        col(1, [markdown(String(i + 1))]),
+        ...(e.img_key ? [col(1, [avatarImg(e.img_key)])] : []),
+        col(e.img_key ? 6 : 7, [markdown(`${bold}${mdEscape(e.nickname).slice(0, 20)}${bold}`)]),
+        col(3, [markdown(`<font color='orange'>${bold}${e.credits} 积分${bold}</font>`)]),
+      ]), divider());
+    });
+    if (me && (me.credits || 0) > 0 && !creditsEntries.slice(0, BOARD_LIMIT).some((e) => e.uid === meUid)) {
+      elements.push({ tag: 'column_set', flex_mode: 'none', background_style: 'grey', columns: [
+        col(1, [markdown(String(me.credits_rank ?? '-'))]),
+        col(5, [markdown(`**${mdEscape(me.nickname)}** 我`)]),
+        col(3, [markdown(`<font color='orange'>**${me.credits} 积分**</font>`)]),
+        col(3, [markdown(`<font color='grey'>积分排名</font>`)]),
+      ] });
+    }
+    if (creditsEntries.length > BOARD_LIMIT) elements.push(noteEl(`积分榜仅展示前 ${BOARD_LIMIT} 名，共 ${creditsEntries.length} 人有积分用量`));
+  }
   if (entries.length > BOARD_LIMIT) {
     elements.push(noteEl(`仅展示前 ${BOARD_LIMIT} 名，共 ${entries.length} 人有用量`));
   }
@@ -422,10 +447,11 @@ export function createFeishuService({ fetcher = (...args) => fetch(...args), now
     const binds = gid ? [from, to, gid] : [from, to];
     const [rows, modelRows, upRow] = await Promise.all([
       env.DB.prepare(`SELECT u.id AS uid, u.nickname, u.avatar_path, u.avatar_url,
-        SUM(ds.tokens) AS tokens, SUM(ds.requests) AS requests
+        SUM(ds.tokens) AS tokens, SUM(ds.requests) AS requests,
+        SUM(COALESCE(json_extract(ds.credits_json,'$.total'),0)) AS credits
         FROM public_usage ds JOIN users u ON u.id = ds.user_id
         WHERE ds.day >= ?1 AND ds.day <= ?2${memberFilter}
-        GROUP BY ds.user_id HAVING tokens > 0 ORDER BY tokens DESC, uid ASC`).bind(...binds).all(),
+        GROUP BY ds.user_id HAVING SUM(ds.tokens) > 0 OR SUM(COALESCE(json_extract(ds.credits_json,'$.total'),0)) > 0 ORDER BY SUM(ds.tokens) DESC, uid ASC`).bind(...binds).all(),
       env.DB.prepare(`SELECT ds.user_id AS uid, json_extract(je.value, '$[0]') AS model, SUM(json_extract(je.value, '$[1]')) AS t
         FROM public_usage ds, json_each(ds.models_json) je
         WHERE ds.day >= ?1 AND ds.day <= ?2${memberFilter}
@@ -444,50 +470,69 @@ export function createFeishuService({ fetcher = (...args) => fetch(...args), now
         nickname: r.nickname || `飞书用户-${String(r.uid).slice(-4).padStart(4, '0')}`,
         avatar_path: r.avatar_path ?? null, avatar_url: r.avatar_url ?? null,
         tokens: r.tokens, requests: r.requests,
+        credits: Math.round((r.credits || 0) * 1e6) / 1e6,
         top_model: topModel.get(r.uid) ?? null,
       })),
       updatedAt: upRow?.ts ?? null,
     };
   }
 
-  /** 广场（全站）口径下的我的名次，供榜单置顶“我的行” */
+  /** 广场（全站）口径下的我的名次，供榜单置顶“我的行”；tokens 与 credits 双指标 */
   async function globalStanding(env, userId, from, to) {
-    const mine = await env.DB.prepare('SELECT SUM(ds.tokens) AS t FROM public_usage ds WHERE ds.user_id = ?1 AND ds.day >= ?2 AND ds.day <= ?3')
+    const mine = await env.DB.prepare(`SELECT SUM(ds.tokens) AS t, SUM(COALESCE(json_extract(ds.credits_json,'$.total'),0)) AS c
+      FROM public_usage ds WHERE ds.user_id = ?1 AND ds.day >= ?2 AND ds.day <= ?3`)
       .bind(userId, from, to).first();
-    const myTokens = mine?.t || 0;
-    if (!myTokens) return null;
-    const ahead = await env.DB.prepare(`SELECT COUNT(*) AS c FROM (
-      SELECT ds.user_id, SUM(ds.tokens) AS total FROM public_usage ds
-      WHERE ds.day >= ?2 AND ds.day <= ?3
-      GROUP BY ds.user_id HAVING total > ?1 OR (total = ?1 AND ds.user_id < ?4))`)
-      .bind(myTokens, from, to, userId).first();
-    return { rank: (ahead?.c || 0) + 1, tokens: myTokens };
+    const myTokens = mine?.t || 0, myCredits = mine?.c || 0;
+    if (!myTokens && !myCredits) return null;
+    const [aheadTokens, aheadCredits] = await Promise.all([
+      env.DB.prepare(`SELECT COUNT(*) AS c FROM (
+        SELECT ds.user_id, SUM(ds.tokens) AS total FROM public_usage ds
+        WHERE ds.day >= ?2 AND ds.day <= ?3
+        GROUP BY ds.user_id HAVING total > ?1 OR (total = ?1 AND ds.user_id < ?4))`)
+        .bind(myTokens, from, to, userId).first(),
+      myCredits > 0 ? env.DB.prepare(`SELECT COUNT(*) AS c FROM (
+        SELECT ds.user_id, SUM(COALESCE(json_extract(ds.credits_json,'$.total'),0)) AS total FROM public_usage ds
+        WHERE ds.day >= ?2 AND ds.day <= ?3
+        GROUP BY ds.user_id HAVING total > ?1 OR (total = ?1 AND ds.user_id < ?4))`)
+        .bind(myCredits, from, to, userId).first() : Promise.resolve(null),
+    ]);
+    return { rank: (aheadTokens?.c || 0) + 1, tokens: myTokens,
+      credits: Math.round(myCredits * 1e6) / 1e6, credits_rank: aheadCredits ? (aheadCredits.c || 0) + 1 : null };
   }
 
   async function myGroupStanding(env, gid, userId, from, to) {
-    const mine = await env.DB.prepare(`SELECT SUM(ds.tokens) AS t FROM public_usage ds
-      WHERE ds.user_id = ?1 AND ds.day >= ?2 AND ds.day <= ?3
-      AND ds.user_id IN (SELECT user_id FROM rank_group_members WHERE group_id = ?4 AND hidden = 0)`)
+    const memberSql = 'AND ds.user_id IN (SELECT user_id FROM rank_group_members WHERE group_id = ?4 AND hidden = 0)';
+    const mine = await env.DB.prepare(`SELECT SUM(ds.tokens) AS t, SUM(COALESCE(json_extract(ds.credits_json,'$.total'),0)) AS c FROM public_usage ds
+      WHERE ds.user_id = ?1 AND ds.day >= ?2 AND ds.day <= ?3 ${memberSql}`)
       .bind(userId, from, to, gid).first();
-    const myTokens = mine?.t || 0;
-    if (!myTokens) return null;
-    const ahead = await env.DB.prepare(`SELECT COUNT(*) AS c FROM (
-      SELECT ds.user_id, SUM(ds.tokens) AS total FROM public_usage ds
-      WHERE ds.day >= ?2 AND ds.day <= ?3
-      AND ds.user_id IN (SELECT user_id FROM rank_group_members WHERE group_id = ?4 AND hidden = 0)
-      GROUP BY ds.user_id HAVING total > ?1 OR (total = ?1 AND ds.user_id < ?5))`)
-      .bind(myTokens, from, to, gid, userId).first();
-    return { rank: (ahead?.c || 0) + 1, tokens: myTokens };
+    const myTokens = mine?.t || 0, myCredits = mine?.c || 0;
+    if (!myTokens && !myCredits) return null;
+    const [aheadTokens, aheadCredits] = await Promise.all([
+      env.DB.prepare(`SELECT COUNT(*) AS c FROM (
+        SELECT ds.user_id, SUM(ds.tokens) AS total FROM public_usage ds
+        WHERE ds.day >= ?2 AND ds.day <= ?3 ${memberSql}
+        GROUP BY ds.user_id HAVING total > ?1 OR (total = ?1 AND ds.user_id < ?5))`)
+        .bind(myTokens, from, to, gid, userId).first(),
+      myCredits > 0 ? env.DB.prepare(`SELECT COUNT(*) AS c FROM (
+        SELECT ds.user_id, SUM(COALESCE(json_extract(ds.credits_json,'$.total'),0)) AS total FROM public_usage ds
+        WHERE ds.day >= ?2 AND ds.day <= ?3 ${memberSql}
+        GROUP BY ds.user_id HAVING total > ?1 OR (total = ?1 AND ds.user_id < ?5))`)
+        .bind(myCredits, from, to, gid, userId).first() : Promise.resolve(null),
+    ]);
+    return { rank: (aheadTokens?.c || 0) + 1, tokens: myTokens,
+      credits: Math.round(myCredits * 1e6) / 1e6, credits_rank: aheadCredits ? (aheadCredits.c || 0) + 1 : null };
   }
 
   async function personalSummary(env, userId, nowMs) {
     const today = beijingDay(nowMs);
     const weekFrom = beijingDaysAgo(6, nowMs);
     // 今日总量要先算出来才能算广场名次（阈值绑定），不能和其余查询混在同一个 Promise.all
-    const todayRow = await env.DB.prepare('SELECT SUM(tokens) AS t, SUM(requests) AS r FROM ranked_usage WHERE user_id = ?1 AND day = ?2')
+    const todayRow = await env.DB.prepare(`SELECT SUM(tokens) AS t, SUM(requests) AS r,
+      SUM(COALESCE(json_extract(credits_json,'$.total'),0)) AS c FROM ranked_usage WHERE user_id = ?1 AND day = ?2`)
       .bind(userId, today).first();
-    const [weekRow, lifeRow, detailRows, standingRow] = await Promise.all([
-      env.DB.prepare('SELECT SUM(tokens) AS t FROM ranked_usage WHERE user_id = ?1 AND day >= ?2 AND day <= ?3')
+    const [weekRow, lifeRow, detailRows, standingRow, creditsStandingRow] = await Promise.all([
+      env.DB.prepare(`SELECT SUM(tokens) AS t, SUM(COALESCE(json_extract(credits_json,'$.total'),0)) AS c
+        FROM ranked_usage WHERE user_id = ?1 AND day >= ?2 AND day <= ?3`)
         .bind(userId, weekFrom, today).first(),
       env.DB.prepare(`SELECT SUM(tokens) AS t, COUNT(*) AS days, MIN(day) AS first_day, MAX(updated_at) AS updated_at
         FROM ranked_usage WHERE user_id = ?1 AND (tokens > 0 OR requests > 0)`).bind(userId).first(),
@@ -496,6 +541,9 @@ export function createFeishuService({ fetcher = (...args) => fetch(...args), now
       env.DB.prepare(`SELECT COUNT(*) AS c FROM (
         SELECT user_id, SUM(tokens) AS total FROM public_usage WHERE day = ?2 GROUP BY user_id
         HAVING total > ?1)`).bind(todayRow?.t || 0, today).first(),
+      (todayRow?.c || 0) > 0 ? env.DB.prepare(`SELECT COUNT(*) AS c FROM (
+        SELECT user_id, SUM(COALESCE(json_extract(credits_json,'$.total'),0)) AS total FROM public_usage WHERE day = ?2 GROUP BY user_id
+        HAVING total > ?1)`).bind(todayRow?.c || 0, today).first() : Promise.resolve(null),
     ]);
     const tally = (rows, pick) => {
       const map = new Map();
@@ -508,18 +556,21 @@ export function createFeishuService({ fetcher = (...args) => fetch(...args), now
     };
     return {
       today: todayRow?.t || 0, todayRequests: todayRow?.r || 0,
+      todayCredits: Math.round((todayRow?.c || 0) * 1e6) / 1e6,
       week: weekRow?.t || 0,
+      weekCredits: Math.round((weekRow?.c || 0) * 1e6) / 1e6,
       lifetime: lifeRow?.t || 0, days: lifeRow?.days || 0, firstDay: lifeRow?.first_day ?? null,
       lastReportAt: lifeRow?.updated_at ?? null,
       topModel: tally(detailRows.results, (r) => JSON.parse(r.models_json || '[]')),
       topTool: tally(detailRows.results, (r) => JSON.parse(r.tools_json || '[]')),
       globalRankToday: (todayRow?.t || 0) > 0 ? (standingRow?.c || 0) + 1 : null,
+      creditsRankToday: creditsStandingRow ? (creditsStandingRow.c || 0) + 1 : null,
     };
   }
 
   /** 个人用量卡：对标小程序「我的用量」——橙色大数字、完整整数、日期区间、两列统计 */
   function personalCard(user, s, nowMs, appUrl) {
-    if (!s.lifetime && !s.today) {
+    if (!s.lifetime && !s.today && !s.todayCredits && !s.weekCredits) {
       return textCard('Token 群排名', '还没有收到你的用量。先在单聊里发「**绑定**」拿到接入命令，在电脑上运行即可。');
     }
     const hero = splitAmount(s.today);
@@ -536,6 +587,8 @@ export function createFeishuService({ fetcher = (...args) => fetch(...args), now
       markdown(`## <font color='orange'>${hero.num}${hero.unit ? ' ' + hero.unit : ''}</font>`),
       markdown(`<font color='grey'>tokens · ${integer(s.todayRequests)} 次调用 · 累计 ${formatTokens(s.lifetime)} · ${integer(s.lifetime)} tokens</font>`),
       markdown(`<font color='grey'>${s.firstDay ? `${s.firstDay} — ` : ''}${today} · 北京时间${syncTime ? ` · 同步于 ${syncTime}` : ''}</font>`),
+      ...((s.todayCredits || s.weekCredits) ? [markdown(
+        `<font color='grey'>积分（Qoder 等按积分计费）：今日 ${s.todayCredits} · 本周 ${s.weekCredits}${s.creditsRankToday ? ` · 积分榜第 ${s.creditsRankToday} 名` : ''}</font>`)] : []),
       divider(),
       rowOf([
         statCell(integer(s.todayRequests), '今日调用'),

@@ -3,7 +3,7 @@ const flow = require('../../utils/flow');
 const { presentEntries, presentMe } = require('../../utils/leaderboard');
 const { presentAnalysis } = require('../../utils/analytics');
 Page({
-  data: { periods: flow.PERIODS, period: 'day', entries: [], me: null, user: null, loading: true, error: '', updated_fmt: '',
+  data: { periods: flow.PERIODS, period: 'day', metric: 'tokens', entries: [], me: null, user: null, loading: true, error: '', updated_fmt: '',
     total: null, hasMore: false, nextOffset: null, snapshot: '', loadingMore: false, moreError: '', mode: 'ranking', insights: null },
   onShow() { this._visible = true; return this.load(); },
   onHide() { this._visible = false; this._requestId = (this._requestId || 0) + 1; this.setData({ loadingMore: false }); },
@@ -11,20 +11,20 @@ Page({
   onUnload() { this.onHide(); },
   async onPullDownRefresh() { try { await this.load({ force: true }); } finally { wx.stopPullDownRefresh(); } },
   present(entries) {
-    return presentEntries(entries, this.data.me);
+    return presentEntries(entries, this.data.me, this.data.metric);
   },
   showBoard(lb) {
-    this.setData({ entries: presentEntries(lb.entries, lb.me), total: lb.total ?? null, hasMore: !!lb.has_more,
+    this.setData({ entries: presentEntries(lb.entries, lb.me, this.data.metric), total: lb.total ?? null, hasMore: !!lb.has_more,
       nextOffset: lb.next_offset ?? null, snapshot: lb.snapshot || '', loadingMore: false, moreError: '',
-      me: presentMe(lb.me),
+      me: presentMe(lb.me, this.data.metric),
       updated_fmt: api.fmtRelTime(lb.updated_at), loading: false, error: '' });
   },
   async load(options = {}) {
     if (this.data.mode !== 'ranking') return this.loadInsights(options);
     const requestId = this._requestId = (this._requestId || 0) + 1;
-    const period = this.data.period;
+    const period = this.data.period, metric = this.data.metric || 'tokens';
     this.setData({ user: api.peekMe() || null });
-    const cached = options.force === true ? null : api.peekLeaderboard({ scope: 'global', period });
+    const cached = options.force === true ? null : api.peekLeaderboard({ scope: 'global', period, metric });
     if (cached) { this.showBoard(cached); return; }
     this.setData({ loading: true, error: '', me: null });
     try {
@@ -34,7 +34,7 @@ Page({
       api.ensureLogin(options).then(user => {
         if (requestId === this._requestId) this.setData({ user });
       }).catch(() => {});
-      const lb = await api.fetchLeaderboard({ scope: 'global', period }, options);
+      const lb = await api.fetchLeaderboard({ scope: 'global', period, metric }, options);
       if (requestId !== this._requestId) return;
       this.showBoard(lb);
     } catch (err) {
@@ -46,11 +46,11 @@ Page({
     if (this.data.mode !== 'ranking') return;
     if (!this._visible || this.data.loading || this.data.loadingMore || !this.data.hasMore || !this.data.snapshot) return;
     const requestId = this._requestId;
-    const { period, snapshot, nextOffset } = this.data;
+    const { period, snapshot, nextOffset } = this.data, metric = this.data.metric || 'tokens';
     const current = () => this._visible && requestId === this._requestId;
     this.setData({ loadingMore: true, moreError: '' });
     try {
-      const lb = await api.fetchLeaderboard({ scope: 'global', period, offset: nextOffset, snapshot }, { force: true });
+      const lb = await api.fetchLeaderboard({ scope: 'global', period, metric, offset: nextOffset, snapshot }, { force: true });
       if (!current()) return;
       if (lb.snapshot !== snapshot) { const err = new Error('榜单已有更新'); err.statusCode = 409; throw err; }
       this.setData({ entries: this.data.entries.concat(this.present(lb.entries)), total: lb.total ?? this.data.total,
@@ -68,6 +68,12 @@ Page({
     if (period === this.data.period) return;
     this.setData({ period });
     return this.load();
+  },
+  switchMetric(e) {
+    const metric = e.currentTarget.dataset.key;
+    if (metric === this.data.metric) return;
+    this.setData({ metric, entries: [], me: null, snapshot: '', hasMore: false, nextOffset: null });
+    return this.load({ force: true });
   },
   switchMode(e) {
     const mode = e.currentTarget.dataset.key;

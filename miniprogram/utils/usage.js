@@ -26,7 +26,11 @@ function present(usage) {
   const summary = usage.summary;
   const peak = Math.max(0, ...usage.daily.map(d => d.tokens));
   const detail = items => items.map(item => ({ ...item, exact: integer(item.tokens), formatted: formatTokens(item.tokens) }));
-  return { ...usage, costDisplay: presentCost(usage.cost), ...usageBasis(usage), ...compact(summary.tokens), exact: integer(summary.tokens),
+  return { ...usage, costDisplay: presentCost(usage.cost),
+    creditsDisplay: usage.credits && usage.credits.status !== 'unavailable' && usage.credits.total > 0
+      ? { available: true, amount: String(Math.round(usage.credits.total * 100) / 100), note: (usage.credits.tools || []).map(t => t[0]).slice(0, 2).join('、') }
+      : { available: false },
+    ...usageBasis(usage), ...compact(summary.tokens), exact: integer(summary.tokens),
     periodLabel: PERIODS.find(p => p.key === usage.period)?.label || '今日',
     range: usage.from === usage.to ? usage.to : `${usage.from} — ${usage.to}`,
     requestsText: integer(summary.requests), cacheReadText: formatTokens(summary.cache_read), cacheWriteText: formatTokens(summary.cache_write),

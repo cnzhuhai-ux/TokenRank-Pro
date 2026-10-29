@@ -124,8 +124,9 @@ async function subscriptionMutation(path, options) {
 const usagePath = period => `/api/my/usage?period=${encodeURIComponent(period || 'day')}`;
 const rankingsPath = period => `/api/my/rankings?period=${encodeURIComponent(period || 'day')}`;
 const groupPath = id => `/api/groups/${encodeURIComponent(id)}`;
-const boardPath = ({ scope = 'global', id = '', period = 'day', offset = 0, snapshot = '' } = {}) =>
+const boardPath = ({ scope = 'global', id = '', period = 'day', offset = 0, snapshot = '', metric = '' } = {}) =>
   `/api/leaderboard?scope=${scope}${id ? `&id=${encodeURIComponent(id)}` : ''}&period=${period}` +
+  (metric && metric !== 'tokens' ? `&metric=${encodeURIComponent(metric)}` : '') +
   (offset ? `&offset=${encodeURIComponent(offset)}&snapshot=${encodeURIComponent(snapshot)}` : '');
 const analysisPath = ({ scope = 'mine', period = 'day', dimension = 'tools', tool = '' } = {}) =>
   `${scope === 'public' ? '/api/insights' : '/api/my/analysis'}?period=${encodeURIComponent(period)}&dimension=${encodeURIComponent(dimension)}` + (tool ? '&tool=' + encodeURIComponent(tool) : '');

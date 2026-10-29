@@ -15,12 +15,13 @@ export async function groupPk(env, user, groupId, body, origin, now = Date.now()
     typeof snapshot !== 'string' || !/^[a-f0-9]{64}$/.test(snapshot)) return jsonError(400, 'PK 参数无效，请重新从群榜选择');
   const range = usageWindow(period, now), to = period === 'all' ? '9999-12-31' : range.to;
   const ranked = `SELECT u.id AS uid, u.nickname, u.avatar_path,
-    SUM(ds.tokens) AS tokens, SUM(ds.requests) AS requests, SUM(ds.cache_read + ds.cache_write) AS cache
+    SUM(ds.tokens) AS tokens, SUM(ds.requests) AS requests, SUM(ds.cache_read + ds.cache_write) AS cache,
+    SUM(COALESCE(json_extract(ds.credits_json,'$.total'),0)) AS credits
     FROM public_usage ds JOIN users u ON u.id=ds.user_id
     WHERE ds.day>=?1 AND ds.day<=?2 AND ds.user_id IN
       (SELECT user_id FROM rank_group_members WHERE group_id=?3 AND hidden=0)
-    GROUP BY ds.user_id HAVING tokens>0 ORDER BY tokens DESC, uid ASC`;
-  const fields = 'day,tokens,input_tokens,output_tokens,requests,cache_read,cache_write,models_json,tools_json,updated_at,cost_json';
+    GROUP BY ds.user_id HAVING SUM(ds.tokens)>0 ORDER BY SUM(ds.tokens) DESC, uid ASC`;
+  const fields = 'day,tokens,input_tokens,output_tokens,requests,cache_read,cache_write,models_json,tools_json,updated_at,cost_json,credits_json';
   const [groups, rankedRows, peerRows, ownRows] = await env.DB.batch([
     env.DB.prepare(`SELECT g.id,g.name,(SELECT COUNT(*) FROM rank_group_members WHERE group_id=g.id) AS members,
       EXISTS(SELECT 1 FROM rank_group_members WHERE group_id=g.id AND user_id=?2) AS joined

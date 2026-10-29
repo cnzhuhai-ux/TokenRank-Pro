@@ -1,5 +1,6 @@
 import { beijingDay, beijingDaysAgo as daysAgo } from './lib.js';
 import { buildCosts } from './costs.js';
+import { buildCredits } from './credits.js';
 
 export function usageWindow(value, now = Date.now()) {
   const period = ['day', 'week', 'month', 'all'].includes(value) ? value : 'day';
@@ -67,7 +68,7 @@ export function buildUsage(rows, period, now = Date.now()) {
   return {
     period: window.period, timezone: 'Asia/Shanghai', token_basis: 'upstream_total',
     from: window.period === 'all' ? selected.find(row => row.tokens > 0 || row.requests > 0)?.day || window.to : window.from, to: window.to,
-    summary, daily, cost: buildCosts(selected),
+    summary, daily, cost: buildCosts(selected), credits: buildCredits(selected),
     trend_days: window.trendDays,
     models: breakdown(models, summary.tokens), tools: breakdown(tools, summary.tokens),
     updated_at: selected.reduce((latest, row) => Math.max(latest, count(row.updated_at)), 0) || null,

@@ -18,7 +18,7 @@ function fixture(t) {
   for (const uid of [1,2]) {
     db.prepare('INSERT INTO users(id,openid,nickname,created_at,updated_at) VALUES(?,?,?,?,?)').run(uid,'user-'+uid,'name-'+uid,now,now);
     db.prepare('INSERT INTO connect_tokens(token,user_id,created_at) VALUES(?,?,?)').run(String(uid).repeat(32),uid,now);
-    db.prepare(`INSERT INTO daily_totals VALUES(?,?,?,900,900,0,0,0,1,'[]','[]',?,?,NULL,NULL)`).run(uid,'same-device','2026-01-01',now-1000,now-1000);
+    db.prepare(`INSERT INTO daily_totals VALUES(?,?,?,900,900,0,0,0,1,'[]','[]',?,?,NULL,NULL,NULL)`).run(uid,'same-device','2026-01-01',now-1000,now-1000);
     db.prepare('INSERT INTO usage_sync_state VALUES(?,?,?,?)').run(uid,'same-device',now-1000,now-1000);
   }
   function prepare(sql) {
@@ -68,7 +68,7 @@ test('联合明细普通上报、重建和重试保留一致，旧客户端新�
 
 test('replacement stays invisible until complete; commit removes old days, devices and legacy totals only for this account', async t=>{
   const f=fixture(t), before=f.rows(1), other=f.rows(2);
-  f.db.exec(`INSERT INTO daily_totals SELECT user_id,'old-device',day,tokens,input_tokens,output_tokens,cache_read,cache_write,requests,models_json,tools_json,source_at,updated_at,cost_json,tool_models_json FROM daily_totals WHERE user_id=1;
+  f.db.exec(`INSERT INTO daily_totals SELECT user_id,'old-device',day,tokens,input_tokens,output_tokens,cache_read,cache_write,requests,models_json,tools_json,source_at,updated_at,cost_json,tool_models_json,credits_json FROM daily_totals WHERE user_id=1;
     INSERT INTO daily_stats(user_id,day,tokens,updated_at) VALUES(1,'2025-01-01',999,1);
     INSERT INTO rank_groups(id,name,owner_user_id,created_at) VALUES('group','保留群',1,1);
     INSERT INTO rank_group_members(group_id,user_id,joined_at) VALUES('group',1,1);`);

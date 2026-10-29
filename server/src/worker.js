@@ -765,15 +765,21 @@ async function leaderboard(request, env, url) {
   // me 查询的占位符不同（?1/?2/?3 已被占用），群过滤落在 ?4
   const memberFilterMe = scope === 'group' ? ` AND ds.user_id IN (${groupMembers('?4')})` : '';
   const binds = scope === 'group' ? [from, to, group.id] : [from, to];
+  // 双指标榜单：tokens（默认）或 credits（积分计费工具，Qoder 等）
+  const metric = url.searchParams.get('metric') === 'credits' ? 'credits' : 'tokens';
+  const creditsSum = `SUM(COALESCE(json_extract(ds.credits_json,'$.total'),0))`;
+  // 显式聚合表达式：HAVING 里写别名 tokens 会解析到基础列（非聚合），有 0 值日时整组被误过滤
+  const metricSql = metric === 'credits' ? creditsSum : 'SUM(ds.tokens)';
 
   const rowsTask = env.DB.prepare(`
     SELECT u.id AS uid, u.nickname, u.avatar_path,
            SUM(ds.tokens) AS tokens, SUM(ds.requests) AS requests,
-           SUM(ds.cache_read + ds.cache_write) AS cache
+           SUM(ds.cache_read + ds.cache_write) AS cache,
+           ${creditsSum} AS credits
     FROM public_usage ds JOIN users u ON u.id = ds.user_id
     WHERE ds.day >= ?1 AND ds.day <= ?2${memberFilter}
-    GROUP BY ds.user_id HAVING tokens > 0
-    ORDER BY tokens DESC, uid ASC`).bind(...binds).all();
+    GROUP BY ds.user_id HAVING ${metricSql} > 0
+    ORDER BY ${metricSql} DESC, uid ASC`).bind(...binds).all();
 
   const modelTask = env.DB.prepare(`
     SELECT ds.user_id AS uid, json_extract(je.value, '$[0]') AS model,
@@ -784,7 +790,10 @@ async function leaderboard(request, env, url) {
   // 更新时间：所选范围内最后一次数据写入
   const updateTask = env.DB.prepare(`SELECT MAX(updated_at) AS ts FROM public_usage ds WHERE ds.day >= ?1 AND ds.day <= ?2${memberFilter}`).bind(...binds).first();
 
-  const globalTask = scope === 'group' ? env.DB.prepare(`SELECT ds.user_id AS uid, SUM(ds.tokens) AS t FROM public_usage ds WHERE ds.day >= ?1 AND ds.day <= ?2 GROUP BY ds.user_id HAVING t > 0 ORDER BY t DESC, uid ASC`).bind(from, to).all() : Promise.resolve(null);
+  const globalTask = scope === 'group' ? env.DB.prepare(`SELECT ds.user_id AS uid, SUM(ds.tokens) AS t, ${creditsSum} AS c
+    FROM public_usage ds WHERE ds.day >= ?1 AND ds.day <= ?2
+    GROUP BY ds.user_id HAVING ${metricSql} > 0
+    ORDER BY ${metricSql} DESC, uid ASC`).bind(from, to).all() : Promise.resolve(null);
   const [rows, modelRows, upRow, allRows] = await Promise.all([rowsTask, modelTask, updateTask, globalTask]);
   const globalRankMap = allRows ? new Map(allRows.results.map((r, i) => [r.uid, i + 1])) : null;
   // Group aggregates also supply the total and a stable fingerprint. Only one
@@ -806,6 +815,7 @@ async function leaderboard(request, env, url) {
     nickname: r.nickname || `AI玩家-${String(r.uid).slice(-4).padStart(4, '0')}`,
     avatar_url: r.avatar_path ? `${origin}/avatars/${r.avatar_path}` : null,
     tokens: r.tokens,
+    credits: Math.round((r.credits || 0) * 1e6) / 1e6,
     requests: r.requests,
     cache: r.cache || 0,
     top_model: topModel.get(r.uid)?.model ?? null,
@@ -816,25 +826,26 @@ async function leaderboard(request, env, url) {
   let me = null;
   if (session) {
     const mine = await env.DB.prepare(`
-      SELECT SUM(ds.tokens) AS tokens, SUM(ds.requests) AS requests
+      SELECT SUM(ds.tokens) AS tokens, SUM(ds.requests) AS requests, ${creditsSum} AS credits
       FROM public_usage ds WHERE ds.user_id = ?1 AND ds.day >= ?2 AND ds.day <= ?3${memberFilterMe}`)
       .bind(session.id, from, to, ...(scope === 'group' ? [group.id] : [])).first();
-    if (mine && mine.tokens > 0) {
+    const mineMetric = metric === 'credits' ? (mine?.credits || 0) : (mine?.tokens || 0);
+    if (mine && (mine.tokens > 0 || mine.credits > 0)) {
       const ahead = await env.DB.prepare(`
         SELECT COUNT(*) AS c FROM (
-          SELECT ds.user_id, SUM(ds.tokens) AS t FROM public_usage ds
+          SELECT ds.user_id, ${metric === 'credits' ? creditsSum : 'SUM(ds.tokens)'} AS t FROM public_usage ds
           WHERE ds.day >= ?2 AND ds.day <= ?3${memberFilterMe}
           GROUP BY ds.user_id HAVING t > ?1 OR (t = ?1 AND ds.user_id < ${scope === 'group' ? '?5' : '?4'}))`)
-          .bind(mine.tokens, from, to, ...(scope === 'group' ? [group.id] : []), session.id).first();
+          .bind(mineMetric, from, to, ...(scope === 'group' ? [group.id] : []), session.id).first();
       // 群榜时 me.rank 是群内名次，global_rank 是广场名次；全局榜两者相同
-      me = { rank: ahead.c + 1, tokens: mine.tokens, requests: mine.requests,
+      me = { rank: ahead.c + 1, tokens: mine.tokens, credits: Math.round((mine.credits || 0) * 1e6) / 1e6, requests: mine.requests,
         top_model: topModel.get(session.id)?.model ?? null,
         global_rank: globalRankMap ? (globalRankMap.get(session.id) ?? null) : ahead.c + 1 };
     }
   }
 
   return Response.json({
-    scope, period, day: today,
+    scope, period, metric, day: today,
     group: group ? { id: group.id, name: group.name } : null,
     entries, me,
     ...(group ? { members: group.members } : {}),
@@ -860,7 +871,7 @@ async function myUsage(request, env, url, sharedRange = null) {
   // 今日页也返回最近 7 天趋势，趋势范围不改变今日总量。
   const readFrom = range.period === 'day' ? daysAgo(6, now) : range.from;
   const rowsTask = env.DB.prepare(`SELECT day, tokens, input_tokens, output_tokens, requests, cache_read, cache_write,
-    models_json, tools_json, updated_at, cost_json FROM ranked_usage
+    models_json, tools_json, updated_at, cost_json, credits_json FROM ranked_usage
     WHERE user_id = ?1 AND day >= ?2 AND day <= ?3 ORDER BY day`).bind(user.id, readFrom, range.to).all();
   const historyTask = env.DB.prepare(`SELECT COUNT(*) AS days, SUM(tokens) AS tokens,
     MIN(day) AS first_day, MAX(updated_at) AS updated_at FROM ranked_usage

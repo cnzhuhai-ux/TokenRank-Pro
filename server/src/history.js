@@ -12,7 +12,7 @@ export async function digest(value) {
 async function ownRows(env, userId, from, to, groups = false) {
   const result = await env.DB.batch([
     env.DB.prepare(`SELECT day,tokens,input_tokens,output_tokens,requests,cache_read,cache_write,
-      models_json,tools_json,updated_at,cost_json FROM ranked_usage WHERE user_id=?1 AND day>=?2 AND day<=?3 ORDER BY day`).bind(userId, from, to),
+      models_json,tools_json,updated_at,cost_json,credits_json FROM ranked_usage WHERE user_id=?1 AND day>=?2 AND day<=?3 ORDER BY day`).bind(userId, from, to),
     env.DB.prepare(`SELECT MIN(day) AS first_day,MAX(updated_at) AS updated_at FROM ranked_usage WHERE user_id=?1`).bind(userId),
     env.DB.prepare(`SELECT EXISTS(SELECT 1 FROM usage_sync_state WHERE user_id=?1) AS ready,
       EXISTS(SELECT 1 FROM daily_stats WHERE user_id=?1) AS legacy`).bind(userId),

@@ -22,6 +22,38 @@ export function openSource(path = DEFAULT_DB) {
   }
 }
 
+/** credits（积分）计费源（Qoder 等）：老版本 token-watcher 没有该表，返回 null 优雅降级。 */
+function readCreditsMap(db, from, now) {
+  const table = db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='credit_usage'").get();
+  if (!table) return null;
+  const round6 = value => Math.round(value * 1e6) / 1e6;
+  const totals = db.prepare(`SELECT CAST((ts + 28800000) / 86400000 AS INTEGER) AS daynum, SUM(amount) AS total
+    FROM credit_usage WHERE ts >= ? AND ts <= ? GROUP BY daynum`).all(from, now);
+  const map = new Map();
+  for (const r of totals) {
+    if (!Number.isFinite(r.total) || r.total < 0 || r.total > 1e9) {
+      const day = new Date(r.daynum * 86400000).toISOString().slice(0, 10);
+      throw new Error(`${day} 的 credits 超出上报协议范围；已停止同步，不截断或改写原始数据`);
+    }
+    if (r.total > 0) map.set(r.daynum, { total: round6(r.total), tools: [] });
+  }
+  const byTool = db.prepare(`SELECT CAST((ts + 28800000) / 86400000 AS INTEGER) AS daynum,
+    report_name(tool) AS name, SUM(amount) AS amount FROM credit_usage
+    WHERE ts >= ? AND ts <= ? AND tool IS NOT NULL AND tool != ''
+    GROUP BY daynum, name ORDER BY daynum, amount DESC, name ASC`).all(from, now);
+  for (const r of byTool) {
+    const entry = map.get(r.daynum);
+    if (!entry || !Number.isFinite(r.amount) || r.amount <= 0) continue;
+    if (entry.tools.length < 8) entry.tools.push([String(r.name).slice(0, 60), round6(r.amount)]);
+  }
+  for (const entry of map.values()) {
+    // 四舍五入可能让分项之和略超总额，钳回边界，与服务端 1e-6 容差对齐
+    let sum = entry.tools.reduce((n, [, amount]) => n + amount, 0);
+    if (sum > entry.total && entry.tools.length) entry.tools.at(-1)[1] = round6(Math.max(0, entry.tools.at(-1)[1] - (sum - entry.total)));
+  }
+  return map;
+}
+
 /** All SELECTs share one snapshot, including committed WAL records. No upstream Store or scanner is loaded. */
 export function readDays(path, { now = Date.now(), fromDay = null, costing = null } = {}) {
   const db = openSource(path);
@@ -58,16 +90,22 @@ export function readDays(path, { now = Date.now(), fromDay = null, costing = nul
     };
     const modelMap = detailMap(models), toolMap = detailMap(tools);
     const costs = costing ? costing(db, from, now) : null;
-    const days = rows.map(row => {
-      const day = new Date(row.daynum * 86400000).toISOString().slice(0, 10);
+    const creditsMap = readCreditsMap(db, from, now);
+    // Qoder 等纯 credits 工具不产生 events 行，日桶取两者并集
+    const daynums = new Set([...rows.map(row => row.daynum), ...(creditsMap ? [...creditsMap.keys()] : [])]);
+    const rowMap = new Map(rows.map(row => [row.daynum, row]));
+    const days = [...daynums].sort((a, b) => a - b).map(daynum => {
+      const row = rowMap.get(daynum) || { tokens: 0, input_tokens: 0, output_tokens: 0, requests: 0, cache_read: 0, cache_write: 0 };
+      const day = new Date(daynum * 86400000).toISOString().slice(0, 10);
       for (const [key, max] of Object.entries(MAX)) {
         if (!Number.isSafeInteger(row[key]) || row[key] < 0 || row[key] > max)
           throw new Error(`${day} 的 ${key} 超出当前上报协议范围；已停止同步，不截断或改写原始数据`);
       }
       return { day, tokens: row.tokens, input_tokens: row.input_tokens, output_tokens: row.output_tokens, requests: row.requests, cache_read: row.cache_read, cache_write: row.cache_write,
-        models: modelMap.get(row.daynum) || [], tools: toolMap.get(row.daynum) || [],
-        tool_models: toolModels.get(row.daynum) || [],
-        ...(costs?.has(row.daynum) ? { cost: costs.get(row.daynum) } : {}) };
+        models: modelMap.get(daynum) || [], tools: toolMap.get(daynum) || [],
+        tool_models: toolModels.get(daynum) || [],
+        ...(costs?.has(daynum) ? { cost: costs.get(daynum) } : {}),
+        ...(creditsMap?.has(daynum) ? { credits: creditsMap.get(daynum) } : {}) };
     });
     db.exec('COMMIT');
     return days;

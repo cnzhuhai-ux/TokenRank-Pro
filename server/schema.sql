@@ -103,6 +103,7 @@ CREATE TABLE IF NOT EXISTS daily_totals (
   source_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL,
   cost_json TEXT,
+  credits_json TEXT,
   tool_models_json TEXT,                    -- [[工具, 模型, tokens]]，旧同步器为 NULL
   PRIMARY KEY (user_id, device_id, day)
 );
