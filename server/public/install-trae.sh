@@ -36,7 +36,7 @@ ACTUAL="$( (sha256sum "$TMP/extension.vsix" 2>/dev/null || shasum -a 256 "$TMP/e
 head -c 2 "$TMP/extension.vsix" | grep -q 'PK' || { echo '下载内容不是 ZIP 包' >&2; exit 1; }
 
 EXT_DIR="$HOME/.trae-cn/extensions/local-poc.trae-credits-poc-$VERSION"
-if [ -f "$EXT_DIR/extension.js" ]; then
+if [ -f "$EXT_DIR/extension/extension.js" ]; then
   echo "已安装版本 $VERSION，跳过（重装先删除 $EXT_DIR）"
   exit 0
 fi
@@ -58,7 +58,7 @@ else
   rm -rf "$EXT_DIR"
   mkdir -p "$EXT_DIR"
   unzip -q -o "$TMP/extension.vsix" -d "$EXT_DIR"
-  [ -f "$EXT_DIR/extension.js" ] || { echo '解压结果缺少 extension.js' >&2; exit 1; }
+  [ -f "$EXT_DIR/extension/extension.js" ] || { echo '解压结果缺少 extension/extension.js' >&2; exit 1; }
 fi
 
 echo '完成：重启 Trae CN 窗口后生效。'

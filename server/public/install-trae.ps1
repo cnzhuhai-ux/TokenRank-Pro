@@ -32,31 +32,36 @@ try {
   $head = [System.IO.File]::ReadAllBytes($vsix)[0..1]
   if ($head[0] -ne 0x50 -or $head[1] -ne 0x4b) { throw '下载内容不是 ZIP 包' }
 
-  # 3) 已装同版本且未带 --force 时幂等退出
+  # 3) 已装同版本且未带 --force 时幂等退出（CLI 与解压安装的目录结构都是 extension\extension.js）
   $extDir = Join-Path $env:USERPROFILE ('.trae-cn\extensions\local-poc.trae-credits-poc-' + $version)
-  $installed = Test-Path (Join-Path $extDir 'extension.js') -PathType Leaf -ErrorAction SilentlyContinue
+  $installed = Test-Path (Join-Path $extDir 'extension\extension.js') -PathType Leaf -ErrorAction SilentlyContinue
   if ($installed -and -not $Force) { Write-Host "已安装版本 $version，跳过（重装加 -Force）"; exit 0 }
 
-  # 4) 优先用 Trae CN CLI 安装
-  $cli = @(
+  # 4) 优先用 Trae CN CLI 安装（含装在自定义盘 Program Files 的情况）
+  $cliCandidates = @(
     (Join-Path $env:LOCALAPPDATA 'Programs\Trae CN\bin\trae-cn.cmd'),
     (Join-Path $env:ProgramFiles 'Trae CN\bin\trae-cn.cmd'),
     (Join-Path ${env:ProgramFiles(x86)} 'Trae CN\bin\trae-cn.cmd'),
     ((Get-Command trae-cn -ErrorAction SilentlyContinue).Source)
-  ) | Where-Object { $_ -and (Test-Path $_) } | Select-Object -First 1
+  )
+  foreach ($drive in (Get-PSDrive -PSProvider FileSystem -ErrorAction SilentlyContinue)) {
+    $cliCandidates += (Join-Path ($drive.Name + ':\') 'Program Files\Trae CN\bin\trae-cn.cmd')
+    $cliCandidates += (Join-Path ($drive.Name + ':\') 'Program Files (x86)\Trae CN\bin\trae-cn.cmd')
+  }
+  $cli = $cliCandidates | Where-Object { $_ -and (Test-Path $_ -PathType Leaf) } | Select-Object -First 1
   if ($cli) {
     Write-Host "通过 CLI 安装：$cli"
     & $cli --install-extension $vsix --force
     if ($LASTEXITCODE -ne 0) { throw 'Trae CLI 安装失败' }
   } else {
-    # 5) 无 CLI 时降级解压到扩展目录
+    # 5) 无 CLI 时降级解压到扩展目录（结构与 CLI 安装一致：extension\ 在版本目录下）
     Write-Host '未找到 trae-cn CLI，降级解压到扩展目录'
     $zipCopy = Join-Path $dir 'extension.zip'
     Copy-Item $vsix $zipCopy
     if (Test-Path $extDir) { Remove-Item -Recurse -Force $extDir }
     New-Item -ItemType Directory -Force -Path $extDir | Out-Null
     Expand-Archive -LiteralPath $zipCopy -DestinationPath $extDir -Force
-    if (-not (Test-Path (Join-Path $extDir 'extension.js'))) { throw '解压结果缺少 extension.js' }
+    if (-not (Test-Path (Join-Path $extDir 'extension\extension.js'))) { throw '解压结果缺少 extension\extension.js' }
   }
 
   Write-Host '完成：重启 Trae CN 窗口后生效。'
