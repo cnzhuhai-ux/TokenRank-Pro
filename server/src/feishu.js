@@ -96,6 +96,14 @@ export function parseCommand(raw) {
   }[lower];
   if (exact) return { cmd: exact };
 
+  // 「绑定 <系统>」：指定系统时只返回该系统的安装命令（mac/win/windows/linux，连写也可）
+  const bind = /^(?:绑定|接入|bind|connect)(?:\s+(\S+))?$/.exec(text)
+    || /^(?:绑定|接入|bind|connect)(windows|win|mac|macos|darwin|linux)$/i.exec(text);
+  if (bind) {
+    const os = ({ windows: 'windows', win: 'windows', mac: 'mac', macos: 'mac', darwin: 'mac', linux: 'linux' })[String(bind[1] || '').toLowerCase()] || null;
+    return { cmd: 'bind', ...(os ? { os } : {}) };
+  }
+
   const head = RANK_HEADS.find((h) => lower === h || lower.startsWith(h));
   if (!head) return null;
   const rest = lower.slice(head.length).trim();
@@ -143,7 +151,7 @@ export function helpCard({ groupReady, appUrl }) {
     '**隐藏 / 显示**　在本群隐藏或恢复自己的排名',
     '**退出**　退出本群榜单', '',
     '**单聊命令**', '',
-    '**绑定**　获取电脑接入码和安装命令（接入码只发单聊）',
+    '**绑定 [windows|mac]**　获取接入码与安装命令（Trae 采集扩展 + TokenRank 同步器；接入码只发单聊）',
     '**我的**　查看个人用量日报',
     '**榜单**　看广场总榜',
   ];
@@ -267,24 +275,44 @@ export function leaderboardCard({ title, entries, members, updatedAt, nowMs, per
   return cardBody(elements);
 }
 
-export function connectCard(origin, token) {
+export function connectCard(origin, token, os = null) {
   const base = String(origin || '').replace(/\/+$/, '');
   const sh = `curl -fsSL ${base}/install.sh | sh -s ${base} ${token}`;
   const ps = `& ([scriptblock]::Create((irm '${base}/install.ps1'))) '${base}' '${token}'`;
+  // Trae 采集扩展：统计 Trae 的 token 与 Credits（含模型维度），装了 Trae 的机器需要
+  const traeSh = `curl -fsSL ${base}/install-trae.sh | sh -s ${base}`;
+  const traePs = `& ([scriptblock]::Create((irm '${base}/install-trae.ps1'))) '${base}'`;
+  const wantWindows = os === 'windows', wantMac = os === 'mac' || os === 'linux';
+  const syncers = [
+    ...(wantWindows ? [] : [{ title: 'macOS / Linux', cmd: sh }]),
+    ...(wantMac ? [] : [{ title: 'Windows PowerShell', cmd: ps }]),
+  ];
+  const traeInstallers = [
+    ...(wantWindows ? [] : [{ title: 'macOS', cmd: traeSh, note: os === 'linux' ? 'Linux 复用同一条命令（未真机验证）' : '' }]),
+    ...(wantMac ? [] : [{ title: 'Windows PowerShell', cmd: traePs, note: '' }]),
+  ];
   return cardBody([
     markdown('### 电脑接入'),
     divider(),
-    markdown('电脑装好 [Node.js 22+](https://nodejs.org) 后运行对应系统的命令（从本服务下载安装包，不走第三方源）：'),
-    markdown('**macOS / Linux**\n`' + sh + '`'),
-    markdown('**Windows PowerShell**\n`' + ps + '`'),
-    markdown('运行一次即可，之后每 5 分钟自动上报一次按天汇总的数字。'),
+    markdown('电脑装好 [Node.js 22+](https://nodejs.org) 后运行 **第 ② 步**的命令（从本服务下载安装包，不走第三方源）：'),
+    ...(!os ? [markdown(`<font color='grey'>发「绑定 windows」或「绑定 mac」只看本机系统的命令</font>`)] : []),
+    markdown('**① Trae 采集扩展**（装了 Trae CN 的机器需要；统计 token 与 Credits，含模型维度）'),
+    ...traeInstallers.flatMap((item) => [
+      markdown(`**${item.title}**\n\`${item.cmd}\``),
+      ...(item.note ? [markdown(`<font color='grey'>${mdEscape(item.note)}</font>`)] : []),
+    ]),
+    markdown('装完重启 Trae 窗口生效；没装 Trae 可跳过这一步。'),
+    divider(),
+    markdown('**② TokenRank 同步器**（必装：把各工具的用量汇总上报到榜单）'),
+    ...syncers.map((item) => markdown(`**${item.title}**\n\`${item.cmd}\``)),
+    markdown('运行一次即可，之后每 5 分钟自动上报一次按天汇总的数字；Trae 扩展的快照每 15 分钟随同步器上报。'),
     divider(),
     markdown(`**接入码**（重置即作废旧码，请勿转发）：\n\`${token}\``),
     divider(),
     markdown('接入后在群里发「**加入**」上榜，发「**榜单**」看排行。'),
     divider(),
     markdown(`[打开网页应用（群榜 / 我的用量）](${base}/app)`),
-    noteEl('只上报每天的 token 数、调用次数和工具/模型名，不含代码、对话和文件路径'),
+    noteEl('只上报每天的 token 数、调用次数、Credits 和工具/模型名，不含代码、对话和文件路径'),
   ]);
 }
 
@@ -692,7 +720,7 @@ export function createFeishuService({ fetcher = (...args) => fetch(...args), now
         return reply(textCard('电脑接入', '接入码是私人凭证，不在群里发送。**请点我的头像进入单聊，发送「绑定」**。', appUrl));
       }
       const { user, token } = await bindAccount(env, openId);
-      return reply(connectCard(origin, token));
+      return reply(connectCard(origin, token, command.os ?? null));
     }
 
     if (command.cmd === 'my') {

@@ -354,12 +354,51 @@ test('单聊「绑定」：创建账号、发接入码；重复绑定幂等不�
   assert.equal(user.nickname, '张三');
   assert.equal(user.avatar_url, 'https://img.example/new.png');
   const token = db.prepare('SELECT token FROM connect_tokens WHERE user_id=?').get(user.id).token;
-  assert.match(sentTexts(log)[0], new RegExp(`curl -fsSL https://rank\\.example\\.com/install\\.sh \\| sh -s https://rank\\.example\\.com ${token}`));
-  assert.match(sentTexts(log)[0], /install\.ps1/);
+  const card = sentTexts(log)[0];
+  // 默认（未指定系统）：两套同步器命令 + 两套 Trae 扩展命令 + 只看本机系统的提示
+  assert.match(card, new RegExp(`curl -fsSL https://rank\\.example\\.com/install\\.sh \\| sh -s https://rank\\.example\\.com ${token}`));
+  assert.match(card, /install\.ps1/);
+  assert.match(card, /install-trae\.sh \| sh -s https:\/\/rank\.example\.com/);
+  assert.match(card, /install-trae\.ps1/);
+  assert.match(card, /Trae 采集扩展/);
+  assert.match(card, /只看本机系统的命令/);
+  assert.match(card, new RegExp(token));
   await fire(service, env, messageEvent({ chatId: 'oc_p2p', chatType: 'p2p', openId: 'ou_new', text: '绑定', eventId: 'evt-bind2' }));
   assert.equal(db.prepare('SELECT COUNT(*) c FROM users WHERE openid=?').get('feishu:ou_new').c, 1);
   assert.equal(db.prepare('SELECT COUNT(*) c FROM connect_tokens WHERE user_id=?').get(user.id).c, 1);
   assert.match(sentTexts(log).at(-1), new RegExp(token));
+});
+
+test('「绑定 <系统>」只返回该系统的安装命令；未知系统参数回落为两套', async (t) => {
+  const { env } = fixture(t);
+  const log = [];
+  const service = createFeishuService({ fetcher: fakeFeishuApi(log), now: () => NOW });
+  await fire(service, env, messageEvent({ chatId: 'oc_p2p', chatType: 'p2p', openId: 'ou_9', text: '绑定 windows', eventId: 'evt-bind-win' }));
+  const win = sentTexts(log).at(-1);
+  assert.match(win, /install-trae\.ps1/);
+  assert.match(win, /install\.ps1/);
+  assert.doesNotMatch(win, /install-trae\.sh/);
+  assert.doesNotMatch(win, /install\.sh \|/);
+  await fire(service, env, messageEvent({ chatId: 'oc_p2p', chatType: 'p2p', openId: 'ou_9', text: '绑定 mac', eventId: 'evt-bind-mac' }));
+  const mac = sentTexts(log).at(-1);
+  assert.match(mac, /install-trae\.sh/);
+  assert.match(mac, /install\.sh \|/);
+  assert.doesNotMatch(mac, /trae-cn\.cmd|install-trae\.ps1/);
+  assert.doesNotMatch(mac, /install\.ps1/);
+  await fire(service, env, messageEvent({ chatId: 'oc_p2p', chatType: 'p2p', openId: 'ou_9', text: '绑定 linux', eventId: 'evt-bind-linux' }));
+  const linux = sentTexts(log).at(-1);
+  assert.match(linux, /install-trae\.sh/);
+  assert.match(linux, /Linux 复用同一条命令/);
+  assert.doesNotMatch(linux, /install\.ps1/);
+  await fire(service, env, messageEvent({ chatId: 'oc_p2p', chatType: 'p2p', openId: 'ou_9', text: '绑定 ios', eventId: 'evt-bind-ios' }));
+  assert.match(sentTexts(log).at(-1), /install-trae\.ps1/);
+  assert.match(sentTexts(log).at(-1), /install-trae\.sh/);
+  // 解析层直测：os 归一与裸「绑定」不带 os 字段
+  assert.deepEqual(parseCommand('绑定'), { cmd: 'bind' });
+  assert.deepEqual(parseCommand('绑定 mac'), { cmd: 'bind', os: 'mac' });
+  assert.deepEqual(parseCommand('绑定windows'), { cmd: 'bind', os: 'windows' });
+  assert.deepEqual(parseCommand('bind linux'), { cmd: 'bind', os: 'linux' });
+  assert.deepEqual(parseCommand('接入码'), null);
 });
 
 test('群里「绑定」绝不泄露接入码，只引导单聊', async (t) => {

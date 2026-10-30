@@ -87,13 +87,19 @@ const STATIC_TYPES = {
   '.html': 'text/html; charset=utf-8',
   '.css': 'text/css; charset=utf-8',
   '.js': 'text/javascript; charset=utf-8',
+  '.json': 'application/json; charset=utf-8',
   '.svg': 'image/svg+xml',
   '.png': 'image/png',
+  // Trae 采集扩展安装包：二进制流，安装脚本按 sha256 校验后落盘
+  '.vsix': 'application/octet-stream',
 };
 const STATIC_ALLOW = [
-  /^\/(?:install|update)\.(?:sh|ps1)$/,
+  /^\/(?:install|update)(?:-trae)?\.(?:sh|ps1)$/,
   /^\/version\.txt$/,
   /^\/dl\/[\w.+-]+$/,
+  // Trae 扩展分发：latest.json 指针 + 版本目录内的 vsix 与校验和
+  /^\/dl\/trae-extension\/latest\.json$/,
+  /^\/dl\/trae-extension\/[\w.]+\/[\w.+-]+\.(?:vsix|sha256)$/,
   /^\/releases\/[\w.]+\/[\w.+-]+$/,
   // 飞书网页应用（复刻小程序界面）：/app/ 入口与其静态资源
   /^\/app\/$/,

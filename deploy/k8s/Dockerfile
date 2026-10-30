@@ -13,7 +13,8 @@ COPY client/ ./client/
 COPY server/public/ ./server/public/
 # Windows 克隆会把 .sh 转成 CRLF，Linux 客户端执行会失败；构建期统一还原为 LF
 RUN find ./client ./server/public -name '*.sh' -exec sed -i 's/\r$//' {} + \
- && sh client/scripts/pack-dist.sh
+ && sh client/scripts/pack-dist.sh \
+ && node client/scripts/pack-vsix.mjs
 
 FROM ${BASE_IMAGE} AS runtime
 ARG APP_VERSION=dev

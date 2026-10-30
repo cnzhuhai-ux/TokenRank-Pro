@@ -25,7 +25,7 @@ token-watcher 不认识 Trae，Trae 本机也没有任何可直接读取的用�
 ```
 Trae 扩展 trae-credits-poc (extension.js)
   icube.common.getToken → POST query_user_usage_group_by_session (usage_type [7], 30 天, ≤3 页)
-  → 按天聚合 → ~/.trae-cn/credits-usage.json (schema 1)   ← 每 6 小时自动刷新，也可命令面板/触发文件即时刷新
+  → 按天聚合 → ~/.trae-cn/credits-usage.json (schema 2)  ← 每 30 分钟自动刷新（v0.1.1 起），也可命令面板/触发文件即时刷新
         ↓ 只读
 client/sync/trae.js  collectTraeDays()  → 日桶（与上报协议同构）
         ↓ mergeOortDays()（同日 token 相加、credits 按工具合并）
@@ -101,3 +101,21 @@ Windows 上采集由计划任务 `TokenRankSync` 以 wscript 启动，**不重�
 （≤3 页、间隔 ≥2 秒），不上传任何数据。采集器侧：只读 `~/.trae-cn/credits-usage.json` 里的按天聚合
 数字与模型名，不打开 Trae 的加密库、不读 `trae-jwt-token`。上报内容与项目隐私声明一致：只有按天的
 token 四分量、会话行数、credits、工具与模型名。
+
+## 八、安装与分发
+
+服务端自己分发扩展安装包（不走第三方市场）：镜像构建时由 [`client/scripts/pack-vsix.mjs`](../client/scripts/pack-vsix.mjs)
+从源码打包 VSIX（纯 Node zip 写入、逐字节可复现），落到 `/dl/trae-extension/<版本>/…​.vsix(+.sha256)` 并更新
+`/dl/trae-extension/latest.json` 指针。一键安装脚本从服务端下载并做 sha256 校验，优先用 `trae-cn --install-extension`
+安装，找不到 CLI 时降级解压到 `~/.trae-cn/extensions/`（不写 extensions.json），已装同版本幂等跳过：
+
+```powershell
+& ([scriptblock]::Create((irm '<BASE>/install-trae.ps1'))) '<BASE>'          # Windows
+```
+
+```sh
+curl -fsSL <BASE>/install-trae.sh | sh -s <BASE>                              # macOS（Linux 未真机验证）
+```
+
+飞书单聊发「**绑定**」返回 ① Trae 采集扩展与 ② TokenRank 同步器两段安装命令；「绑定 windows」「绑定 mac」
+只返回对应系统的一段。扩展与同步器相互独立：没装同步器时扩展只写本地快照，不上传。

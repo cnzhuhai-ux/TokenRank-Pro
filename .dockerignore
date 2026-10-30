@@ -10,3 +10,6 @@ server/test
 server/public/dl/tokenrank-client*.tar.gz
 server/public/dl/tokenrank-client*.tar.gz.sha256
 server/public/dl/version.txt
+
+# The VSIX is rebuilt inside the image by pack-vsix.mjs; do not ship host leftovers
+server/public/dl/trae-extension/

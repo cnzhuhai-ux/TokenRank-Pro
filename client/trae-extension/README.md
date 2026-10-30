@@ -10,7 +10,7 @@ SQLCipher 加密的），因此补充采集**不改 Trae、不解密、不注入
 
 | 文件 | 说明 |
 |---|---|
-| `extension.js` | 扩展入口（v0.1.0）：取令牌、查询、写快照与诊断报告 |
+| `extension.js` | 扩展入口（v0.1.1）：取令牌、查询、写快照与诊断报告 |
 | `model-resolve.cjs` | 纯函数：模型归因（Auto / 内置 / 自定义前缀）与按天聚合（schema 2），可脱离 Trae 单测 |
 | `package.json` | 扩展清单（`publisher: local-poc`，`activationEvents: onStartupFinished`） |
 | `build.ps1` | 离线打包 VSIX，不依赖 npm / vsce，PowerShell 5.1 可用 |
@@ -27,9 +27,10 @@ SQLCipher 加密的），因此补充采集**不改 Trae、不解密、不注入
 5. 诊断报告 `%TEMP%\trae-credits-poc-report.json`（本机排障用，上报链路不读它）。
 
 刷新时机：命令面板「Trae Credits: 查询每会话 Credits」、`%TEMP%\trae-credits-poc.trigger`
-文件出现、`%TEMP%\trae-credits-poc.autorun` 存在时启动后自动跑一次，以及运行期间每 6 小时一次。
+文件出现、`%TEMP%\trae-credits-poc.autorun` 存在时启动后自动跑一次，以及运行期间**每 30 分钟**自动刷新
+（活跃会话的累计值最多半小时后即进入下一次上报）。
 
-## 快照字段（schema 2，v0.1.0 起）
+## 快照字段（schema 2，v0.1.0 起；v0.1.1 起每 30 分钟刷新）
 
 ```json
 {
@@ -68,18 +69,27 @@ SQLCipher 加密的），因此补充采集**不改 Trae、不解密、不注入
 明细写 `*_full` 并置 `truncated` 标记；`modes` 为当日各模式的会话行数（审计用）。自定义模型
 （BYOK）不计 credits，其 token 已含在 `tokens` 四分量中，另用 `custom_*` 单列以便判定。
 
-## 打包与安装
+## 打包与分发
+
+- 跨平台打包：`node client/scripts/pack-vsix.mjs`（纯 Node zip 写入，无 npm 依赖；产物逐字节可复现），
+  输出 `server/public/dl/trae-extension/<版本>/trae-credits-poc-<版本>.vsix` + `.sha256`，并在上级写 `latest.json` 指针。
+  `build.ps1` 是它在 Windows 的薄封装；镜像构建（Dockerfile dist 阶段）同样执行该脚本，服务端始终分发源码对应版本的安装包。
+- 一键安装（推荐）：服务端提供 `install-trae.ps1` / `install-trae.sh`（下载 → sha256 校验 → Trae CLI 安装，
+  无 CLI 时降级解压到 `~/.trae-cn/extensions/`；已装同版本幂等跳过）。飞书单聊发「绑定」即可拿到对应命令：
 
 ```powershell
-# 打包（产物 trae-credits-poc-<version>.vsix，不入库）
-powershell -NoProfile -ExecutionPolicy Bypass -File client/trae-extension/build.ps1
-
-# 安装到 Trae CN（示例路径按本机为准）
-& 'D:\Program Files (x86)\Trae CN\bin\trae-cn.cmd' --install-extension 'trae-credits-poc-0.1.0.vsix' --force
+& ([scriptblock]::Create((irm '<BASE>/install-trae.ps1'))) '<BASE>'
 ```
 
-装完重启 Trae 窗口即生效；快照写入后，下一次同步（默认每 15 分钟）自动带上 Trae 的日用量。
-同步器 0.2.24 起兼容 schema 1 与 2；旧同步器读到 schema 2 会跳过并告警，不产生脏数据。
+```sh
+curl -fsSL <BASE>/install-trae.sh | sh -s <BASE>
+```
+
+- 手动安装：`node client/scripts/pack-vsix.mjs` 后
+  `& '<Trae CN>\bin\trae-cn.cmd' --install-extension '<产物>.vsix' --force`。
+
+装完重启 Trae 窗口即生效；快照写入后，TokenRank 同步器每 15 分钟的上报自动带上 Trae 的日用量。
+同步器 0.2.24 起兼容快照 schema 1 与 2；旧同步器读到 schema 2 会跳过并告警，不产生脏数据。
 
 ## 边界（硬约束）
 
