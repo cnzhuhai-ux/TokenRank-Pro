@@ -11,25 +11,21 @@
  *     两日合计可能略高于真实总量——只影响跨天长会话，榜单用途可接受。
  *     只读 -oortcloud-work 变体目录；基础版 ~/.dsh 由 token-watcher 官方支持，读了会重复计数。
  *   - OortCloud AI Studio
- *     globalStorage/{saoudrizwan.claude-dev,rooveterinaryinc.roo-cline} 下各任务的 ui_messages.json
- *     中 say=api_req_started 的消息，文本是尾带 {"tokensIn":..,"tokensOut":..,"cacheWrites":..,
- *     "cacheReads":..,"cost":..} 的 JSON（请求完成后回填）；每条即一次真实请求，ts 精确到毫秒。
- *     原生 oortcodex 扩展的 acp-sessions 只有上下文窗口快照（used/size），没有计费 token；
- *     它的 tasks 记录另按 OortCodex 采集（见下）。
- *   - OortCodex（独立程序，与 ZCode 无关：ZCode 由 token-watcher 按 'zcode' 采集，二者不合并）
- *     两个来源：
- *     a) OortCloud AI Studio\User\globalStorage\oortcodex.oortcodex\tasks\*\ui_messages.json
- *        中 say=api_req_started 的消息尾带 {tokensIn, tokensOut, cacheReads, cacheWrites}
- *        （Cline 同款，逐请求、毫秒时间戳）。这是原生扩展实际落盘的计费数据。
- *     b) 同目录 claude-agent-acp\projects 下的 Claude Code 格式转录（逐条 message.usage），
- *        出现在使用 acp 后端的安装上。
- *     两个来源是不同后端，同一请求通常只落在其中一处；都扫描以覆盖不同版本。
- *     codex-acp 后端 token_count 事件 info 为 null（该版本不落盘）、cline-acp 只存设置、
- *     ~/.oortcodex/cli 为空——OortCodex CLI 暂无本地可用量数据。
+ *     %APPDATA%\OortCloud AI Studio\User\globalStorage 下三处来源，同一产品、同一展示名：
+ *     a) oortcodex.oortcodex\tasks\*\ui_messages.json —— 内置编码助手（扩展 displayName 即
+ *        “OortCloud AI Studio”）的逐请求记录，say=api_req_started 的消息尾带
+ *        {tokensIn, tokensOut, cacheReads, cacheWrites}，ts 精确到毫秒。
+ *     b) oortcodex.oortcodex\claude-agent-acp\projects 下的 Claude Code 格式转录（逐条
+ *        message.usage），使用 acp 后端的安装才有。
+ *     c) {saoudrizwan.claude-dev,rooveterinaryinc.roo-cline}\tasks —— 装了 Cline/Roo 的安装。
+ *     三处是不同后端/插件，同一请求只落在其中一处；都扫描以覆盖不同版本与配置。
+ *   - OortCodex Desktop（独立程序，ZCode 内核，与 ZCode 本体分开）
+ *     数据目录 %APPDATA%\OortCodexWork 与 ~/.oortcodex 只有浏览器 LevelDB、日志与技能，
+ *     没有逐次 token；其用量只存在于平台 new-api 账单里，本地无法可靠采集。
  *
- * 无法本地采集：OortOffice —— 本地聊天存于浏览器 Local Storage（LevelDB），无 token 明细；
- * 平台侧 new-api 有完整计量（/api/dashboard/self/overview 按天按 token），但需要有效的平台
- * accesstoken，本机各应用落盘的令牌均已过期、且主力应用的令牌为加密存储。
+ * 无法本地采集：OortOffice 与 OortCodex Desktop —— 本地无 token 明细；平台侧 new-api 有完整
+ * 计量（/api/dashboard/self/overview 按天按 token），但需要有效的平台 accesstoken，本机各应用
+ * 落盘的令牌均已过期、且主力应用的令牌为加密存储。
  */
 
 import { homedir } from 'node:os';
@@ -39,11 +35,8 @@ import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 export const TOOL_NAMES = {
   dsh: 'DSH For OortCloud Work',
   aiStudio: 'OortCloud AI Studio',
-  oortCodex: 'OortCodex',
 };
-// token-watcher 工具名 → Oort 产品展示名。注意：OortCodex 是独立程序，与 ZCode
-// （token-watcher 的 'zcode'，数据在 ~/.zcode）互不相干，二者不能合并、互不改名。
-// OortCodex 的用量由本文件单独采集（claude-agent-acp 转录）。
+// 展示名改写表：token-watcher 的 'zcode' 与 Oort 系产品互不相干，不做任何改写。
 export const TOOL_RENAME = {};
 
 const MAX = { tokens: 1e13, requests: 1e7 };
@@ -106,7 +99,7 @@ function parseClineUsage(text) {
   return { input: pick('tokensIn'), output: pick('tokensOut'), cacheRead: pick('cacheReads'), cacheWrite: pick('cacheWrites') };
 }
 
-/** Cline 系扩展（含 OortCodex 原生扩展）的任务记录 → 按请求时间戳聚合 */
+/** Cline 系扩展（含 AI Studio 内置助手）的任务记录 → 按请求时间戳聚合 */
 function collectClineTasks(appData, exts, tool, log) {
   if (!appData) return [];
   const buckets = new Map();
@@ -138,18 +131,15 @@ function collectClineTasks(appData, exts, tool, log) {
 }
 
 function collectAiStudio(appData, log) {
-  return collectClineTasks(appData, ['saoudrizwan.claude-dev', 'rooveterinaryinc.roo-cline'], TOOL_NAMES.aiStudio, log);
-}
-
-function collectOortCodexTasks(appData, log) {
-  return collectClineTasks(appData, ['oortcodex.oortcodex'], TOOL_NAMES.oortCodex, log);
+  return collectClineTasks(appData, ['oortcodex.oortcodex', 'saoudrizwan.claude-dev', 'rooveterinaryinc.roo-cline'],
+    TOOL_NAMES.aiStudio, log);
 }
 
 /**
- * OortCodex（独立程序）：Claude agent 转录里的逐条 message.usage，按时间戳分日。
+ * OortCloud AI Studio 的 Claude agent 转录：逐条 message.usage，按时间戳分日。
  * 目录不存在或无用量时返回空；单文件损坏只跳过该文件。
  */
-function collectOortCodex(appData, log) {
+function collectAiStudioTranscripts(appData, log) {
   if (!appData) return [];
   const root = join(appData, 'OortCloud AI Studio', 'User', 'globalStorage', 'oortcodex.oortcodex', 'claude-agent-acp', 'projects');
   if (!existsSync(root)) return [];
@@ -174,11 +164,11 @@ function collectOortCodex(appData, log) {
           const ts = Date.parse(record.timestamp || '');
           const day = beijingDayOf(Number.isFinite(ts) ? ts : statSync(file).mtimeMs);
           const bucket = buckets.get(day) || emptyBucket(day);
-          addTo(bucket, { input, output, cacheRead, cacheWrite, requests: 1, tool: TOOL_NAMES.oortCodex });
+          addTo(bucket, { input, output, cacheRead, cacheWrite, requests: 1, tool: TOOL_NAMES.aiStudio });
           buckets.set(day, bucket);
         }
       } catch (err) {
-        log(`oort oortcodex 转录 ${entry.name} 解析失败，已跳过：${err?.message || err}`);
+        log(`oort ai-studio 转录 ${entry.name} 解析失败，已跳过：${err?.message || err}`);
       }
     }
   };
@@ -189,8 +179,7 @@ function collectOortCodex(appData, log) {
 /** 汇总 Oort 系各源，产出与上报协议同构的日行（models/tool_models 无数据则为空） */
 export function collectOortDays({ home = homedir(), appData = process.env.APPDATA || null, log = () => {} } = {}) {
   const merged = new Map();
-  const sources = [...collectDsh(home, log), ...collectAiStudio(appData, log),
-    ...collectOortCodexTasks(appData, log), ...collectOortCodex(appData, log)];
+  const sources = [...collectDsh(home, log), ...collectAiStudio(appData, log), ...collectAiStudioTranscripts(appData, log)];
   for (const bucket of sources) {
     const existing = merged.get(bucket.day) || emptyBucket(bucket.day);
     existing.input_tokens += bucket.input_tokens;
@@ -230,7 +219,7 @@ function mergeCredits(a, b) {
 
 /**
  * 把补充采集的日行合并进 token-watcher 的日行：
- *   - 展示名重命名（zcode → OortCodex）同步作用于 tools 与 tool_models；
+ *   - 展示名重命名表同步作用于 tools 与 tool_models（当前为空表，保留扩展位）；
  *   - 同日数字相加，tools/models 按量取前 8，tool_models 按工具+模型合并后取前 128；
  *   - credits（{ total, tools }）同日相加、tools 按名合并取前 8（Trae 等补充源也带 credits）；
  *   - 返回新数组，不改入参。重命名会改变日指纹，相关日会在下次同步时整行重传。

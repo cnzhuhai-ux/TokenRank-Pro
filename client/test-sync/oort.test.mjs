@@ -87,7 +87,7 @@ test('collectOortDays 解析 AI Studio 的 Cline/Roo 请求记录（跨扩展、
   assert.equal(yesterday.requests, 1);
 });
 
-test('collectOortDays 采集 OortCodex 原生扩展 tasks 的请求用量，并与 AI Studio 分工具', (t) => {
+test('collectOortDays 把 AI Studio 内置助手（oortcodex 扩展）与 Cline 任务合并为同一工具', (t) => {
   const { home, done } = makeHome();
   t.after(done);
   const appData = join(home, 'appdata');
@@ -102,10 +102,7 @@ test('collectOortDays 采集 OortCodex 原生扩展 tasks 的请求用量，并�
   assert.equal(days.length, 1);
   assert.equal(days[0].tokens, 1820);
   assert.equal(days[0].requests, 2);
-  assert.deepEqual(days[0].tools, [
-    [TOOL_NAMES.oortCodex, 1600],
-    [TOOL_NAMES.aiStudio, 220],
-  ]);
+  assert.deepEqual(days[0].tools, [[TOOL_NAMES.aiStudio, 1820]]);
 });
 
 test('collectOortDays 同日多源合并、无数据目录时返回空', (t) => {
@@ -124,7 +121,7 @@ test('collectOortDays 同日多源合并、无数据目录时返回空', (t) => 
   assert.equal(days[0].tools.length, 2);
 });
 
-test('mergeOortDays 不改写 ZCode 的工具名（OortCodex 是独立程序，不与 zcode 合并）并叠加 Oort 用量', () => {
+test('mergeOortDays 不改写 ZCode 的工具名，并叠加 Oort 用量', () => {
   const base = [{
     day: '2026-10-28', tokens: 1000, input_tokens: 600, output_tokens: 400, cache_read: 0, cache_write: 0,
     requests: 10, models: [['glm-5.3', 1000]], tools: [['zcode', 700], ['workbuddy', 300]],
@@ -132,15 +129,15 @@ test('mergeOortDays 不改写 ZCode 的工具名（OortCodex 是独立程序，�
   }];
   const oort = [{
     day: '2026-10-28', tokens: 500, input_tokens: 300, output_tokens: 200, cache_read: 0, cache_write: 0,
-    requests: 2, models: [], tools: [[TOOL_NAMES.oortCodex, 500]], tool_models: [],
+    requests: 2, models: [], tools: [[TOOL_NAMES.aiStudio, 500]], tool_models: [],
   }];
   const merged = mergeOortDays(base, oort);
   assert.equal(merged.length, 1);
   const day = merged[0];
   assert.equal(day.tokens, 1500);
   assert.equal(day.requests, 12);
-  // zcode 保持原名（ZCode 是独立产品），OortCodex 作为独立工具并入，按量降序
-  assert.deepEqual(day.tools.map(([n]) => n), ['zcode', TOOL_NAMES.oortCodex, 'workbuddy']);
+  // zcode 保持原名（ZCode 是独立产品），AI Studio 作为独立工具并入，按量降序
+  assert.deepEqual(day.tools.map(([n]) => n), ['zcode', TOOL_NAMES.aiStudio, 'workbuddy']);
   assert.deepEqual(day.tool_models, [['zcode', 'glm-5.3', 700]]);
   // cost 原样保留（Oort 增量不计价），其余字段不影响
   assert.equal(day.cost.usd_micros, 1);
@@ -148,7 +145,7 @@ test('mergeOortDays 不改写 ZCode 的工具名（OortCodex 是独立程序，�
   assert.deepEqual(base[0].tools, [['zcode', 700], ['workbuddy', 300]]);
 });
 
-test('collectOortDays 采集 OortCodex（独立程序）的 Claude agent 转录用量', (t) => {
+test('collectOortDays 采集 AI Studio 的 Claude agent 转录用量', (t) => {
   const { home, done } = makeHome();
   t.after(done);
   const appData = join(home, 'appdata');
@@ -173,7 +170,7 @@ test('collectOortDays 采集 OortCodex（独立程序）的 Claude agent 转录�
   const today = days.find((d) => d.day === beijing(NOW));
   assert.equal(today.tokens, 20232);
   assert.equal(today.requests, 1);
-  assert.deepEqual(today.tools, [[TOOL_NAMES.oortCodex, 20232]]);
+  assert.deepEqual(today.tools, [[TOOL_NAMES.aiStudio, 20232]]);
   const yesterday = days.find((d) => d.day === beijing(NOW - DAY_MS));
   assert.equal(yesterday.tokens, 850);
   assert.equal(yesterday.requests, 1);

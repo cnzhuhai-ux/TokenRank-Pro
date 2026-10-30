@@ -766,8 +766,6 @@ async function leaderboard(request, env, url) {
     : ['0000-01-01', '9999-12-31'];
 
   const memberFilter = scope === 'group' ? ` AND ds.user_id IN (${groupMembers('?3')})` : '';
-  // me 查询的占位符不同（?1/?2/?3 已被占用），群过滤落在 ?4
-  const memberFilterMe = scope === 'group' ? ` AND ds.user_id IN (${groupMembers('?4')})` : '';
   const binds = scope === 'group' ? [from, to, group.id] : [from, to];
   // 双指标榜单：tokens（默认）或 credits（积分计费工具，Qoder 等）
   const metric = url.searchParams.get('metric') === 'credits' ? 'credits' : 'tokens';
@@ -775,15 +773,35 @@ async function leaderboard(request, env, url) {
   // 显式聚合表达式：HAVING 里写别名 tokens 会解析到基础列（非聚合），有 0 值日时整组被误过滤
   const metricSql = metric === 'credits' ? creditsSum : 'SUM(ds.tokens)';
 
-  const rowsTask = env.DB.prepare(`
-    SELECT u.id AS uid, u.nickname, u.avatar_path,
-           SUM(ds.tokens) AS tokens, SUM(ds.requests) AS requests,
-           SUM(ds.cache_read + ds.cache_write) AS cache,
-           ${creditsSum} AS credits
-    FROM public_usage ds JOIN users u ON u.id = ds.user_id
-    WHERE ds.day >= ?1 AND ds.day <= ?2${memberFilter}
-    GROUP BY ds.user_id HAVING ${metricSql} > 0
-    ORDER BY ${metricSql} DESC, uid ASC`).bind(...binds).all();
+  // 广场（全站）连没有上报、0 token 的成员也列出：只要绑定过电脑或加入过群榜。
+  // 群榜仍只列本群有用量的人，避免把从未上报的成员塞进群内名次。
+  const rowsTask = scope === 'global'
+    ? env.DB.prepare(`
+        SELECT u.id AS uid, u.nickname, u.avatar_path,
+               COALESCE(a.tokens, 0) AS tokens, COALESCE(a.requests, 0) AS requests,
+               COALESCE(a.cache, 0) AS cache, COALESCE(a.credits, 0) AS credits
+        FROM users u
+        LEFT JOIN (
+          SELECT ds.user_id AS uid, SUM(ds.tokens) AS tokens, SUM(ds.requests) AS requests,
+                 SUM(ds.cache_read + ds.cache_write) AS cache, ${creditsSum} AS credits
+          FROM public_usage ds
+          WHERE ds.day >= ?1 AND ds.day <= ?2
+          GROUP BY ds.user_id
+        ) a ON a.uid = u.id
+        WHERE u.disabled_at IS NULL AND u.rank_hidden = 0
+          AND (a.uid IS NOT NULL
+               OR EXISTS (SELECT 1 FROM connect_tokens c WHERE c.user_id = u.id)
+               OR EXISTS (SELECT 1 FROM rank_group_members m WHERE m.user_id = u.id))
+        ORDER BY ${metric === 'credits' ? 'credits' : 'tokens'} DESC, uid ASC`).bind(from, to).all()
+    : env.DB.prepare(`
+        SELECT u.id AS uid, u.nickname, u.avatar_path,
+               SUM(ds.tokens) AS tokens, SUM(ds.requests) AS requests,
+               SUM(ds.cache_read + ds.cache_write) AS cache,
+               ${creditsSum} AS credits
+        FROM public_usage ds JOIN users u ON u.id = ds.user_id
+        WHERE ds.day >= ?1 AND ds.day <= ?2${memberFilter}
+        GROUP BY ds.user_id HAVING ${metricSql} > 0
+        ORDER BY ${metricSql} DESC, uid ASC`).bind(...binds).all();
 
   const modelTask = env.DB.prepare(`
     SELECT ds.user_id AS uid, json_extract(je.value, '$[0]') AS model,
@@ -826,25 +844,16 @@ async function leaderboard(request, env, url) {
     global_rank: globalRankMap ? (globalRankMap.get(r.uid) ?? null) : null,
   }));
 
-  // 我的排名（50 名外也能查）：全量聚合数 + 大于我的人头数
+  // 我的排名：直接取全量聚合里的位置（广场包含 0 用量成员，群榜只含本群有用量的人）
   let me = null;
   if (session) {
-    const mine = await env.DB.prepare(`
-      SELECT SUM(ds.tokens) AS tokens, SUM(ds.requests) AS requests, ${creditsSum} AS credits
-      FROM public_usage ds WHERE ds.user_id = ?1 AND ds.day >= ?2 AND ds.day <= ?3${memberFilterMe}`)
-      .bind(session.id, from, to, ...(scope === 'group' ? [group.id] : [])).first();
-    const mineMetric = metric === 'credits' ? (mine?.credits || 0) : (mine?.tokens || 0);
-    if (mine && (mine.tokens > 0 || mine.credits > 0)) {
-      const ahead = await env.DB.prepare(`
-        SELECT COUNT(*) AS c FROM (
-          SELECT ds.user_id, ${metric === 'credits' ? creditsSum : 'SUM(ds.tokens)'} AS t FROM public_usage ds
-          WHERE ds.day >= ?2 AND ds.day <= ?3${memberFilterMe}
-          GROUP BY ds.user_id HAVING t > ?1 OR (t = ?1 AND ds.user_id < ${scope === 'group' ? '?5' : '?4'}))`)
-          .bind(mineMetric, from, to, ...(scope === 'group' ? [group.id] : []), session.id).first();
+    const idx = rows.results.findIndex((r) => r.uid === session.id);
+    if (idx >= 0) {
+      const mine = rows.results[idx];
       // 群榜时 me.rank 是群内名次，global_rank 是广场名次；全局榜两者相同
-      me = { rank: ahead.c + 1, tokens: mine.tokens, credits: Math.round((mine.credits || 0) * 1e6) / 1e6, requests: mine.requests,
+      me = { rank: idx + 1, tokens: mine.tokens, credits: Math.round((mine.credits || 0) * 1e6) / 1e6, requests: mine.requests,
         top_model: topModel.get(session.id)?.model ?? null,
-        global_rank: globalRankMap ? (globalRankMap.get(session.id) ?? null) : ahead.c + 1 };
+        global_rank: globalRankMap ? (globalRankMap.get(session.id) ?? null) : idx + 1 };
     }
   }
 

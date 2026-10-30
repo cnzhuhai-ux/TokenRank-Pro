@@ -148,16 +148,20 @@
       const alt = (e) => creditsView
         ? (Number(e.tokens) > 0 ? `<div class="sub alt">${fmt(e.tokens)} tokens</div>` : '')
         : (Number(e.credits) > 0 ? `<div class="sub alt">${esc(creditsText(e.credits))} Credits</div>` : '');
+      // 绑定了接入码但还没上报的成员也留在榜上，标出原因而不是只显示 0
+      const note = (e) => e.top_model
+        ? `<div class="sub">${esc(e.top_model)}</div>`
+        : (!Number(e.tokens) && !Number(e.credits) ? '<div class="sub">尚未上报</div>' : '');
       const rows = d.entries.map((e) => `
         <div class="row ${state.me && e.rank === d.me?.rank && e.nickname === d.me?.nickname ? 'me' : ''}">
           <div class="rank num">${e.rank}</div>
           ${avatar(e.avatar_url, e.nickname)}
-          <div class="who"><div class="nick">${esc(e.nickname)}</div>${e.top_model ? `<div class="sub">${esc(e.top_model)}</div>` : ''}${alt(e)}</div>
+          <div class="who"><div class="nick">${esc(e.nickname)}</div>${note(e)}${alt(e)}</div>
           <div class="amt num">${amt(e)}</div>
         </div>`).join('');
       $('#board').innerHTML = `
         <div class="list-header"><span>全站排名 · ${d.total} 人</span><span>${creditsView ? 'Credits 用量（Qoder 等）' : 'Token 用量'}</span></div>
-        ${rows || '<div class="empty">这个时间段还没有人上报用量</div>'}
+        ${rows || '<div class="empty">还没有成员绑定接入码或加入群榜</div>'}
         ${d.me ? `<div class="row me">
             <div class="rank num">${d.me.rank}</div>
             ${avatar(state.me?.avatar_url, state.me?.nickname)}

@@ -671,7 +671,9 @@ test('初次历史分批结束前不入榜，旧 UTC 口径不混入，新电脑
   f.db.prepare('INSERT INTO daily_stats(user_id,day,tokens,updated_at) VALUES(?,?,?,?)').run(1,beijingDay(),999,Date.now());
   assert.equal((await f.request('/api/my/usage')).status,409);
   assert.equal((await send(totalReport(100,{complete:false}))).status,200);
-  assert.equal((await f.request('/api/leaderboard')).data.entries.length,0);
+  // 已经绑定接入码（拿到 token）但首批历史还没传完：广场仍列出，只是 0 用量
+  const pending=(await f.request('/api/leaderboard')).data.entries;
+  assert.equal(pending.length,1); assert.equal(pending[0].tokens,0);
   f.db.exec('UPDATE usage_device_state SET last_report_at=0');assert.equal((await send(totalReport(100))).status,200);
   assert.equal((await f.request('/api/my/usage')).data.summary.tokens,100);
   assert.equal(f.db.prepare('SELECT tokens FROM daily_stats').get().tokens,999);
@@ -731,11 +733,11 @@ test('广场榜同样每页 50 人续页，匿名可看；排名变化时续页�
   do {
     const res = await f.request(url, null, 0); assert.equal(res.status, 200);
     const data = res.data; pages.push(data.entries.length); all.push(...data.entries);
-    assert.equal(data.total, 124); assert.equal(data.members, undefined);
+    assert.equal(data.total, 139); assert.equal(data.members, undefined);
     url = data.has_more ? `${path}&offset=${data.next_offset}&snapshot=${data.snapshot}` : null;
   } while (url);
-  assert.deepEqual(pages, [50, 50, 24]);
-  assert.deepEqual(all.map(e => e.rank), Array.from({ length: 124 }, (_, i) => i + 1));
+  assert.deepEqual(pages, [50, 50, 39]);
+  assert.deepEqual(all.map(e => e.rank), Array.from({ length: 139 }, (_, i) => i + 1));
   const first = (await f.request(path, null, 0)).data;
   f.db.prepare('UPDATE daily_totals SET tokens=5000 WHERE user_id=5').run();
   assert.equal((await f.request(`${path}&offset=50&snapshot=${first.snapshot}`, null, 0)).status, 409);
@@ -746,10 +748,10 @@ test('后台停用的账号不出现在任何榜单，上传被拒；恢复后�
   const f = await largeGroup(t);
   const global = '/api/leaderboard?scope=global&period=day';
   const before = (await f.request(global, null, 0)).data;
-  assert.equal(before.entries[0].nickname, '成员139'); assert.equal(before.total, 124);
+  assert.equal(before.entries[0].nickname, '成员139'); assert.equal(before.total, 139);
   f.db.prepare('UPDATE users SET disabled_at=?, disabled_reason=? WHERE id=139').run(Date.now(), '伪造上报');
   const after = (await f.request(global, null, 0)).data;
-  assert.equal(after.total, 123); assert.ok(after.entries.every(e => e.nickname !== '成员139'));
+  assert.equal(after.total, 138); assert.ok(after.entries.every(e => e.nickname !== '成员139'));
   const group = (await f.request(f.path)).data;
   assert.ok(group.entries.every(e => e.nickname !== '成员139'));
   f.db.prepare("INSERT OR REPLACE INTO connect_tokens(token,user_id,created_at) VALUES('b'||hex(randomblob(15)),139,0)").run();
@@ -757,17 +759,17 @@ test('后台停用的账号不出现在任何榜单，上传被拒；恢复后�
   const res = await worker.fetch(new Request('https://rank.test/report', { method: 'POST', headers: { authorization: `Bearer ${tok}`, 'content-type': 'application/json' }, body: '{}' }), f.env);
   assert.equal(res.status, 403);
   f.db.prepare('UPDATE users SET disabled_at=NULL WHERE id=139').run();
-  assert.equal((await f.request(global, null, 0)).data.total, 124);
+  assert.equal((await f.request(global, null, 0)).data.total, 139);
 });
 
 test('关闭排名：自己仍能看到全部用量，广场榜和群榜都不显示，名次为空；恢复后重新上榜', async t => {
   const f = await largeGroup(t);
   const global = '/api/leaderboard?scope=global&period=day';
-  assert.equal((await f.request(global, null, 0)).data.total, 124);
+  assert.equal((await f.request(global, null, 0)).data.total, 139);
   const off = await f.request('/api/profile/ranking', { hidden: true }, 2);
   assert.equal(off.status, 200); assert.equal(off.data.rank_hidden, true);
   const g = (await f.request(global, null, 0)).data;
-  assert.equal(g.total, 123); assert.ok(g.entries.every(e => e.nickname !== '成员2'));
+  assert.equal(g.total, 138); assert.ok(g.entries.every(e => e.nickname !== '成员2'));
   assert.ok((await f.request(f.path)).data.entries.every(e => e.nickname !== '成员2'));
   const mine = (await f.request('/api/my/usage?period=day', null, 2)).data;
   assert.equal(mine.summary.tokens, 100); assert.equal(mine.standing.rank, null); assert.equal(mine.standing.hidden, true);
@@ -775,7 +777,7 @@ test('关闭排名：自己仍能看到全部用量，广场榜和群榜都不�
   assert.equal(ranks.groups[0].my_rank, null); assert.equal(ranks.groups[0].rank_hidden, true); assert.equal(ranks.groups[0].my_tokens, 100);
   assert.equal((await f.request('/api/profile/ranking', { hidden: 'yes' }, 2)).status, 400);
   await f.request('/api/profile/ranking', { hidden: false }, 2);
-  assert.equal((await f.request(global, null, 0)).data.total, 124);
+  assert.equal((await f.request(global, null, 0)).data.total, 139);
 });
 
 test('按群隐藏排名：只在该群榜单消失，其他群和广场照常；非成员不能设置；可恢复', async t => {
@@ -788,7 +790,7 @@ test('按群隐藏排名：只在该群榜单消失，其他群和广场照常�
   assert.ok((await f.request(f.path)).data.entries.every(e => e.nickname !== '成员2'));
   assert.equal((await f.request(f.path)).data.total, 122);
   assert.ok((await f.request(otherPath, null, 2)).data.entries.some(e => e.nickname === '成员2'));
-  assert.ok((await f.request(global, null, 0)).data.total === 124);
+  assert.ok((await f.request(global, null, 0)).data.total === 139);
   assert.equal((await f.request(`/api/groups/${f.group.id}`, null, 2)).data.my_hidden, true);
   const ranks = (await f.request('/api/my/rankings?period=day', null, 2)).data.groups;
   const inLarge = ranks.find(g => g.id === f.group.id), inOther = ranks.find(g => g.id === other.id);
