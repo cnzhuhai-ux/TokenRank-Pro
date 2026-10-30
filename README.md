@@ -52,9 +52,9 @@ node node-service.mjs
 | 终端 | 数据源 | 状态 |
 |---|---|---|
 | OortCloud AI Studio | 内置助手 `oortcodex.oortcodex` 的任务请求记录（`tasks/*/ui_messages.json`）与 Claude agent 转录；装了 Cline/Roo 的安装也一并计入 | ✅ |
-| DSH For OortCloud Work | `~/.dsh-oortcloud-work` 会话累计用量 | ✅ |
+| DSH For OortCloud Work | 会话日志 `sessions/*/session.v*.jsonl.zst[d]` 的逐请求用量（精确到天、带模型）；日志不可读的会话退回 `session_projcache` 的会话累计值 | ✅ |
 | OortCodex Desktop | `%USERPROFILE%\OortCodexWork\cli\db\db.sqlite` 的 `model_usage`（ZCode 内核同构，逐请求） | ✅ |
-| OortOffice | 本地无 token 明细（LevelDB） | ❌ 同上 |
+| OortOffice | 自带 ZCode 内核，用过后 `%LOCALAPPDATA%\OortOffice\zcode-home\.zcode\cli\db\db.sqlite` 的 `model_usage`；没打开过对话就没有这个库 | ✅ |
 
 **WorkBuddy 与 DevEco Code 补充采集（本仓库新增，0.2.21 起全盘只读扫描）**
 

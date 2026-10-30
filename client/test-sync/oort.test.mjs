@@ -4,6 +4,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, utimesSync, rmSync } from 'node:
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
+import zlib from 'node:zlib';
 import { collectOortDays, mergeOortDays, TOOL_NAMES } from '../sync/oort.js';
 
 const DAY_MS = 86_400_000;
@@ -289,4 +290,114 @@ test('mergeOortDays 的 credits 合并覆盖 models/tool_models 四字段，分�
   }]);
   assert.deepEqual(Object.keys(legacy[0].credits).sort(), ['tools', 'total']);
   assert.equal(legacy[0].credits.total, 3);
+});
+
+// dsh 会话日志是追加的多帧 zstd；用 Node 内置压缩器造同样的分帧文件
+const hasZstd = typeof zlib.zstdCompressSync === 'function' && typeof zlib.zstdDecompressSync === 'function';
+const zstdFrames = (records) => Buffer.concat(records.map((r) =>
+  zlib.zstdCompressSync(Buffer.from(JSON.stringify(r) + '\n'))));
+
+function writeDshLog(home, sessionId, records) {
+  const dir = join(home, '.dsh-oortcloud-work', 'sessions', '--ws--', sessionId);
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, 'session.v4.jsonl.zstd'), zstdFrames(records));
+  return dir;
+}
+
+test('collectOortDays 按 dsh 会话日志逐请求分日，同会话不再读 projcache', { skip: !hasZstd && 'Node 缺少 zstd 内置实现' }, (t) => {
+  const { home, done } = makeHome();
+  t.after(done);
+  const id = 'session-abc';
+  const createdAt = NOW - 2 * DAY_MS;
+  writeDshLog(home, id, [
+    { type: 'session', version: 4, id, createdAt, isSeeded: false },
+    { type: 'request/header', seq: 1, time: createdAt, data: { header: { config: { provider: 'p', model: 'GLM-5.3-Flash' } } } },
+    { type: 'assistant/message', seq: 2, time: createdAt, data: { turn: 1, step: 1,
+      usage: { inputTokens: 100, outputTokens: 10, totalTokens: 110 }, message: {} } },
+    { type: 'assistant/message', seq: 3, time: NOW, data: { turn: 2, step: 1,
+      usage: { inputTokens: 50, cacheReadTokens: 20, outputTokens: 5, totalTokens: 75 } } },
+  ]);
+  // 同一会话的 projcache 累计值（150/15/20）不能被重复计入
+  writeDshSession(home, id + '.json', { uncachedInputTokens: 150, outputTokens: 15, cacheReadTokens: 20, cacheWriteTokens: 0 }, NOW);
+
+  const days = collectOortDays({ home, appData: null, localAppData: null, log: () => {} });
+  assert.equal(days.length, 2);
+  const today = days.find((d) => d.day === beijing(NOW));
+  assert.equal(today.tokens, 75);
+  assert.equal(today.input_tokens, 50);
+  assert.equal(today.cache_read, 20);
+  assert.equal(today.requests, 1);
+  assert.deepEqual(today.tools, [[TOOL_NAMES.dsh, 75]]);
+  assert.deepEqual(today.models, [['glm-5.3-flash', 75]]);
+  const older = days.find((d) => d.day === beijing(createdAt));
+  assert.equal(older.tokens, 110);
+  assert.deepEqual(older.models, [['glm-5.3-flash', 110]]);
+});
+
+test('dsh 种子会话开头重放的父会话历史不计入', { skip: !hasZstd && 'Node 缺少 zstd 内置实现' }, (t) => {
+  const { home, done } = makeHome();
+  t.after(done);
+  const id = 'session-fork';
+  const createdAt = NOW - DAY_MS / 2;
+  writeDshLog(home, id, [
+    { type: 'session', version: 4, id, createdAt, isSeeded: true, parentSession: 'session-parent' },
+    { type: 'assistant/message', seq: 1, time: NOW - 3 * DAY_MS, data: { turn: 1, step: 1,
+      usage: { inputTokens: 900, outputTokens: 90, totalTokens: 990 }, message: {} } },
+    { type: 'assistant/message', seq: 2, time: NOW, data: { turn: 2, step: 1,
+      usage: { inputTokens: 40, outputTokens: 4, totalTokens: 44 }, message: {} } },
+  ]);
+
+  const days = collectOortDays({ home, appData: null, localAppData: null, log: () => {} });
+  assert.equal(days.length, 1);
+  assert.equal(days[0].day, beijing(NOW));
+  assert.equal(days[0].tokens, 44);
+  assert.equal(days[0].requests, 1);
+});
+
+test('dsh 日志解不开时退回 projcache 累计', { skip: !hasZstd && 'Node 缺少 zstd 内置实现' }, (t) => {
+  const { home, done } = makeHome();
+  t.after(done);
+  const id = 'session-broken';
+  const dir = join(home, '.dsh-oortcloud-work', 'sessions', '--ws--', id);
+  mkdirSync(dir, { recursive: true });
+  const truncated = Buffer.concat([
+    Buffer.from(JSON.stringify({ type: 'session', version: 4, id, createdAt: NOW, isSeeded: false }) + '\n'),
+  ]);
+  writeFileSync(join(dir, 'session.v4.jsonl.zstd'), Buffer.concat([
+    zlib.zstdCompressSync(truncated),
+    Buffer.from([0x28, 0xb5, 0x2f, 0xfd, 0x00, 0x00, 0x00]), // 截断帧
+  ]));
+  writeDshSession(home, id + '.json', { uncachedInputTokens: 300, outputTokens: 30, cacheReadTokens: 0, cacheWriteTokens: 0 }, NOW);
+
+  const days = collectOortDays({ home, appData: null, localAppData: null, log: () => {} });
+  assert.equal(days.length, 1);
+  assert.equal(days[0].tokens, 330);
+  assert.deepEqual(days[0].tools, [[TOOL_NAMES.dsh, 330]]);
+});
+
+test('collectOortDays 采集 OortOffice 内置 ZCode 内核的 model_usage', (t) => {
+  const { home, done } = makeHome();
+  t.after(done);
+  const data = join(home, 'localappdata');
+  const dir = join(data, 'OortOffice', 'zcode-home', '.zcode', 'cli', 'db');
+  mkdirSync(dir, { recursive: true });
+  const db = new DatabaseSync(join(dir, 'db.sqlite'));
+  db.exec(`CREATE TABLE model_usage (id TEXT PRIMARY KEY, model_id TEXT, started_at INTEGER,
+    input_tokens INTEGER, output_tokens INTEGER, cache_read_input_tokens INTEGER, cache_creation_input_tokens INTEGER)`);
+  const insert = db.prepare('INSERT INTO model_usage VALUES(?,?,?,?,?,?,?)');
+  insert.run('o1', 'GLM-5.3', NOW, 1000, 100, 600, 0);
+  insert.run('o2', 'GLM-5.3', NOW - DAY_MS, 200, 20, 0, 10);
+  db.close();
+
+  const days = collectOortDays({ home, appData: null, localAppData: data, log: () => {} });
+  assert.equal(days.length, 2);
+  const today = days.find((d) => d.day === beijing(NOW));
+  assert.equal(today.tokens, 1100);
+  assert.equal(today.input_tokens, 400);
+  assert.equal(today.cache_read, 600);
+  assert.deepEqual(today.tools, [[TOOL_NAMES.oortOffice, 1100]]);
+  assert.deepEqual(today.tool_models, [[TOOL_NAMES.oortOffice, 'glm-5.3', 1100]]);
+  const yesterday = days.find((d) => d.day === beijing(NOW - DAY_MS));
+  assert.equal(yesterday.tokens, 230);
+  assert.equal(yesterday.cache_write, 10);
 });

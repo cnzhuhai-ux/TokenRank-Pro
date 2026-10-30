@@ -9,9 +9,9 @@ TokenRank 的采集内核 token-watcher 官方支持 13 种 AI 编程工具，�
 | 产品 | 展示名 | 数据源 | 状态 |
 |---|---|---|---|
 | OortCloud AI Studio（IDE，内置助手扩展 `oortcodex.oortcodex` 的 displayName 就是它） | `OortCloud AI Studio` | ① `%APPDATA%\OortCloud AI Studio\User\globalStorage\oortcodex.oortcodex\tasks\*\ui_messages.json` 中 `api_req_started` 消息尾带的 `{tokensIn, tokensOut, cacheReads, cacheWrites}`（内置助手实际落盘，逐请求、毫秒时间戳）；② 同目录 `claude-agent-acp\projects` 下的 Claude Code 格式转录（逐条 `message.usage`，用于 acp 后端的安装）；③ `{saoudrizwan.claude-dev, rooveterinaryinc.roo-cline}\tasks` 下同款任务记录（装了 Cline/Roo 的安装） | ✅ 已生效。三处是不同后端/插件，同一请求通常只落在其中一处，合并到同一个展示名 |
-| DSH For OortCloud Work | `DSH For OortCloud Work` | `~/.dsh-oortcloud-work/storages/session_projcache/sessions/*.json` 的 `tokenUsage.totals`（会话累计：uncachedInput / output / cacheRead / cacheWrite） | ✅ 已生效 |
+| DSH For OortCloud Work | `DSH For OortCloud Work` | ① `~/.dsh-oortcloud-work/sessions/<workspace>/<session>/session.v*.jsonl.zst[d]` 会话日志的逐请求用量（`assistant/message` 的 `data.usage`，或旧版 `assistant/chunk` 的 `chunk.usage`），带 `time` 与模型，按北京时间精确分日；② 日志解不开的会话退回 `~/.dsh-oortcloud-work/storages/session_projcache/sessions/*.json` 的 `tokenUsage.totals`（会话累计） | ✅ 已生效（0.2.26 起优先读日志） |
 | OortCodex Desktop（独立程序，ZCode 内核） | `OortCodex Desktop` | `%USERPROFILE%\OortCodexWork\cli\db\db.sqlite` 的 `model_usage` 表（逐请求 input/output/cache_read/cache_creation 与 `started_at` 毫秒时间戳，与 ZCode 内核同构）；开发/预览版目录 `OortCodexWork Dev` / `OortCodexWork Preview`，按记录 id 去重。`%APPDATA%\OortCodexWork` 只是 Electron 界面缓存，不读 | ✅ 已生效（0.2.25 起） |
-| OortOffice | — | 本地聊天存于浏览器 Local Storage（LevelDB），无 token 明细 | ❌ 暂无法本地采集，见下 |
+| OortOffice（OnlyOffice 外壳 + 内置 ZCode 内核） | `OortOffice` | `%LOCALAPPDATA%\OortOffice\zcode-home\.zcode\cli\db\db.sqlite` 的 `model_usage`（HOME 被指到 `zcode-home`，与 ZCode 内核同构）。没用过对话的安装没有该库，静默跳过 | ✅ 已生效（0.2.26 起） |
 
 刻意不读基础版 `~/.dsh`：token-watcher 官方支持该目录，读了会重复计数；只读 `-oortcloud-work` 变体。
 ZCode（token-watcher 的 `zcode`，数据在 `~/.zcode`）与 OortCodex Desktop（`~/OortCodexWork/cli`）
@@ -27,19 +27,26 @@ ZCode（token-watcher 的 `zcode`，数据在 `~/.zcode`）与 OortCodex Desktop
 - **OortCodex Desktop 与 zcode 同口径**：`model_usage.input_tokens` 含 cache_read，入库时
   拆成新输入与缓存命中；`total = input + cache_write + output`（reasoning 已含在 output 内），
   按 `started_at` 的北京时间分日，并带出模型明细。
-- **DSH 按会话最后活跃日归因**（projcache 文件 mtime，北京时间）。会话累计值随使用单调变大，
-  配合服务端按天整行替换语义收敛；跨零点的长会话总量会记到后一天，前一天的已上报值保持不变，
-  两日合计可能略高于真实总量——只影响跨天长会话，榜单用途可接受。
+- **DSH 优先按请求分日**：会话日志里有逐请求的 `time` 与模型，跨零点的会话不会被整段记到同一天；
+  分叉/种子会话（`isSeeded`）开头重放的父会话历史用 `time < createdAt` 排除，不会重复计入。
+  日志是追加写、可能正被 dsh 占用：任一帧解不开就整份作废、退回 projcache 的会话累计值
+  （按文件 mtime 归因，跨零点会话会整段记到后一天），两种来源对同一会话只取其一，不重复。
+  Node 内置 zstd 解码器 22.15+ 才有；更早的 Node 一律走 projcache。
+- **OortOffice 与 zcode 同口径**：`model_usage.input_tokens` 含 cache_read，入库时拆成新输入
+  与缓存命中，按 `started_at` 的北京时间分日，并带出模型明细。它内置的 ZCode 内核只服务
+  Office 面板，与 `~/.zcode`（token-watcher 的 `zcode`）是两个 home，不会重复计数。
 - 金额估算（cost）仍只基于 token-watcher 的模型计价；Oort 增量暂不计价。
 - 工具明细每天最多 8 条（协议上限），超出按量截断。
 
-## OortOffice 的可行路径（待办）
+## OortOffice 的剩余限制
 
-平台侧 new-api（`workup.oortcloudsmart.com:2443/bus/apaas-newapi`）有完整计量：
-`GET /api/dashboard/self/overview?days=N` 按天返回 tokens/calls/credits，且各产品各持一把
-new-api 令牌（OortCodex=43、OortOffice=90 等），按令牌即可区分产品。该接口需要有效的平台
-`accesstoken` 请求头——本机各应用落盘的令牌均已过期、主力应用的令牌为加密存储，无法长期稳定
-读取。可行方案（任选其一）：
+0.2.26 起 OortOffice 的用量从它内置 ZCode 内核的 `model_usage` 读取，因此只覆盖**本机这个
+ZCode home 写过的请求**：只把 OortOffice 当文档编辑器用、从没打开过 AI 面板的安装没有这个库
+（`zcode-home/.zcode/v2/tasks-index.sqlite` 里也只有空的任务表，没有任何 token 明细）。
+要把这类安装也算进去，只能走平台侧：new-api（`workup.oortcloudsmart.com:2443/bus/apaas-newapi`）
+有完整计量，`GET /api/dashboard/self/overview?days=N` 按天返回 tokens/calls/credits，各产品各持
+一把令牌（OortCodex=43、OortOffice=90 等）。该接口需要有效的平台 `accesstoken` 请求头——本机
+各应用落盘的令牌均已过期、主力应用的令牌为加密存储，无法长期稳定读取。可行方案（任选其一）：
 
 1. 平台提供长效令牌或 sk 密钥可查的用量接口（`/v1/dashboard/billing/usage` 目前只返回
    全量 credits，无按日、无 token 数，不够用）；
@@ -57,6 +64,6 @@ new-api 令牌（OortCodex=43、OortOffice=90 等），按令牌即可区分产�
 node --test client/test-sync/oort.test.mjs   # 采集与合并的单元测试
 ```
 
-排障：同步日志中 `oort dsh 会话 … 解析失败，已跳过` / `oort <扩展目录> 任务 …` 为单文件容错
-提示，不影响其余数据。设置环境变量 `TOKENRANK_OORT_DISABLE=1` 可临时关闭补充采集（测试亦用
-此开关做隔离）。
+排障：同步日志中 `oort dsh 会话 … 解析失败，已跳过` / `oort <扩展目录> 任务 …` /
+`oort <产品> 数据库读取失败，已跳过` 为单文件（单库）容错提示，不影响其余数据。
+设置环境变量 `TOKENRANK_OORT_DISABLE=1` 可临时关闭补充采集（测试亦用此开关做隔离）。

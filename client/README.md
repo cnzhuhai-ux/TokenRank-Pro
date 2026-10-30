@@ -1,6 +1,6 @@
 # TokenRank 独立同步器
 
-v0.2.25 为独立只读适配器，接入原版 [luwill/token-watcher](https://github.com/luwill/token-watcher)。Node.js 22.13+，无第三方运行依赖。
+v0.2.26 为独立只读适配器，接入原版 [luwill/token-watcher](https://github.com/luwill/token-watcher)。Node.js 22.13+，无第三方运行依赖。
 
 更换服务器、接入码或统计库后，会重新全量上传本机保留的历史用量，包含注销后重新接入的情况。上传中断可分批续传；重复执行同一账号的接入命令不会重传未变化的日期。
 
@@ -168,14 +168,32 @@ Trae 本机没有明文用量：会话库 `ModularData/ai-agent/database.db` 是
 ## OortCodex Desktop 采集（0.2.25）
 
 OortCodex Desktop 用 ZCode 内核，但逐请求用量不写在 `~/.zcode`：它在
-`%USERPROFILE%OortCodexWorkclidbdb.sqlite` 的 `model_usage` 表里按请求记录
+`%USERPROFILE%\OortCodexWork\cli\db\db.sqlite` 的 `model_usage` 表里按请求记录
 input/output/cache_read/cache_creation 与毫秒时间戳（开发/预览版为
 `OortCodexWork Dev` / `OortCodexWork Preview`）。0.2.25 起 [`sync/oort.js`](sync/oort.js)
 以只读方式打开该库，按北京时间分日、展示名 `OortCodex Desktop`，并把模型明细一并带入
 `models` / `tool_models`；`input_tokens` 中已含的 cache_read 会拆成新输入与缓存命中，
 与 token-watcher 对 ZCode 的口径一致。同一记录 id 在多个安装线出现时只计一次；数据库缺失、
-被锁或损坏时只跳过本轮，不影响其他来源。`%APPDATA%OortCodexWork` 只是 Electron
+被锁或损坏时只跳过本轮，不影响其他来源。`%APPDATA%\OortCodexWork` 只是 Electron
 界面缓存，不读。`TOKENRANK_OORT_DISABLE=1` 同样可关闭该来源。
+
+## DSH 逐请求日志与 OortOffice（0.2.26）
+
+DSH For OortCloud Work 原来只读 `session_projcache` 的会话累计值，按文件 mtime 归日：
+跨零点的会话整段算到最后活跃那天，写出时间靠后会改变已上报日的数字。0.2.26 起先读会话日志
+`~/.dsh-oortcloud-work/sessions/<workspace>/<session>/session.v*.jsonl.zst[d]`，取
+`assistant/message` 的 `data.usage`（旧版为 `assistant/chunk` 的 `chunk.usage`），按每条记录的
+`time` 精确分日，并带出 `request/header` 或 `message.source.model` 里的模型名（小写）。
+日志是追加写的多帧 zstd，Node 内置解码器一次只解首帧，这里按帧魔数切开逐帧解；任一帧解不开
+（文件正在追加、或 Node < 22.15 没有内置解码器）就整份作废，该会话退回 projcache 累计值，
+两种来源对同一会话只取其一、不重复计数。分叉/种子会话（`isSeeded`）开头重放的父会话历史
+`time` 早于 `createdAt`，按此排除，不会重复计入。
+
+OortOffice 是 OnlyOffice 外壳 + 内置 ZCode 内核，HOME 被指到
+`%LOCALAPPDATA%\OortOffice\zcode-home`，因此用量落在
+`zcode-home\.zcode\cli\db\db.sqlite` 的 `model_usage`，口径与 OortCodex Desktop 相同
+（展示名 `OortOffice`）。从没打开过 AI 面板的安装没有这个库，静默跳过；
+`zcode-home/.zcode/v2/tasks-index.sqlite` 只有任务元数据，没有 token 明细。
 
 ## Windows 采集任务恢复（0.2.17）
 

@@ -4,11 +4,14 @@
  *
  * 数据源与口径：
  *   - DSH For OortCloud Work
- *     ~/.dsh-oortcloud-work/storages/session_projcache/sessions/*.json
- *     的 record.rows.tokenUsage.val.totals（会话累计值：uncachedInput/output/cacheRead/cacheWrite）。
- *     按会话最后活跃日（文件 mtime，北京时间）归因；活跃会话累计值单调变大，配合服务端
- *     按天整行替换语义收敛。跨零点的长会话总量会记到后一天，前一天的已上报值保持不变，
- *     两日合计可能略高于真实总量——只影响跨天长会话，榜单用途可接受。
+ *     a) ~/.dsh-oortcloud-work/sessions/<workspace>/<session>/session.v*.jsonl.zst[d]
+ *        会话日志的逐请求用量（assistant/message 的 data.usage，或旧版 assistant/chunk 的
+ *        chunk.usage），带 time 与模型，按北京时间精确分日。日志是追加的多帧 zstd；
+ *        Node 内置解码器只解首帧，这里按帧魔数切开逐帧解，解不出来就整体退回 b)。
+ *        分叉/种子会话（isSeeded）开头重放的父会话历史用 time < createdAt 排除。
+ *     b) ~/.dsh-oortcloud-work/storages/session_projcache/sessions/*.json
+ *        的 record.rows.tokenUsage.val.totals（会话累计值）。没有可用日志的会话才用它，
+ *        按文件 mtime（北京时间）归因，避免与 a) 重复计数。
  *     只读 -oortcloud-work 变体目录；基础版 ~/.dsh 由 token-watcher 官方支持，读了会重复计数。
  *   - OortCloud AI Studio
  *     %APPDATA%\OortCloud AI Studio\User\globalStorage 下三处来源，同一产品、同一展示名：
@@ -25,21 +28,27 @@
  *     token-watcher 只读 ~/.zcode，不扫这里，二者不会重复。开发/预览版目录为
  *     OortCodexWork Dev / OortCodexWork Preview，按记录 id 去重。
  *     注意：%APPDATA%\OortCodexWork 只是 Electron 界面缓存，用量不在这里。
+ *   - OortOffice（OnlyOffice 外壳 + 内置 ZCode 内核，HOME 指向 zcode-home）
+ *     %LOCALAPPDATA%\OortOffice\zcode-home\.zcode\cli\db\db.sqlite 的 model_usage，
+ *     与 OortCodex Desktop 同构。未用过的安装没有该库，静默跳过。
  *
- * 无法本地采集：OortOffice —— 本地聊天存于浏览器 Local Storage，无 token 明细；平台侧
- * new-api 有完整计量（/api/dashboard/self/overview 按天按 token），但需要有效的平台
- * accesstoken，本机各应用落盘的令牌均已过期、且主力应用的令牌为加密存储。
+ * 无法本地采集：OortOffice 的聊天内容之外没有额外来源 —— %APPDATA%\OortOffice 不存在，
+ * 本地聊天存于 OnlyOffice 面板的浏览器存储；平台侧 new-api 有完整计量
+ * （/api/dashboard/self/overview 按天按 token），但需要有效的平台 accesstoken，
+ * 本机各应用落盘的令牌均已过期、且主力应用的令牌为加密存储。
  */
 
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { DatabaseSync } from 'node:sqlite';
+import zlib from 'node:zlib';
 
 export const TOOL_NAMES = {
   dsh: 'DSH For OortCloud Work',
   aiStudio: 'OortCloud AI Studio',
   oortCodexDesktop: 'OortCodex Desktop',
+  oortOffice: 'OortOffice',
 };
 // 展示名改写表：token-watcher 的 'zcode' 与 Oort 系产品互不相干，不做任何改写。
 export const TOOL_RENAME = {};
@@ -71,13 +80,122 @@ function addTo(bucket, { input = 0, output = 0, cacheRead = 0, cacheWrite = 0, r
   bucket.tokens = bucket.input_tokens + bucket.output_tokens + bucket.cache_read + bucket.cache_write;
 }
 
-/** DSH For OortCloud Work 会话累计用量 → 按 mtime 日聚合 */
+const ZSTD_MAGIC = Buffer.from([0x28, 0xb5, 0x2f, 0xfd]);
+
+/**
+ * 解开 dsh 的多帧 zstd 会话日志。Node 内置解码器（22.15+）一次只解首帧，
+ * 所以按帧魔数切片逐帧解；任一帧解不开（文件正在追加、或魔数误判）就整份作废，
+ * 交给 projcache 兜底，宁可粗一点也不能漏。没有内置解码器时返回 null。
+ */
+function readDshLog(file) {
+  if (file.endsWith('.jsonl')) return readFileSync(file, 'utf8');
+  const decode = zlib.zstdDecompressSync;
+  if (typeof decode !== 'function') return null;
+  let buf;
+  try { buf = readFileSync(file); } catch { return null; }
+  let text = '';
+  let frames = 0;
+  for (let at = buf.indexOf(ZSTD_MAGIC); at >= 0; at = buf.indexOf(ZSTD_MAGIC, at + 4)) {
+    // 截断帧内置解码器不报错、只返回空，按解出 0 字节视为失败
+    const part = decode(buf.subarray(at)).toString('utf8');
+    if (!part) return null;
+    text += part;
+    frames++;
+  }
+  return frames ? text : null;
+}
+
+/** 单份 dsh 会话日志 → 逐请求用量（session + turn + step + 输入侧用量 去重） */
+function parseDshLog(text) {
+  let header = null;
+  let model = null;
+  const requests = new Map();
+  for (const line of text.split('\n')) {
+    if (!line || (!line.includes('"usage"') && !line.includes('"request/header"') && !line.includes('"type":"session"'))) continue;
+    let rec;
+    try { rec = JSON.parse(line); } catch { continue; }
+    if (rec.type === 'session') { header = header || rec; continue; }
+    if (rec.type === 'request/header') { model = rec.data?.header?.config?.model ?? model; continue; }
+    const usage = rec.type === 'assistant/message' ? rec.data?.usage
+      : rec.type === 'assistant/chunk' && rec.data?.chunk?.type === 'usage' ? rec.data.chunk.usage : null;
+    if (!usage || !Number.isFinite(rec.time)) continue;
+    const input = Number(usage.inputTokens) || 0;
+    const cached = Number(usage.cacheReadTokens) || 0;
+    const cacheWrite = Number(usage.cacheWriteTokens) || 0;
+    const output = Number(usage.outputTokens) || 0;
+    if (input + cached + cacheWrite + output <= 0) continue;
+    const turn = rec.data?.turn, step = rec.data?.step;
+    // 同一请求会有 chunk 与 message 两行；带输入侧用量区分“失败后重试”的两次请求
+    const key = `${turn}:${step}:${input}:${cached}:${cacheWrite}`;
+    const prev = requests.get(key);
+    const sourceModel = rec.data?.message?.source?.model;
+    let recModel = typeof sourceModel === 'string' && sourceModel ? sourceModel : model;
+    if (!recModel && prev) recModel = prev.model;
+    if (prev && output <= prev.output) continue;
+    requests.set(key, { ts: rec.time, input, output, cacheRead: cached, cacheWrite, model: String(recModel).trim().toLowerCase().slice(0, 60) });
+  }
+  if (!requests.size) return null;
+  // 分叉/种子会话开头重放的是父会话历史，时间早于本会话创建时间，不能重复计入
+  const createdAt = Number(header?.createdAt);
+  const seeded = header?.isSeeded === true && Number.isFinite(createdAt) ? createdAt : null;
+  const id = String(header?.id || '');
+  return { id, events: [...requests.values()].filter((e) => seeded === null || e.ts >= seeded) };
+}
+
+/** dsh 会话日志目录 → 已按请求归日的桶；返回已覆盖的会话 id（这些会话不再读 projcache） */
+function collectDshLogs(root, buckets) {
+  const covered = new Set();
+  if (!existsSync(root)) return covered;
+  for (const workspace of readdirSync(root, { withFileTypes: true })) {
+    if (!workspace.isDirectory()) continue;
+    for (const entry of readdirSync(join(root, workspace.name), { withFileTypes: true })) {
+      if (!entry.isDirectory()) continue;
+      const dir = join(root, workspace.name, entry.name);
+      let files;
+      try { files = readdirSync(dir).filter((n) => /\.jsonl(\.zst)?(\.zstd)?$/.test(n)).sort(); }
+      catch { continue; }
+      if (!files.length) continue;
+      const reqs = new Map();
+      let id = entry.name;
+      let failed = false;
+      for (const name of files) {
+        const text = readDshLog(join(dir, name));
+        if (text === null) { failed = true; break; }
+        const parsed = parseDshLog(text);
+        if (!parsed) continue;
+        if (parsed.id) id = parsed.id;
+        for (const event of parsed.events) {
+          const key = `dsh:${event.ts}:${event.input}:${event.cacheRead}:${event.cacheWrite}`;
+          const prev = reqs.get(key);
+          if (!prev || event.output > prev.output) reqs.set(key, event);
+        }
+      }
+      // 日志解不开时整份作废，让 projcache 的会话累计值兜底（不重复计）
+      if (failed) continue;
+      covered.add(entry.name);
+      if (id) covered.add(id);
+      for (const event of reqs.values()) {
+        const day = beijingDayOf(event.ts);
+        const bucket = buckets.get(day) || emptyBucket(day);
+        addTo(bucket, { input: event.input, output: event.output, cacheRead: event.cacheRead,
+          cacheWrite: event.cacheWrite, requests: 1, tool: TOOL_NAMES.dsh, model: event.model });
+        buckets.set(day, bucket);
+      }
+    }
+  }
+  return covered;
+}
+
+/** DSH For OortCloud Work：优先逐请求日志，缺日志的会话退回 projcache 累计（按 mtime 归因） */
 function collectDsh(root, log) {
-  const dir = join(root, '.dsh-oortcloud-work', 'storages', 'session_projcache', 'sessions');
-  if (!existsSync(dir)) return [];
+  const base = join(root, '.dsh-oortcloud-work');
   const buckets = new Map();
+  const covered = collectDshLogs(join(base, 'sessions'), buckets);
+  const dir = join(base, 'storages', 'session_projcache', 'sessions');
+  if (!existsSync(dir)) return [...buckets.values()];
   for (const name of readdirSync(dir)) {
     if (!name.endsWith('.json')) continue;
+    if (covered.has(name.slice(0, -'.json'.length))) continue;
     const file = join(dir, name);
     try {
       const totals = JSON.parse(readFileSync(file, 'utf8'))?.record?.rows?.tokenUsage?.val?.totals;
@@ -192,58 +310,82 @@ function collectAiStudioTranscripts(appData, log) {
 const OORTCODEX_HOMES = ['OortCodexWork', 'OortCodexWork Dev', 'OortCodexWork Preview'];
 
 /**
- * OortCodex Desktop：cli/db/db.sqlite 的 model_usage（与 token-watcher 的 zcode 同构）。
+ * 读一份 ZCode 内核库的 model_usage（与 token-watcher 的 zcode 同构）并入桶。
  * input_tokens 含 cache_read，入库时拆成新输入与缓存命中；按记录 id 去重，防止多条安装线
  * 指向同一份数据。数据库缺失或被占用时只跳过本轮。
  */
+function readZcodeUsage(path, tool, prefix, buckets, seen, log) {
+  if (!existsSync(path)) return;
+  let db;
+  try {
+    db = new DatabaseSync(path, { readOnly: true });
+    db.exec('PRAGMA busy_timeout = 3000');
+    if (!db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='model_usage'").get()) return;
+    const rows = db.prepare(`SELECT id, model_id, started_at, input_tokens, output_tokens,
+      cache_creation_input_tokens, cache_read_input_tokens FROM model_usage`).all();
+    for (const row of rows) {
+      const key = prefix + row.id;
+      if (seen.has(key)) continue;
+      const ts = Number(row.started_at);
+      if (!Number.isFinite(ts) || ts <= 0) continue;
+      const inputRaw = Number(row.input_tokens) || 0;
+      const cached = Math.min(Number(row.cache_read_input_tokens) || 0, inputRaw);
+      const cacheWrite = Number(row.cache_creation_input_tokens) || 0;
+      const output = Number(row.output_tokens) || 0;
+      if (inputRaw + cacheWrite + output <= 0) continue;
+      seen.add(key);
+      // 与 token-watcher 的 zcode 口径一致：模型名小写，跨源合并同一模型
+      const model = String(row.model_id || '').trim().toLowerCase().slice(0, 60);
+      const day = beijingDayOf(ts);
+      const bucket = buckets.get(day) || emptyBucket(day);
+      addTo(bucket, { input: inputRaw - cached, cacheRead: cached, cacheWrite, output,
+        requests: 1, tool, model });
+      buckets.set(day, bucket);
+    }
+  } catch (err) {
+    log(`oort ${tool} 数据库读取失败，已跳过（${path}）：${err?.message || err}`);
+  } finally {
+    try { db?.close(); } catch { /* 已关闭 */ }
+  }
+}
+
 function collectOortCodexDesktop(home, log) {
   const buckets = new Map(), seen = new Set();
   for (const name of OORTCODEX_HOMES) {
-    const path = join(home, name, 'cli', 'db', 'db.sqlite');
-    if (!existsSync(path)) continue;
-    let db;
-    try {
-      db = new DatabaseSync(path, { readOnly: true });
-      db.exec('PRAGMA busy_timeout = 3000');
-      if (!db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='model_usage'").get()) continue;
-      const rows = db.prepare(`SELECT id, model_id, started_at, input_tokens, output_tokens,
-        cache_creation_input_tokens, cache_read_input_tokens FROM model_usage`).all();
-      for (const row of rows) {
-        const key = 'oortcodex:' + row.id;
-        if (seen.has(key)) continue;
-        const ts = Number(row.started_at);
-        if (!Number.isFinite(ts) || ts <= 0) continue;
-        const inputRaw = Number(row.input_tokens) || 0;
-        const cached = Math.min(Number(row.cache_read_input_tokens) || 0, inputRaw);
-        const cacheWrite = Number(row.cache_creation_input_tokens) || 0;
-        const output = Number(row.output_tokens) || 0;
-        if (inputRaw + cacheWrite + output <= 0) continue;
-        seen.add(key);
-        // 与 token-watcher 的 zcode 口径一致：模型名小写，跨源合并同一模型
-        const model = String(row.model_id || '').trim().toLowerCase().slice(0, 60);
-        const day = beijingDayOf(ts);
-        const bucket = buckets.get(day) || emptyBucket(day);
-        addTo(bucket, { input: inputRaw - cached, cacheRead: cached, cacheWrite, output,
-          requests: 1, tool: TOOL_NAMES.oortCodexDesktop, model });
-        buckets.set(day, bucket);
-      }
-    } catch (err) {
-      log(`oort oortcodex ${name} 数据库读取失败，已跳过：${err?.message || err}`);
-    } finally {
-      try { db?.close(); } catch { /* 已关闭 */ }
-    }
+    readZcodeUsage(join(home, name, 'cli', 'db', 'db.sqlite'), TOOL_NAMES.oortCodexDesktop, 'oortcodex:', buckets, seen, log);
   }
+  return [...buckets.values()];
+}
+
+/**
+ * OortOffice 自带 ZCode 内核，HOME 被指到安装数据目录下的 zcode-home，
+ * 因此用量落在 <data>/OortOffice/zcode-home/.zcode/cli/db/db.sqlite。
+ * 默认数据目录按平台惯例取，未用过 OortOffice 时该库不存在。
+ */
+function collectOortOffice(localAppData, log) {
+  if (!localAppData) return [];
+  const buckets = new Map();
+  readZcodeUsage(join(localAppData, 'OortOffice', 'zcode-home', '.zcode', 'cli', 'db', 'db.sqlite'),
+    TOOL_NAMES.oortOffice, 'oortoffice:', buckets, new Set(), log);
   return [...buckets.values()];
 }
 
 const topEntries = (map, limit) => [...map.entries()].filter(([, v]) => v > 0)
   .sort((a, b) => b[1] - a[1] || String(a[0]).localeCompare(String(b[0]))).slice(0, limit);
 
+// 只按 home 推平台数据目录（不读环境变量）：测试里给临时 home 就不会扫到真机数据
+const dataHomeOf = (home) => process.platform === 'win32'
+  ? join(home, 'AppData', 'Local')
+  : process.platform === 'darwin' ? join(home, 'Library', 'Application Support')
+    : join(home, '.local', 'share');
+
 /** 汇总 Oort 系各源，产出与上报协议同构的日行 */
-export function collectOortDays({ home = homedir(), appData = process.env.APPDATA || null, log = () => {} } = {}) {
+export function collectOortDays({ home = homedir(), appData = process.env.APPDATA || null,
+  localAppData = null, log = () => {} } = {}) {
   const merged = new Map();
   const sources = [...collectDsh(home, log), ...collectAiStudio(appData, log),
-    ...collectAiStudioTranscripts(appData, log), ...collectOortCodexDesktop(home, log)];
+    ...collectAiStudioTranscripts(appData, log), ...collectOortCodexDesktop(home, log),
+    ...collectOortOffice(localAppData ?? dataHomeOf(home), log)];
   for (const bucket of sources) {
     const existing = merged.get(bucket.day) || emptyBucket(bucket.day);
     existing.input_tokens += bucket.input_tokens;

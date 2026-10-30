@@ -28,8 +28,8 @@ npm error 404 Not Found - GET https://registry.npmjs.org/tokenrank-client
 安装包地址（带 SHA-256 校验）：
 
 ```
-https://tokenrank.oortcloudsmart.com:2443/dl/tokenrank-client-0.2.25.tar.gz
-https://tokenrank.oortcloudsmart.com:2443/dl/tokenrank-client-0.2.25.tar.gz.sha256
+https://tokenrank.oortcloudsmart.com:2443/dl/tokenrank-client-0.2.26.tar.gz
+https://tokenrank.oortcloudsmart.com:2443/dl/tokenrank-client-0.2.26.tar.gz.sha256
 ```
 
 ---
