@@ -46,6 +46,7 @@ Page({
     const myGroups = result.groups.map(g => ({ ...g,
       my_rank_label: g.rank_hidden ? '未参与排名' : g.group_hidden ? '本群已隐藏' : g.profile_required ? '待完善资料' : g.my_rank ? String(g.my_rank) : '未上榜',
       tokens_fmt: api.fmtTokens(g.my_tokens),
+      credits_fmt: Number(g.my_credits) > 0 ? usage.formatCredits(g.my_credits) : '',
       updated_fmt: g.updated_at ? api.fmtRelTime(g.updated_at) : '等待首次上报',
     }));
     this.setData({ myGroups, loading: false });

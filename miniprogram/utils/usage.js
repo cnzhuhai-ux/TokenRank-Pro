@@ -15,6 +15,16 @@ function formatTokens(n) {
   const { value, unit } = compact(n);
   return unit ? `${value} ${unit}` : value;
 }
+// Credits 带小数：不足一万时保留两位，达到一万才沿用万/亿紧凑格式
+function compactCredits(n) {
+  const v = Math.max(0, Number(n) || 0);
+  if (v >= 1e4) return compact(v);
+  return { value: (Math.round(v * 100) / 100).toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 2 }), unit: '' };
+}
+function formatCredits(n) {
+  const { value, unit } = compactCredits(n);
+  return unit ? `${value} ${unit}` : value;
+}
 function usageBasis(usage) {
   const original = usage.token_basis === 'upstream_total';
   const timezoneLabel = usage.timezone === 'Asia/Shanghai' ? '北京时间' : 'UTC';
@@ -28,7 +38,8 @@ function present(usage) {
   const detail = items => items.map(item => ({ ...item, exact: integer(item.tokens), formatted: formatTokens(item.tokens) }));
   return { ...usage, costDisplay: presentCost(usage.cost),
     creditsDisplay: usage.credits && usage.credits.status !== 'unavailable' && usage.credits.total > 0
-      ? { available: true, amount: String(Math.round(usage.credits.total * 100) / 100), note: (usage.credits.tools || []).map(t => t[0]).slice(0, 2).join('、') }
+      ? { available: true, ...compactCredits(usage.credits.total),
+        formatted: formatCredits(usage.credits.total), note: (usage.credits.tools || []).map(t => t[0]).slice(0, 2).join('、') }
       : { available: false },
     ...usageBasis(usage), ...compact(summary.tokens), exact: integer(summary.tokens),
     periodLabel: PERIODS.find(p => p.key === usage.period)?.label || '今日',
@@ -43,4 +54,4 @@ function present(usage) {
   };
 }
 const shareUrl = period => `/pages/share/share?period=${encodeURIComponent(period)}`;
-module.exports = { PERIODS, compact, formatTokens, integer, usageBasis, present, shareUrl };
+module.exports = { PERIODS, compact, compactCredits, formatCredits, formatTokens, integer, usageBasis, present, shareUrl };

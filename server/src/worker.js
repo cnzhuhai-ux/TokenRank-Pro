@@ -878,6 +878,7 @@ async function myUsage(request, env, url, sharedRange = null) {
     models_json, tools_json, updated_at, cost_json, credits_json FROM ranked_usage
     WHERE user_id = ?1 AND day >= ?2 AND day <= ?3 ORDER BY day`).bind(user.id, readFrom, range.to).all();
   const historyTask = env.DB.prepare(`SELECT COUNT(*) AS days, SUM(tokens) AS tokens,
+    COALESCE(SUM(COALESCE(json_extract(credits_json,'$.total'),0)),0) AS credits,
     MIN(day) AS first_day, MAX(updated_at) AS updated_at FROM ranked_usage
     WHERE user_id = ?1 AND day <= ?2 AND (tokens > 0 OR requests > 0 OR COALESCE(json_extract(credits_json,'$.total'),0) > 0)`).bind(user.id, range.to).first();
   const activityTask = env.DB.prepare(`SELECT day, tokens, requests,
@@ -894,7 +895,9 @@ async function myUsage(request, env, url, sharedRange = null) {
     standing: { rank: usage.summary.tokens > 0 && !user.rank_hidden ? (ranking.ahead || 0) + 1 : null,
       participants: ranking.participants || 0, hidden: !!user.rank_hidden },
     has_history: history.days > 0, reported_days: rows.results.filter(r => r.day >= range.from && r.day <= range.to).length, first_day: history.first_day,
-    lifetime_tokens: history.tokens || 0, last_report_at: history.updated_at || null });
+    lifetime_tokens: history.tokens || 0,
+    lifetime_credits: Math.round((Number(history.credits) || 0) * 1e6) / 1e6,
+    last_report_at: history.updated_at || null });
 }
 
 /**
@@ -922,11 +925,13 @@ async function myRankings(request, env, url) {
   // 广场排名：全量有序表（社区规模几百人，一次取齐）
   const allTask = env.DB.prepare(`SELECT ds.user_id AS uid, SUM(ds.tokens) AS t FROM public_usage ds WHERE ds.day >= ?1 AND ds.day <= ?2 GROUP BY ds.user_id HAVING t > 0 ORDER BY t DESC, uid ASC`).bind(from, to).all();
   const mineTask = env.DB.prepare(`SELECT SUM(tokens) AS t FROM ranked_usage WHERE user_id = ?1 AND day >= ?2 AND day <= ?3`).bind(user.id, from, to).first();
-  const [groups, allRows, mine] = await Promise.all([groupsTask, allTask, mineTask]);
+  const mineCreditsTask = env.DB.prepare(`SELECT COALESCE(SUM(COALESCE(json_extract(credits_json,'$.total'),0)),0) AS c FROM ranked_usage WHERE user_id = ?1 AND day >= ?2 AND day <= ?3`).bind(user.id, from, to).first();
+  const [groups, allRows, mine, mineCredits] = await Promise.all([groupsTask, allTask, mineTask, mineCreditsTask]);
   const gmap = new Map();
   let grk = 0;
   for (const r of allRows.results) gmap.set(r.uid, ++grk);
   const myTokens = mine?.t || 0;
+  const myCredits = Math.round((Number(mineCredits?.c) || 0) * 1e6) / 1e6;
 
   const out = [];
   let maxUpd = 0;
@@ -939,6 +944,7 @@ async function myRankings(request, env, url) {
       return { id: g.id, name: g.name, members: g.members,
         profile_required: !completeProfile(user),
         my_rank: myTokens > 0 && !user.rank_hidden && !g.my_hidden ? ahead.c + 1 : null, my_tokens: myTokens,
+        my_credits: myCredits,
         rank_hidden: !!user.rank_hidden, group_hidden: !!g.my_hidden,
         global_rank: gmap.get(user.id) ?? null, updated_at: up.ts };
     }));
@@ -948,7 +954,7 @@ async function myRankings(request, env, url) {
   return Response.json({
     period,
     groups: out,
-    global: { rank: gmap.get(user.id) ?? null, tokens: myTokens },
+    global: { rank: gmap.get(user.id) ?? null, tokens: myTokens, credits: myCredits },
     updated_at: maxUpd || null,
   });
 }

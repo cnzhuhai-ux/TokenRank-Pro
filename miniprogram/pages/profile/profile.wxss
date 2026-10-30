@@ -10,6 +10,8 @@
 .usage-hero { padding: 24px 0; }
 .hero-label { color: var(--text-secondary); font-size: 13px; }
 .hero-number { font-size: 48px; font-weight: 400; line-height: 1.25; margin-top: 8px; color: var(--amount); overflow-wrap: anywhere; }
+.hero-tail { font-size: 13px; color: var(--text-muted); margin-left: 6px; }
+.credits-number { margin-top: 4px; }
 .hero-unit { font-size: 26px; font-weight: 400; margin-left: 6px; }
 .exact { font-size: 13px; color: var(--text-secondary); margin-top: 8px; overflow-wrap: anywhere; }
 .range { font-size: 12px; color: var(--text-muted); line-height: 1.7; margin-top: 8px; }

@@ -73,6 +73,7 @@
 
   // ── 通用片段 ──
   const periods = [['day', '今日'], ['week', '近7天'], ['month', '近30天']];
+  const periodLabels = { day: '今日', week: '近7天', month: '近30天', all: '累计' };
   const avatar = (url, nick) => url
     ? `<img class="avatar" src="${esc(url)}" referrerpolicy="no-referrer" alt="">`
     : `<div class="avatar-ph">${esc((nick || '?').slice(0, 1))}</div>`;
@@ -90,6 +91,29 @@
     const parts = fmt(n).split(' ');
     return { big: parts.length > 1 ? parts.slice(0, -1).join(' ') : parts[0], unit: parts.length > 1 ? parts.at(-1) : '' };
   };
+  // credits 与 tokens 用同一套大数字样式：数字放大 + 橙色，单位收尾。
+  const creditNum = (n) => {
+    n = Math.max(0, Number(n) || 0);
+    if (n >= 1e8) return { big: (n / 1e8).toFixed(2), unit: '亿' };
+    if (n >= 1e4) return { big: (n / 1e4).toFixed(2).replace(/\.?0+$/, ''), unit: '万' };
+    return { big: (Math.round(n * 100) / 100).toLocaleString('en-US', { maximumFractionDigits: 2 }), unit: '' };
+  };
+  const creditsTotal = (c) => (c && c.status !== 'unavailable' && Number(c.total) > 0 ? Number(c.total) : null);
+  const creditsText = (total) => { const c = creditNum(total); return c.big + (c.unit ? ' ' + c.unit : ''); };
+  const heroLine = (big, unit, tail) =>
+    `<div class="num-line"><span class="big num">${esc(big)}</span>${unit ? `<span class="unit">${esc(unit)}</span>` : ''}<span class="tail">${esc(tail)}</span></div>`;
+  const creditsHero = (total) => (total == null ? '' : (() => { const c = creditNum(total); return heroLine(c.big, c.unit, 'Credits'); })());
+  /** credits 区块：大数字与 tokens 完全同款，下面补一行计费工具说明。 */
+  const creditsBlock = (c) => {
+    const total = creditsTotal(c);
+    if (total == null) return '';
+    const tools = (c.tools || []).map((t) => t[0]).slice(0, 2).join('、');
+    return creditsHero(total) + (tools ? `<div class="credit-note">Credits 计费工具：${esc(tools)}</div>` : '');
+  };
+  const statsCredits = (total) => (total == null ? '' :
+    `<div><div class="v num">${esc(creditsText(total))}</div><div class="k">累计 Credits</div></div>`);
+  const inlineCredits = (total) => (total == null ? '' :
+    `<span class="credits"> · ${esc(creditsText(total))} Credits</span>`);
   const distBlock = (title, items, limit = 4) => {
     const rows = (items || []).filter((x) => !x.unclassified).slice(0, limit);
     if (!rows.length) return '';
@@ -119,12 +143,16 @@
       bindTabRow($('#board').previousElementSibling, 'data-m', (m) => { state.metric = m; renderSquare(); });
       const d = await api(`/api/leaderboard?scope=global&period=${state.period}&metric=${state.metric}`);
       const creditsView = state.metric === 'credits';
-      const amt = (e) => creditsView ? (Number(e.credits) || 0).toFixed(2).replace(/\.?0+$/, '') : fmt(e.tokens);
+      const amt = (e) => creditsView ? creditsText(e.credits) : fmt(e.tokens);
+      // 另一维度补角：Token 榜带 Credits，Credits 榜带 tokens，同一行读齐两个口径
+      const alt = (e) => creditsView
+        ? (Number(e.tokens) > 0 ? `<div class="sub alt">${fmt(e.tokens)} tokens</div>` : '')
+        : (Number(e.credits) > 0 ? `<div class="sub alt">${esc(creditsText(e.credits))} Credits</div>` : '');
       const rows = d.entries.map((e) => `
         <div class="row ${state.me && e.rank === d.me?.rank && e.nickname === d.me?.nickname ? 'me' : ''}">
           <div class="rank num">${e.rank}</div>
           ${avatar(e.avatar_url, e.nickname)}
-          <div class="who"><div class="nick">${esc(e.nickname)}</div>${e.top_model ? `<div class="sub">${esc(e.top_model)}</div>` : ''}</div>
+          <div class="who"><div class="nick">${esc(e.nickname)}</div>${e.top_model ? `<div class="sub">${esc(e.top_model)}</div>` : ''}${alt(e)}</div>
           <div class="amt num">${amt(e)}</div>
         </div>`).join('');
       $('#board').innerHTML = `
@@ -134,7 +162,7 @@
             <div class="rank num">${d.me.rank}</div>
             ${avatar(state.me?.avatar_url, state.me?.nickname)}
             <div class="who"><div class="nick">${esc(state.me?.nickname || '')} 我</div>
-              <div class="sub">我的全站排名${d.me.top_model ? ' · ' + esc(d.me.top_model) : ''}</div></div>
+              <div class="sub">我的全站排名${d.me.top_model ? ' · ' + esc(d.me.top_model) : ''}</div>${alt(d.me)}</div>
             <div class="amt num">${creditsView ? amt(d.me) : fmt(d.me.tokens)}</div>
           </div>` : ''}
         <div class="footnote">${creditsView ? 'Credits 为 Qoder 等按 Credits 计费工具的自报数字' : '数据由用户电脑上报，仅供参考'}</div>`;
@@ -184,32 +212,31 @@
     const usage = await api(`/api/my/usage?period=${state.period}`);
     const rankings = await api(`/api/my/rankings?period=${state.period}`).catch(() => ({ groups: [] }));
     const heroUnit = fmt(usage.summary.tokens).split(' ');
-    const when = usage.last_report_at ? `${bj(usage.last_report_at).slice(5, 16).replace('T', ' ')} 同步` : '暂未同步';
+    const statCells = [
+      `<div><div class="v num">${fmt(usage.lifetime_tokens)}</div><div class="k">累计 tokens</div></div>`,
+      statsCredits(Number(usage.lifetime_credits) > 0 ? Number(usage.lifetime_credits) : null),
+      `<div><div class="v num">${usage.activity?.active_days ?? 0} 天</div><div class="k">活跃天数</div></div>`,
+      `<div><div class="v num">${usage.activity?.current_streak ?? 0} 天</div><div class="k">连续记录</div></div>`,
+    ].filter(Boolean);
     body.innerHTML = `
       <div class="section"><span class="t">我的用量</span><span class="more">详情</span></div>
       <div class="hero">
-        <div class="num-line">
-          <span class="big num">${esc(heroUnit.length > 1 ? heroUnit.slice(0, -1).join(' ') : heroUnit[0])}</span>
-          ${heroUnit.length > 1 ? `<span class="unit">${esc(heroUnit.at(-1))}</span>` : ''}
-          <span class="tail">tokens</span>
-        </div>
-        <div class="full num">今日 · ${full(usage.summary.requests)} 次调用</div>
-        ${usage.credits && usage.credits.status !== 'unavailable' && usage.credits.total > 0
-          ? `<div class="full num">Credits（Qoder 等）· ${usage.credits.total.toFixed(2)} Credits</div>` : ''}
+        ${heroLine(heroUnit.length > 1 ? heroUnit.slice(0, -1).join(' ') : heroUnit[0], heroUnit.length > 1 ? heroUnit.at(-1) : '', 'tokens')}
+        <div class="full num">${periodLabels[state.period]} · ${full(usage.summary.requests)} 次调用</div>
+        ${creditsBlock(usage.credits)}
       </div>
-      <div class="stats">
-        <div><div class="v num">${fmt(usage.lifetime_tokens)}</div><div class="k">累计 tokens</div></div>
-        <div><div class="v num">${usage.activity?.active_days ?? 0} 天</div><div class="k">活跃天数</div></div>
-        <div><div class="v num">${usage.activity?.current_streak ?? 0} 天</div><div class="k">连续记录</div></div>
+      <div class="stats${statCells.length > 3 ? ' dense' : ''}">
+        ${statCells.join('')}
       </div>
       <div class="list-header"><span>已加入群榜</span><span>${rankings.groups.length} 个</span></div>
       ${rankings.groups.map((g) => `
         <div class="group-row">
           <div class="l1"><span class="name">${esc(g.name)}</span><span class="when">${g.updated_at ? Math.max(1, Math.round((Date.now() - g.updated_at) / 60000)) + ' 分钟前' : '暂未更新'}</span></div>
           <div class="l2">
-            <span class="rank">群内 <span class="num">${g.my_rank ?? '—'}</span>　${fmt(g.my_tokens)} tokens</span>
+            <span class="rank">群内 <span class="num">${g.my_rank ?? '—'}</span></span>
             <span class="members">${g.members} 人已加入</span>
           </div>
+          <div class="l3">${fmt(g.my_tokens)} tokens${inlineCredits(g.my_credits > 0 ? g.my_credits : null)}</div>
         </div>`).join('') || '<div class="empty">还没有加入群榜：把机器人拉进飞书群，在群里发「加入」</div>'}
       <div class="footnote">数据由用户电脑上报，仅供参考</div>`;
   }
@@ -235,29 +262,24 @@
   async function renderMeSum(body) {
     const period = state.mePeriod || 'all';
     const d = await api(`/api/my/usage?period=${period}`);
-    const labels = { day: '今日', week: '近7天', month: '近30天', all: '累计' };
     const hero = heroNum(d.summary.tokens);
     const activeDays = d.activity?.active_days ?? 0;
     const cost = d.cost && d.cost.usd_micros != null ? `$${(d.cost.usd_micros / 1e6).toFixed(4)}USD` : null;
-    const credits = d.credits && d.credits.status !== 'unavailable' && d.credits.total > 0
-      ? `${d.credits.total.toFixed(2)} Credits${d.credits.tools?.length ? '（' + esc(d.credits.tools[0][0]) + ' 等）' : ''}` : null;
     body.innerHTML = `
       <div class="hero">
-        <div class="label">${labels[period]} · 总用量 · 含缓存</div>
-        <div class="num-line">
-          <span class="big num">${esc(hero.big)}</span>
-          ${hero.unit ? `<span class="unit">${esc(hero.unit)}</span>` : ''}
-        </div>
+        <div class="label">${periodLabels[period]} · 总用量 · 含缓存</div>
+        ${heroLine(hero.big, hero.unit, 'tokens')}
         <div class="full num">${full(d.summary.tokens)} tokens</div>
+        ${creditsBlock(d.credits)}
         <div class="full">${d.from === '0000-01-01' ? (d.first_day || '') : d.from} — ${d.to} · 北京时间${d.last_report_at ? ' · 同步于 ' + bj(d.last_report_at).slice(5, 16).replace('T', ' ') : ''}</div>
         ${cost ? `<div class="full">API 等值估算${cost} · 仅供参考，不等同账单</div>` : ''}
-        ${credits ? `<div class="full">Credits 计费工具（Qoder 等）${credits}</div>` : ''}
       </div>
       <a class="btn" href="#" onclick="return false">转发我的用量</a>
       <a class="btn ghost" href="#" onclick="return false">分享图片</a>
       <div class="stats">
         <div><div class="v num">${full(d.summary.requests)}</div><div class="k">调用次数</div></div>
         <div><div class="v num">${activeDays} 天</div><div class="k">活跃天数</div></div>
+        ${creditsTotal(d.credits) != null ? `<div><div class="v num">${esc(creditsText(d.credits.total))}</div><div class="k">本期 Credits</div></div>` : ''}
       </div>
       <div class="links">
         <a href="#" data-go="square">广场排名</a>
@@ -287,14 +309,13 @@
     } else {
       const s = d.summary, hero = heroNum(s.tokens);
       const cost = d.cost && d.cost.usd_micros != null ? '$' + (d.cost.usd_micros / 1e6).toFixed(2) : null;
-      const credits = d.credits && d.credits.status !== 'unavailable' && d.credits.total > 0 ? d.credits.total.toFixed(2).replace(/\.?0+$/, '') : null;
       body.innerHTML = `${nav}
         <div class="hero">
           <div class="label">${day} · 总用量 · 含缓存</div>
-          <div class="num-line"><span class="big num">${esc(hero.big)}</span>${hero.unit ? `<span class="unit">${esc(hero.unit)}</span>` : ''}</div>
+          <div class="num-line"><span class="big num">${esc(hero.big)}</span>${hero.unit ? `<span class="unit">${esc(hero.unit)}</span>` : ''}<span class="tail">tokens</span></div>
           <div class="full num">${full(s.tokens)} tokens</div>
+          ${creditsBlock(d.credits)}
           ${cost ? `<div class="full">API 等值估算${cost}USD · 仅供参考，不等同账单</div>` : ''}
-          ${credits ? `<div class="full">Credits 计费工具（Qoder 等）${credits}</div>` : ''}
         </div>
         <div class="stats">
           <div><div class="v num">${full(s.requests)}</div><div class="k">调用次数</div></div>
@@ -367,7 +388,6 @@
       : '<span class="change-down">上期数据不足，暂无可比</span>';
     const hero = heroNum(d.summary.tokens);
     const cost = d.cost && d.cost.usd_micros != null ? '$' + (d.cost.usd_micros / 1e6).toFixed(2) : null;
-    const credits = d.credits && d.credits.status !== 'unavailable' && d.credits.total > 0 ? d.credits.total.toFixed(2).replace(/\.?0+$/, '') + ' Credits' : null;
     body.innerHTML = `
       <div class="nav-row">
         <button class="nav-btn" id="w-prev" ${d.previous_week ? '' : 'disabled'}>‹ 上周</button>
@@ -376,8 +396,9 @@
       </div>
       <div class="hero">
         <div class="label">周走势 · 总用量 · 含缓存 · 较上期 ${change}</div>
-        <div class="num-line"><span class="big num">${esc(hero.big)}</span>${hero.unit ? `<span class="unit">${esc(hero.unit)}</span>` : ''}</div>
+        <div class="num-line"><span class="big num">${esc(hero.big)}</span>${hero.unit ? `<span class="unit">${esc(hero.unit)}</span>` : ''}<span class="tail">tokens</span></div>
         <div class="full num">${full(d.summary.tokens)} tokens · ${w.reported_days}/7 天有记录</div>
+        ${creditsBlock(d.credits)}
       </div>
       <div class="bars">${bars}</div>
       <div class="stats">
@@ -385,7 +406,6 @@
         <div><div class="v" style="font-size:15px">${esc(w.top_model ? w.top_model.name : '—')}</div><div class="k">常用模型</div></div>
         <div><div class="v num">${cost ?? '—'}</div><div class="k">成本估算</div></div>
       </div>
-      ${credits ? `<div class="caption" style="text-align:center">本周 Credits（Qoder 等）${credits}</div>` : ''}
       <div class="footnote">柱高按本周单日最大用量归一 · 走势按北京时间自然日</div>`;
     if (d.previous_week) $('#w-prev').addEventListener('click', () => { state.weekStart = d.previous_week; renderMeTrend(body); });
     if (d.next_week) $('#w-next').addEventListener('click', () => { state.weekStart = d.next_week; renderMeTrend(body); });

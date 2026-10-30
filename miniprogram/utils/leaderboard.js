@@ -1,18 +1,17 @@
-const { compact, formatTokens, integer } = require('./usage');
-
-// Credits（Qoder 等按 Credits 计费工具）：固定两位小数，大数沿用紧凑格式
-function formatCredits(value) {
-  const v = Math.max(0, Number(value) || 0);
-  if (v >= 1e4) return compact(Math.round(v)).value + (compact(Math.round(v)).unit || '');
-  return v.toFixed(2);
-}
+const { compact, formatTokens, formatCredits, integer } = require('./usage');
 
 // The API's own rank identifies the current row, including ties and duplicate
 // nicknames. Never infer identity from a name or avatar.
 function presentEntry(entry, ownRank, metric) {
   const amount = compact(entry.tokens);
-  return { ...entry, tokens_fmt: formatTokens(entry.tokens), tokens_value: amount.value, tokens_unit: amount.unit,
-    credits_view: metric === 'credits' && Number(entry.credits) > 0 ? formatCredits(entry.credits) : '',
+  const credits = Number(entry.credits) > 0 ? formatCredits(entry.credits) : '';
+  const tokens_fmt = formatTokens(entry.tokens);
+  // 另一维度补角：Token 榜补 Credits，Credits 榜补 tokens，让每行一次读齐两个口径
+  const alt_view = metric === 'credits'
+    ? (Number(entry.tokens) > 0 ? `${tokens_fmt} tokens` : '')
+    : (credits ? `${credits} Credits` : '');
+  return { ...entry, tokens_fmt, tokens_value: amount.value, tokens_unit: amount.unit,
+    credits_view: metric === 'credits' ? credits : '', alt_view,
     requests_text: integer(entry.requests), initial: [...String(entry.nickname || '').trim()][0] || '?',
     rk: { label: String(entry.rank), top3: entry.rank >= 1 && entry.rank <= 3 },
     isMe: ownRank != null && entry.rank === ownRank };

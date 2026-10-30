@@ -861,3 +861,31 @@ test('群名次读取期间用量发生变化时拒绝生成混合快照', async
   assert.equal(shared.status, 409);
   assert.equal(f.db.prepare('SELECT COUNT(*) n FROM usage_shares').get().n, 0);
 });
+
+test('Credits 与 tokens 一起返回：本期、累计与群内统计同口径', async t => {
+  const f = fixture(t);
+  const day = beijingDay();
+  await f.resolve('credits-group');
+  seedDay(f, 1, day, { tokens: 100, requests: 2 });
+  f.db.prepare('UPDATE daily_totals SET credits_json=? WHERE user_id=1 AND day=?')
+    .run(JSON.stringify({ total: 4011.33, tools: [['qoder', 4011.33]] }), day);
+  const usage = (await f.request('/api/my/usage?period=day')).data;
+  assert.equal(usage.summary.tokens, 100);
+  assert.equal(usage.credits.total, 4011.33);
+  assert.equal(usage.lifetime_credits, 4011.33);
+  const ranks = (await f.request('/api/my/rankings?period=day')).data;
+  assert.equal(ranks.groups[0].my_credits, 4011.33);
+  assert.equal(ranks.groups[0].my_tokens, 100);
+  assert.equal(ranks.global.credits, 4011.33);
+  // 纯 Credits 用量：token 为 0 也算有历史，累计数字照常返回
+  const yesterday = beijingDay(Date.now() - 86400000);
+  seedDay(f, 3, yesterday, { tokens: 0, requests: 0 });
+  f.db.prepare('UPDATE daily_totals SET credits_json=? WHERE user_id=3 AND day=?')
+    .run(JSON.stringify({ total: 12.5, tools: [['qoder', 12.5]] }), yesterday);
+  const mine = (await f.request('/api/my/usage?period=day', null, 3)).data;
+  assert.equal(mine.summary.tokens, 0);
+  assert.equal(mine.has_history, true);
+  assert.equal(mine.lifetime_tokens, 0);
+  assert.equal(mine.lifetime_credits, 12.5);
+  assert.equal(mine.activity.active_days, 1);
+});

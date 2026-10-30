@@ -11,6 +11,7 @@
     </block>
     <block wx:elif="{{usage}}">
       <view class="own-number num-font" bindtap="goProfile">{{usage.value}}<text class="own-unit">{{usage.unit}}</text><text class="own-tokens"> tokens</text></view>
+      <view wx:if="{{usage.creditsDisplay.available}}" class="own-number own-credits num-font" bindtap="goProfile">{{usage.creditsDisplay.value}}<text wx:if="{{usage.creditsDisplay.unit}}" class="own-unit">{{usage.creditsDisplay.unit}}</text><text class="own-tokens"> Credits</text></view>
       <view class="own-meta"><text>{{usage.periodLabel}} · {{usage.requestsText}} 次调用</text><button class="own-share" wx:if="{{usage.has_history}}" open-type="share" data-kind="personal" disabled="{{!quickShareReady}}">{{quickSharePreparing ? '准备中' : '转发'}}</button></view>
       <view wx:if="{{usage.has_history}}" class="own-note"><text class="own-link" bindtap="goShare">分享图片</text><text wx:if="{{quickShareError}}" class="own-link" bindtap="retryQuickShare"> 转发重试</text></view>
     </block>
@@ -34,7 +35,7 @@
       <view class="mg-sec-title"><text>已加入群榜</text><text>{{myGroups.length}} 个</text></view>
       <view class="mg-card" wx:for="{{myGroups}}" wx:key="id" bindtap="openGroup" data-id="{{item.id}}">
         <view class="mg-top"><text class="mg-name">{{item.name}}</text><text class="mg-upd">{{item.updated_fmt}}</text></view>
-        <view class="mg-meta"><text>群内 <text class="mg-num num-font">{{item.my_rank_label}}</text></text><text class="mg-tokens num-font">{{item.tokens_fmt}}<text class="mg-unit">tokens</text></text><text class="mg-members">{{item.members}} 人已加入</text></view>
+        <view class="mg-meta"><text>群内 <text class="mg-num num-font">{{item.my_rank_label}}</text></text><text class="mg-tokens num-font">{{item.tokens_fmt}}<text class="mg-unit">tokens</text><text wx:if="{{item.credits_fmt}}" class="mg-credits"> · {{item.credits_fmt}}<text class="mg-unit">Credits</text></text></text><text class="mg-members">{{item.members}} 人已加入</text></view>
       </view>
     </view>
     <view class="actions"><button class="btn btn-primary" open-type="share">分享到其他群</button></view>

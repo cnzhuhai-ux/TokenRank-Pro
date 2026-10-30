@@ -42,6 +42,7 @@ body {
 .row .who { flex: 1; min-width: 0; }
 .row .nick { font-size: 15px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .row .sub { color: var(--text2); font-size: 12px; margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.row .sub.alt { color: var(--orange); }
 .row .amt { color: var(--orange); font-size: 19px; font-weight: 600; flex: none; }
 .row.me { background: var(--bg2); }
 
@@ -53,13 +54,24 @@ body {
 .hero .unit { color: var(--orange); font-size: 20px; font-weight: 600; }
 .hero .tail { color: var(--text2); font-size: 13px; }
 .hero .full { color: var(--text2); font-size: 13px; margin-top: 2px; }
+/* credits 与 tokens 同一大数字样式，垂直紧随其后 */
+.hero .num-line + .num-line { margin-top: 2px; }
+.hero .credit-note { color: var(--text2); font-size: 12px; margin-top: 2px; }
 
 /* ── 统计与按钮 ── */
 .stats { display: flex; border-top: 1px solid var(--line); margin-top: 14px; }
-.stats > div { flex: 1; padding: 14px 16px; }
+.stats > div { flex: 1; min-width: 0; padding: 14px 16px; }
 .stats > div + div { border-left: 1px solid var(--line); }
-.stats .v { font-size: 22px; font-weight: 600; }
+.stats .v { font-size: 22px; font-weight: 600; overflow-wrap: anywhere; }
 .stats .k { color: var(--text2); font-size: 12px; margin-top: 3px; }
+/* 四项（含 Credits）改为 2×2 网格：字号不缩、数字不折行，分隔线仍然对齐 */
+.stats.dense { display: grid; grid-template-columns: 1fr 1fr; }
+.stats.dense > div { padding: 12px 16px; border-left: none; }
+.stats.dense > div + div { border-left: none; }
+.stats.dense > div:nth-child(even) { border-left: 1px solid var(--line); }
+.stats.dense > div:nth-child(n + 3) { border-top: 1px solid var(--line); }
+.stats.dense .v { font-size: 20px; }
+.stats.dense .k { font-size: 12px; }
 .btn { display: block; width: calc(100% - 32px); margin: 16px auto 0; padding: 12px 0; border-radius: 6px; border: none;
   background: var(--green); color: #fff; font-size: 16px; font-weight: 600; text-align: center; cursor: pointer; text-decoration: none; }
 .btn.ghost { background: var(--bg); color: var(--green); border: 1px solid var(--green); }
@@ -87,9 +99,13 @@ body {
 .group-row .l1 { display: flex; justify-content: space-between; align-items: center; }
 .group-row .name { font-size: 16px; font-weight: 600; }
 .group-row .when { color: var(--text2); font-size: 12px; }
-.group-row .l2 { display: flex; justify-content: space-between; margin-top: 6px; font-size: 13px; }
+.group-row .l2 { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin-top: 6px; font-size: 13px; }
+.group-row .rank { flex: 1 1 auto; min-width: 0; }
 .group-row .rank .num { color: var(--orange); font-weight: 600; font-size: 17px; }
-.group-row .members { color: var(--text2); }
+/* 用量行：tokens 与 Credits 同行同字号，缺 credits 时只显示 tokens */
+.group-row .l3 { margin-top: 4px; font-size: 13px; }
+.group-row .credits { font-size: 13px; white-space: nowrap; }
+.group-row .members { color: var(--text2); flex: none; }
 .empty { text-align: center; color: var(--text2); padding: 40px 16px; font-size: 14px; }
 .empty .btn { width: auto; padding: 10px 22px; margin-top: 14px; display: inline-block; }
 
