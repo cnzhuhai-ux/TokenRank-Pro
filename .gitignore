@@ -36,3 +36,6 @@ client/README.zh-CN.md
 
 # Local build output served by the Worker; rebuilt by `npm run pack:dist`
 server/public/dl/
+
+# Offline VSIX build output of the Trae extension (regenerate with build.ps1)
+client/trae-extension/*.vsix

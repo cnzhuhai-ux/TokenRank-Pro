@@ -1,6 +1,6 @@
 # TokenRank 独立同步器
 
-v0.2.21 为独立只读适配器，接入原版 [luwill/token-watcher](https://github.com/luwill/token-watcher)。Node.js 22.13+，无第三方运行依赖。
+v0.2.22 为独立只读适配器，接入原版 [luwill/token-watcher](https://github.com/luwill/token-watcher)。Node.js 22.13+，无第三方运行依赖。
 
 更换服务器、接入码或统计库后，会重新全量上传本机保留的历史用量，包含注销后重新接入的情况。上传中断可分批续传；重复执行同一账号的接入命令不会重传未变化的日期。
 
@@ -148,6 +148,12 @@ token-watcher 1.8 首次迁移 Codex 去重键时，会在统计库里留下一�
 - **容错**：每个文件或数据库单独捕获异常，损坏项写入同步日志后跳过，不影响其他来源和正常上报。数据目录只读，不修改任何产品文件。
 
 `TOKENRANK_OORT_DISABLE=1` 可关闭全部补充采集，`TOKENRANK_EXTRA_DISABLE=1` 只关闭 WorkBuddy / DevEco 部分。
+
+## Trae 快照采集（0.2.22）
+
+Trae 本机没有明文用量：会话库 `ModularData/ai-agent/database.db` 是 SQLCipher 加密的。0.2.22 增加 [`sync/trae.js`](sync/trae.js)，只读 `~/.trae-cn/credits-usage.json`（schema 1，按天聚合的 token 四分量、会话行数、credits 与模型榜），把结果并入日桶；该文件由仓库内的 Trae 扩展 [`trae-extension/`](trae-extension/README.md) 调用 Trae 官方用量接口写出。未装扩展时静默无数据，快照 schema 不匹配、日行越界或 JSON 损坏都只告警跳过，不阻断同步。`TOKENRANK_TRAE_DISABLE=1` 关闭该来源。接口口径、验证数据与排障见 [`../docs/trae-collection.md`](../docs/trae-collection.md)。
+
+同日合并支持 credits：`mergeOortDays` 现在把补充源的 credits（`{ total, tools }`）与上游同日数值相加、按工具名合并取前 8，分项之和钳回不超过 total（与服务端 1e-6 容差对齐），Trae 与 Qoder 等只上报 credits 的工具可并列。
 
 ## Windows 采集任务恢复（0.2.17）
 

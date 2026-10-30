@@ -43,6 +43,7 @@ export const TOOL_RENAME = {};
 
 const MAX = { tokens: 1e13, requests: 1e7 };
 const DAY_MS = 86_400_000;
+const round6 = (v) => Math.round(v * 1e6) / 1e6;
 const beijingDayOf = (ms) => new Date(ms + 8 * 3600000).toISOString().slice(0, 10);
 
 function emptyBucket(day) {
@@ -195,9 +196,29 @@ export function collectOortDays({ home = homedir(), appData = process.env.APPDAT
 }
 
 /**
+ * 合并两份 credits（{ total, tools: [[name, amount]] }）：total 相加（round6），tools 按名
+ * 合并后按量取前 8，分项之和钳回 ≤ total（与服务端 1e-6 容差对齐）。任一为空取另一方。
+ */
+function mergeCredits(a, b) {
+  if (!a) return b ? { total: round6(b.total), tools: b.tools.map(([n, v]) => [n, round6(v)]) } : null;
+  if (!b) return { total: round6(a.total), tools: a.tools.map(([n, v]) => [n, round6(v)]) };
+  const total = round6(a.total + b.total);
+  const merged = new Map();
+  for (const [name, amount] of [...a.tools, ...b.tools]) {
+    merged.set(name, round6((merged.get(name) || 0) + amount));
+  }
+  const tools = [...merged.entries()].filter(([, amount]) => amount > 0)
+    .sort((x, y) => y[1] - x[1] || String(x[0]).localeCompare(String(y[0]))).slice(0, 8);
+  let sum = tools.reduce((n, [, amount]) => n + amount, 0);
+  if (sum > total && tools.length) tools.at(-1)[1] = round6(Math.max(0, tools.at(-1)[1] - (sum - total)));
+  return { total, tools };
+}
+
+/**
  * 把补充采集的日行合并进 token-watcher 的日行：
  *   - 展示名重命名（zcode → OortCodex）同步作用于 tools 与 tool_models；
  *   - 同日数字相加，tools/models 按量取前 8，tool_models 按工具+模型合并后取前 128；
+ *   - credits（{ total, tools }）同日相加、tools 按名合并取前 8（Trae 等补充源也带 credits）；
  *   - 返回新数组，不改入参。重命名会改变日指纹，相关日会在下次同步时整行重传。
  */
 export function mergeOortDays(days, oortDays = []) {
@@ -213,7 +234,10 @@ export function mergeOortDays(days, oortDays = []) {
       const name = rename(tool), key = modelKey(name, model);
       toolModels.set(key, (toolModels.get(key) || 0) + Number(tokens || 0));
     }
-    return { ...day, tools, models, tool_models: toolModels };
+    const credits = day.credits
+      ? { total: round6(day.credits.total), tools: (day.credits.tools || []).map(([n, v]) => [n, round6(v)]) }
+      : null;
+    return { ...day, tools, models, tool_models: toolModels, ...(credits ? { credits } : {}) };
   });
   for (const oort of oortDays) {
     let day = out.find((d) => d.day === oort.day);
@@ -230,6 +254,7 @@ export function mergeOortDays(days, oortDays = []) {
       const name = rename(tool), key = modelKey(name, model);
       day.tool_models.set(key, (day.tool_models.get(key) || 0) + Number(tokens || 0));
     }
+    if (oort.credits) day.credits = mergeCredits(day.credits, oort.credits);
   }
   const top = (map, limit) => [...map.entries()].filter(([, tokens]) => tokens > 0)
     .sort((a, b) => b[1] - a[1] || String(a[0]).localeCompare(String(b[0]))).slice(0, limit);

@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 process.env.TOKENRANK_OORT_DISABLE = '1';
+process.env.TOKENRANK_TRAE_DISABLE = '1';
 import { DatabaseSync } from 'node:sqlite';
 import { mkdtempSync, mkdirSync, rmSync } from 'node:fs';
 import { join } from 'node:path';

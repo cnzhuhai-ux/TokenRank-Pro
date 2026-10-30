@@ -2,6 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 // 用例固定使用临时目录：禁止 Oort 补充采集读到真实机器上的产品状态目录
 process.env.TOKENRANK_OORT_DISABLE = '1';
+process.env.TOKENRANK_TRAE_DISABLE = '1';
 import { DatabaseSync } from 'node:sqlite';
 import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, existsSync, rmSync, readdirSync, statSync, symlinkSync } from 'node:fs';
 import { join } from 'node:path';
