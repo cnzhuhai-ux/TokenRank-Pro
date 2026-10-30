@@ -182,9 +182,11 @@
         offset += len;
         return arc;
       }).join('');
+      const creditsByTool = d.credits && d.credits.scope === 'tools';
+      const rowCredits = (x) => (creditsByTool && Number(x.credits) > 0 ? ` · ${esc(creditsText(x.credits))} Credits` : '');
       body.innerHTML = `
         <div class="section"><span class="t">${label}</span><span class="more">完整分析</span></div>
-        <div class="caption">${sum.users || 0} 位公开用户 · ${details.length} 种${dimension === 'tools' ? '工具' : '模型'}</div>
+        <div class="caption">${sum.users || 0} 位公开用户 · ${details.length} 种${dimension === 'tools' ? '工具' : '模型'}${creditsByTool && sum.credits > 0 ? ` · ${esc(creditsText(sum.credits))} Credits` : ''}</div>
         <div class="donut-wrap">
           <svg width="220" height="220" viewBox="0 0 220 220">${arcs}</svg>
           <div class="donut-center"><div class="v num">${fmt(sum.tokens || 0)}</div><div class="k">Tokens</div></div>
@@ -193,9 +195,9 @@
           <div class="dist">
             <div class="head"><span class="name">${esc(x.name)}</span><span class="pct num">${(x.percent || 0).toFixed(1)}%</span></div>
             <div class="bar"><i style="width:${Math.min(100, x.percent || 0)}%"></i></div>
-            <div class="meta"><span>${fmt(x.tokens)} tokens</span><span>${x.preferred_users || 0} 人常用 · ${x.users || 0} 人用过</span></div>
+            <div class="meta"><span>${fmt(x.tokens)} tokens${rowCredits(x)}</span><span>${x.preferred_users || 0} 人常用 · ${x.users || 0} 人用过</span></div>
           </div>`).join('')}
-        <div class="footnote">仅代表已上报数据 · 数据由用户电脑上报，仅供参考</div>`;
+        <div class="footnote">${creditsByTool ? 'Credits 按工具归属，由电脑上报的积分明细汇总' : 'Credits 只按工具上报，模型维度没有积分明细'} · 仅代表已上报数据 · 数据由用户电脑上报，仅供参考</div>`;
     }
   }
 

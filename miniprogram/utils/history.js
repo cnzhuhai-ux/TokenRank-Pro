@@ -1,4 +1,4 @@
-const { compact, integer } = require('./usage');
+const { compact, formatCredits, integer } = require('./usage');
 function calendarView(result) {
   const max = Math.max(0, ...result.daily.filter(day => day.reported).map(day => day.tokens));
   const days = result.daily.map(day => ({ ...day, number: Number(day.day.slice(-2)), amount: day.reported ? compact(day.tokens) : null,
@@ -33,7 +33,12 @@ function weeklyTitle(user, usage) {
 }
 function trendsView(result) {
   const max = Math.max(0, ...result.entries.map(row => row[result.metric]));
-  return { ...result, entries: result.entries.map(row => ({ ...row, amount: compact(row.tokens), exact: integer(row.tokens),
+  // 趋势榜的 Credits 只按工具归属；模型维度不显示，也不补 0
+  const byTool = result.dimension === 'tools' && result.credits && result.credits.scope === 'tools';
+  const creditsText = value => (byTool && Number(value) > 0 ? formatCredits(value) : '');
+  return { ...result, creditsAvailable: !!byTool, creditsText: creditsText(result.summary?.credits),
+    entries: result.entries.map(row => ({ ...row, amount: compact(row.tokens), exact: integer(row.tokens),
+    creditsText: creditsText(row.credits), previousCreditsText: creditsText(row.previous_credits),
     width: max ? Math.max(1, row[result.metric] / max * 100) : 0,
     previousValue: row.previous_rank == null ? '上期无记录' : result.metric === 'users' ? row.previous_users + ' 人' : compact(row.previous_tokens).value + ' ' + compact(row.previous_tokens).unit + ' tokens',
     rankText: row.rank_change == null ? '上期无记录' : row.rank_change > 0 ? '上升 ' + row.rank_change : row.rank_change < 0 ? '下降 ' + -row.rank_change : '位次不变',

@@ -30,8 +30,9 @@
 - 已加入群榜：每群单独一行显示“X tokens · Y Credits”。纯 Token 群不补空的 Credits；Token 为 0 但有积分消耗的群也能直接看到用量。
 - 时间维度：今日／近7天／近30天／累计同时作用于两个指标，两个数字取自同一次 `/api/my/usage` 响应，不分别请求、不出现口径不一致。
 - 榜单每行：Token 榜在成员下方补 Credits，Credits 榜补 Token；只有一项有值时不显示空位。
+- 广场工具／模型分布与趋势榜：Credits 按工具归属（`credits_json.tools`），工具维度每项与合计都带积分，纯 Credits 用户同样计入公开人数与常用偏好；模型维度上游没有积分明细，界面标注原因而不是补 0。
 
-服务端字段：`/api/my/usage` 返回 `credits`（本期）与 `lifetime_credits`（累计），`/api/my/rankings` 返回 `groups[].my_credits` 与 `global.credits`，`/api/leaderboard` 每人带 `credits`。飞书网页应用（`server/public/app`）与小程序共用同一套字段与展示顺序，均不做 Token 与 Credits 之间的换算。
+服务端字段：`/api/my/usage` 返回 `credits`（本期）与 `lifetime_credits`（累计），`/api/my/rankings` 返回 `groups[].my_credits` 与 `global.credits`，`/api/leaderboard` 每人带 `credits`，`/api/insights`、`/api/my/analysis` 与 `/api/insights/trends` 返回 `credits: { scope, total }`、`summary.credits`、每项 `credits`（仅 `scope=tools`）与每日 `daily[].credits`。飞书网页应用（`server/public/app`）与小程序共用同一套字段与展示顺序，均不做 Token 与 Credits 之间的换算。
 
 ## 排行榜分享图片
 

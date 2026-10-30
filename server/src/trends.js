@@ -18,23 +18,35 @@ export async function trendReport(env, query) {
   const column = dimension === 'models' ? 'models_json' : 'tools_json';
   const part = `CASE WHEN ds.day>=?3 THEN 1 ELSE 0 END`;
   const pair = `CASE WHEN je.type='array' THEN je.value ELSE '[]' END`;
-  const [totals, details] = await env.DB.batch([
+  const creditSource = `public_usage ds, json_each(CASE WHEN json_valid(ds.credits_json) THEN ds.credits_json ELSE '{}' END, '$.tools') je`;
+  const detailSource = `public_usage ds,
+      json_each(CASE WHEN json_valid(ds.${column}) THEN CASE WHEN json_type(ds.${column})='array' THEN ds.${column} ELSE '[]' END ELSE '[]' END) je`;
+  const [totals, details, creditDetails = { results: [] }] = await env.DB.batch([
     env.DB.prepare(`SELECT ds.user_id AS uid,${part} AS part,SUM(tokens) AS tokens,SUM(requests) AS requests,
       MAX(updated_at) AS updated_at,SUM(input_tokens) AS input_tokens,SUM(output_tokens) AS output_tokens,
       SUM(cache_read) AS cache_read,SUM(cache_write) AS cache_write,
+      SUM(COALESCE(json_extract(ds.credits_json,'$.total'),0)) AS credits,
       COUNT(CASE WHEN tokens>0 OR requests>0 THEN 1 END) AS active_days,
       MIN(CASE WHEN tokens>0 OR requests>0 THEN day END) AS first_day FROM public_usage ds WHERE ds.day>=?1 AND ds.day<=?2 GROUP BY ds.user_id,part`)
       .bind(previous_from, end, from),
     env.DB.prepare(`SELECT ds.user_id AS uid,${part} AS part,json_extract(${pair},'$[0]') AS name,
-      SUM(json_extract(${pair},'$[1]')) AS tokens FROM public_usage ds,
-      json_each(CASE WHEN json_valid(ds.${column}) THEN CASE WHEN json_type(ds.${column})='array' THEN ds.${column} ELSE '[]' END ELSE '[]' END) je
+      SUM(json_extract(${pair},'$[1]')) AS tokens FROM ${detailSource}
       WHERE ds.day>=?1 AND ds.day<=?2 AND json_type(${pair},'$[0]')='text' AND LENGTH(json_extract(${pair},'$[0]'))>0
       AND json_type(${pair},'$[1]') IN ('integer','real') AND json_extract(${pair},'$[1]')>0 GROUP BY ds.user_id,part,name`)
       .bind(previous_from, end, from),
+    // Credits 只有工具维度可归属；模型维度不查、返回 unavailable
+    ...(dimension === 'tools' ? [env.DB.prepare(`SELECT ds.user_id AS uid,${part} AS part,json_extract(${pair},'$[0]') AS name,
+      SUM(json_extract(${pair},'$[1]')) AS credits FROM ${creditSource}
+      WHERE ds.day>=?1 AND ds.day<=?2 AND json_type(${pair},'$[0]')='text' AND LENGTH(json_extract(${pair},'$[0]'))>0
+      AND json_type(${pair},'$[1]') IN ('integer','real') AND json_extract(${pair},'$[1]')>0 GROUP BY ds.user_id,part,name`)
+      .bind(previous_from, end, from)] : []),
   ]);
-  const build = part => aggregateAnalytics({ scope: 'public', dimension, range: { period, from: part ? from : previous_from, to: part ? end : previous_to },
-    now: Date.parse(end + 'T23:59:59.999+08:00'), trendDays: 0, users: totals.results.filter(row => row.part === part && row.tokens > 0),
-    details: details.results.filter(row => row.part === part), days: [], dayDetails: [] }).data;
+  const build = partFlag => aggregateAnalytics({ scope: 'public', dimension, range: { period, from: partFlag ? from : previous_from, to: partFlag ? end : previous_to },
+    now: Date.parse(end + 'T23:59:59.999+08:00'), trendDays: 0,
+    // 纯 Credits 用户没有 token，但同样计入人数与积分口径
+    users: totals.results.filter(row => row.part === partFlag && (row.tokens > 0 || row.credits > 0)),
+    details: details.results.filter(row => row.part === partFlag), days: [], dayDetails: [],
+    creditDetails: creditDetails.results.filter(row => row.part === partFlag) }).data;
   const current = build(1), previous = build(0);
   const sort = items => items.filter(row => !row.unclassified && row[metric] > 0).sort((a, b) => b[metric] - a[metric] ||
     b[metric === 'users' ? 'tokens' : 'users'] - a[metric === 'users' ? 'tokens' : 'users'] || a.name.localeCompare(b.name));
@@ -42,7 +54,9 @@ export async function trendReport(env, query) {
   const entries = sort(current.items).map((row, index) => {
     const old = before.get(row.name);
     return { rank: index + 1, name: row.name, users: row.users, tokens: row.tokens, percent: row.percent,
+      ...(dimension === 'tools' ? { credits: row.credits ?? 0 } : {}),
       previous_rank: old?.rank ?? null, previous_users: old?.users ?? null, previous_tokens: old?.tokens ?? null,
+      ...(dimension === 'tools' ? { previous_credits: old?.credits ?? null } : {}),
       rank_change: old ? old.rank - index - 1 : null, value_change: old ? row[metric] - old[metric] : null };
   });
   const fingerprint = await digest([period, dimension, metric, from, end, current.summary, previous.summary, entries]);

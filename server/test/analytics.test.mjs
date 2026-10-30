@@ -150,3 +150,38 @@ test('旧数据与损坏关联不猜测模型，部分上报展示覆盖率，�
   f.db.prepare('UPDATE daily_totals SET tool_models_json=?').run(JSON.stringify([['A','X',10000]]));
   data=(await f.request('/api/my/analysis?dimension=models&tool=A',1)).data;assert.equal(data.association.percent,0);assert.equal(data.items.length,1);
 });
+
+test('工具分布、趋势榜与每日走势带 Credits；模型维度标记为不可得', async t => {
+  const f = fixture(t);
+  const day = f.seed(1, -1, 1000, [['Codex',600],['Qoder',400]], [['GPT',600],['Qoder-M',400]]);
+  f.db.prepare('UPDATE daily_totals SET credits_json=? WHERE user_id=1 AND day=?').run(JSON.stringify({ total: 30.5, tools: [['Qoder',30.5]] }), day);
+  // 纯 Credits 用户：token 为 0，只报积分，也要进入公开口径与人数
+  const pure = f.seed(2, -1, 0, [], []);
+  f.db.prepare('UPDATE daily_totals SET credits_json=? WHERE user_id=2 AND day=?').run(JSON.stringify({ total: 12, tools: [['Qoder',12]] }), pure);
+  const tools = (await f.request('/api/insights?period=week&dimension=tools')).data;
+  assert.equal(tools.credits.scope, 'tools');
+  assert.equal(tools.summary.credits, 42.5);
+  assert.equal(tools.summary.users, 2);
+  assert.equal(tools.items.find(row => row.name === 'Qoder').credits, 42.5);
+  assert.equal(tools.items.find(row => row.name === 'Qoder').users, 2);
+  assert.equal(tools.items.find(row => row.name === 'Codex').credits, 0);
+  assert.equal(tools.daily.find(row => row.day === day).credits, 42.5);
+  assert.equal(tools.daily.find(row => row.day === day).parts.find(part => part.name === 'Qoder').credits, 42.5);
+  const models = (await f.request('/api/insights?period=week&dimension=models')).data;
+  assert.equal(models.credits.scope, 'unavailable');
+  assert.equal(models.credits.total, 42.5);
+  assert.equal(models.items.some(row => 'credits' in row), false);
+  const trend = (await f.request('/api/insights/trends?period=week&dimension=tools&metric=users')).data;
+  assert.equal(trend.summary.credits, 42.5);
+  const qoder = trend.entries.find(row => row.name === 'Qoder');
+  assert.equal(qoder.credits, 42.5); assert.equal(qoder.users, 2);
+  assert.equal(trend.entries.find(row => row.name === 'Codex').credits, 0);
+  const modelTrend = (await f.request('/api/insights/trends?period=week&dimension=models&metric=tokens')).data;
+  assert.equal(modelTrend.entries.some(row => 'credits' in row), false);
+  // 个人分析同样按工具给出 Credits，模型维度不编造
+  const mine = (await f.request('/api/my/analysis?period=week&dimension=tools', 1)).data;
+  assert.equal(mine.summary.credits, 30.5);
+  assert.equal(mine.items.find(row => row.name === 'Qoder').credits, 30.5);
+  const mineModels = (await f.request('/api/my/analysis?period=week&dimension=models', 1)).data;
+  assert.equal(mineModels.credits.scope, 'unavailable');
+});

@@ -12,16 +12,21 @@ export async function analyticsRows(env, { scope, userId = null, period, dimensi
   const range = usageWindow(period, now), view = scope === 'mine' ? 'ranked_usage' : 'public_usage';
   const column = dimension === 'models' ? 'models_json' : 'tools_json';
   const where = `ds.day>=?1 AND ds.day<=?2 AND (?3 IS NULL OR ds.user_id=?3)
-    AND (?3 IS NOT NULL OR ds.user_id IN (SELECT user_id FROM ${view} WHERE day>=?4 AND day<=?2 GROUP BY user_id HAVING SUM(tokens)>0))`;
+    AND (?3 IS NOT NULL OR ds.user_id IN (SELECT user_id FROM ${view} WHERE day>=?4 AND day<=?2
+      GROUP BY user_id HAVING SUM(tokens)>0 OR SUM(COALESCE(json_extract(credits_json,'$.total'),0))>0))`;
   const values = (from, cohortFrom = range.from) => [from, range.to, scope === 'mine' ? userId : null, cohortFrom];
   const totals = `SUM(tokens) AS tokens, SUM(requests) AS requests, MAX(updated_at) AS updated_at,
     SUM(input_tokens) AS input_tokens, SUM(output_tokens) AS output_tokens,
-    SUM(cache_read) AS cache_read, SUM(cache_write) AS cache_write`;
+    SUM(cache_read) AS cache_read, SUM(cache_write) AS cache_write,
+    SUM(COALESCE(json_extract(ds.credits_json,'$.total'),0)) AS credits`;
   const pair = `CASE WHEN je.type='array' THEN je.value ELSE '[]' END`;
   const detailWhere = `json_type(${pair},'$[0]')='text' AND LENGTH(json_extract(${pair},'$[0]'))>0
     AND json_type(${pair},'$[1]') IN ('integer','real') AND json_extract(${pair},'$[1]')>0`;
   const detailSource = `${view} ds, json_each(CASE WHEN json_valid(ds.${column}) THEN
     CASE WHEN json_type(ds.${column})='array' THEN ds.${column} ELSE '[]' END ELSE '[]' END) je`;
+  // Credits 只有工具维度（credit_usage 无模型列）：从 credits_json.tools 直接聚合
+  const creditSource = `${view} ds, json_each(CASE WHEN json_valid(ds.credits_json) THEN ds.credits_json ELSE '{}' END, '$.tools') je`;
+  const withCredits = dimension === 'tools';
   const trendDays = period === 'day' || period === 'week' ? 7 : 30;
   const trendFrom = beijingDaysAgo(trendDays - 1, now);
   const statements = [
@@ -32,28 +37,49 @@ export async function analyticsRows(env, { scope, userId = null, period, dimensi
     env.DB.prepare(`SELECT ds.user_id AS uid, json_extract(${pair},'$[0]') AS name,
       SUM(json_extract(${pair},'$[1]')) AS tokens FROM ${detailSource}
       WHERE ${where} AND ${detailWhere} GROUP BY ds.user_id,name`).bind(...values(range.from)),
-    ...(trend ? [env.DB.prepare(`SELECT ds.user_id AS uid, ds.day, SUM(tokens) AS tokens, SUM(requests) AS requests
+    ...(trend ? [env.DB.prepare(`SELECT ds.user_id AS uid, ds.day, SUM(tokens) AS tokens, SUM(requests) AS requests,
+      SUM(COALESCE(json_extract(ds.credits_json,'$.total'),0)) AS credits
       FROM ${view} ds WHERE ${where} GROUP BY ds.user_id,ds.day`).bind(...values(trendFrom, trendFrom)),
       env.DB.prepare(`SELECT ds.user_id AS uid,ds.day,json_extract(${pair},'$[0]') AS name,
         SUM(json_extract(${pair},'$[1]')) AS tokens FROM ${detailSource}
         WHERE ${where} AND ${detailWhere} GROUP BY ds.user_id,ds.day,name`).bind(...values(trendFrom, trendFrom))] : []),
+    ...(withCredits ? [env.DB.prepare(`SELECT ds.user_id AS uid, json_extract(${pair},'$[0]') AS name,
+      SUM(json_extract(${pair},'$[1]')) AS credits FROM ${creditSource}
+      WHERE ${where} AND ${detailWhere} GROUP BY ds.user_id,name`).bind(...values(range.from))] : []),
+    ...(withCredits && trend ? [env.DB.prepare(`SELECT ds.user_id AS uid, ds.day, json_extract(${pair},'$[0]') AS name,
+      SUM(json_extract(${pair},'$[1]')) AS credits FROM ${creditSource}
+      WHERE ${where} AND ${detailWhere} GROUP BY ds.user_id,ds.day,name`).bind(...values(trendFrom, trendFrom))] : []),
   ];
   // D1 batch is one transaction: a concurrent five-minute report cannot split
   // the headline, breakdown and trend into different source versions.
-  const [users, details, days = { results: [] }, dayDetails = { results: [] }] = await env.DB.batch(statements);
-  return { scope, dimension, range, now, trendDays, users: users.results, details: details.results, days: days.results, dayDetails: dayDetails.results };
+  const [users, details, days = { results: [] }, dayDetails = { results: [] },
+    creditDetails = { results: [] }, dayCreditDetails = { results: [] }] = await env.DB.batch(statements);
+  return { scope, dimension, range, now, trendDays, users: users.results, details: details.results, days: days.results,
+    dayDetails: dayDetails.results, creditDetails: creditDetails.results, dayCreditDetails: dayCreditDetails.results };
 }
 
 export function aggregateAnalytics(rows) {
   const { scope, dimension, range, now, trendDays } = rows;
   const unknownName = rows.unknownName || UNKNOWN;
+  const round6 = value => Math.round(value * 1e6) / 1e6;
+  // Credits 只能按工具归属（上游 credit_usage 没有模型列）；模型维度返回 null 而不是 0
+  const creditsByTool = dimension === 'tools' && !rows.tool;
   const users = new Map(rows.users.map(row => [row.uid, row]));
   const perUser = new Map(), items = new Map(), preferences = new Map();
+  const creditPerUser = new Map();
+  for (const row of rows.creditDetails || []) {
+    if (!users.has(row.uid)) continue;
+    const credits = positive(row.credits); if (!credits) continue;
+    if (!creditPerUser.has(row.uid)) creditPerUser.set(row.uid, []);
+    creditPerUser.get(row.uid).push({ name: row.name, credits });
+  }
   const item = (name, unclassified = false) => {
     const key = unclassified ? 'unclassified' : 'named:' + name;
     if (!items.has(key)) items.set(key, { key, name, unclassified, tokens: 0, users: new Set(), preferred_users: 0 });
     return items.get(key);
   };
+  // credits 只在工具维度累加，避免模型维度带出无意义的 0
+  const addCredits = (entry, value) => { entry.credits = positive(entry.credits) + value; };
   for (const row of rows.details) {
     if (!users.has(row.uid)) continue;
     const tokens = positive(row.tokens); if (!tokens) continue;
@@ -61,45 +87,72 @@ export function aggregateAnalytics(rows) {
     if (!perUser.has(row.uid)) perUser.set(row.uid, []);
     perUser.get(row.uid).push({ name: row.name, tokens });
   }
-  const summary = { tokens: 0, requests: 0, input_tokens: 0, output_tokens: 0, cache_read: 0, cache_write: 0,
+  if (creditsByTool) for (const [uid, list] of creditPerUser) {
+    for (const detail of list) { const entry = item(detail.name); addCredits(entry, detail.credits); entry.users.add(uid); }
+  }
+  const summary = { tokens: 0, requests: 0, input_tokens: 0, output_tokens: 0, cache_read: 0, cache_write: 0, credits: 0,
     active_days: 0, users: 0, detail_users: perUser.size, breakdown_tokens: 0, unclassified_tokens: 0 };
   for (const row of users.values()) {
     for (const key of ['tokens','requests','input_tokens','output_tokens','cache_read','cache_write','active_days']) summary[key] += positive(row[key]);
+    summary.credits += positive(row.credits);
     const named = (perUser.get(row.uid) || []).sort(byTokens), classified = named.reduce((sum, value) => sum + value.tokens, 0);
     const missing = Math.max(0, positive(row.tokens) - classified), denominator = Math.max(positive(row.tokens), classified);
     summary.breakdown_tokens += denominator; summary.unclassified_tokens += missing;
     if (missing) { const unknown = item(unknownName, true); unknown.tokens += missing; unknown.users.add(row.uid); }
-    if (row.tokens > 0 || row.requests > 0) {
+    if (creditsByTool) {
+      // 工具名被截断到 8 项时，剩余 credits 计入未分类，不摊派给某个具体工具
+      const credits = positive(row.credits), creditList = creditPerUser.get(row.uid) || [];
+      const creditRest = Math.max(0, credits - creditList.reduce((sum, value) => sum + value.credits, 0));
+      if (creditRest) addCredits(item(unknownName, true), creditRest);
+    }
+    if (row.tokens > 0 || row.requests > 0 || positive(row.credits) > 0) {
       summary.users++;
+      const creditList = (creditPerUser.get(row.uid) || []).sort((a, b) => b.credits - a.credits || a.name.localeCompare(b.name));
       // Dominant unclassified data cannot be used to infer a tool preference.
-      if (named[0] && named[0].tokens > missing) {
+      if (!named.length && creditList.length) {
+        // 纯 Credits 用户没有 token 明细：按积分份额判断偏好，不落到未分类
+        item(creditList[0].name).preferred_users++;
+        preferences.set(row.uid, { name: creditList[0].name, tokens: 0, percent: 100 });
+      } else if (named[0] && named[0].tokens > missing) {
         item(named[0].name).preferred_users++;
         preferences.set(row.uid, { name: named[0].name, tokens: named[0].tokens, percent: percent(named[0].tokens, denominator) });
       } else item(unknownName, true).preferred_users++;
     }
   }
   const details = [...items.values()].sort(byTokens).map(row => ({ ...row, users: row.users.size,
+    ...(creditsByTool ? { credits: round6(positive(row.credits)) } : {}),
     percent: percent(row.tokens, summary.breakdown_tokens), preferred_percent: percent(row.preferred_users, summary.users) }));
-  const dayMap = new Map(), detailMap = new Map();
+  const dayMap = new Map(), detailMap = new Map(), dayCreditMap = new Map();
   for (const row of rows.dayDetails) {
     const key = row.uid + ':' + row.day;
     if (!detailMap.has(key)) detailMap.set(key, []);
     detailMap.get(key).push({ name: row.name, tokens: positive(row.tokens) });
   }
+  if (creditsByTool) for (const row of rows.dayCreditDetails || []) {
+    const key = row.uid + ':' + row.day;
+    if (!dayCreditMap.has(key)) dayCreditMap.set(key, []);
+    dayCreditMap.get(key).push({ name: row.name, credits: positive(row.credits) });
+  }
   for (const row of rows.days) {
-    if (!dayMap.has(row.day)) dayMap.set(row.day, { day: row.day, tokens: 0, requests: 0, reported_users: 0, parts: new Map() });
+    if (!dayMap.has(row.day)) dayMap.set(row.day, { day: row.day, tokens: 0, requests: 0, credits: 0, reported_users: 0, parts: new Map(), creditParts: new Map() });
     const day = dayMap.get(row.day), named = detailMap.get(row.uid + ':' + row.day) || [];
-    day.tokens += positive(row.tokens); day.requests += positive(row.requests); day.reported_users++;
+    day.tokens += positive(row.tokens); day.requests += positive(row.requests); day.credits += positive(row.credits); day.reported_users++;
     for (const detail of named) day.parts.set(detail.name, (day.parts.get(detail.name) || 0) + detail.tokens);
     const missing = Math.max(0, positive(row.tokens) - named.reduce((sum, detail) => sum + detail.tokens, 0));
     if (missing) day.parts.set(unknownName, (day.parts.get(unknownName) || 0) + missing);
+    if (creditsByTool) {
+      const creditList = dayCreditMap.get(row.uid + ':' + row.day) || [];
+      for (const detail of creditList) day.creditParts.set(detail.name, (day.creditParts.get(detail.name) || 0) + detail.credits);
+      const creditRest = Math.max(0, positive(row.credits) - creditList.reduce((sum, value) => sum + value.credits, 0));
+      if (creditRest) day.creditParts.set(unknownName, (day.creditParts.get(unknownName) || 0) + creditRest);
+    }
   }
   const daily = Array.from({ length: trendDays }, (_, i) => {
     const day = beijingDaysAgo(trendDays - 1 - i, now), value = dayMap.get(day);
-    return value ? { day, tokens: value.tokens, requests: value.requests, reported: true, reported_users: value.reported_users,
+    return value ? { day, tokens: value.tokens, requests: value.requests, credits: round6(value.credits), reported: true, reported_users: value.reported_users,
       ...(rows.tool ? { details_complete: !rows.incompleteDays.has(day) } : {}),
-      parts: [...value.parts].map(([name, tokens]) => ({ name, tokens })) }
-      : { day, tokens: null, requests: null, reported: false, reported_users: 0, parts: [] };
+      parts: [...value.parts].map(([name, tokens]) => ({ name, tokens, ...(creditsByTool ? { credits: round6(value.creditParts.get(name) || 0) } : {}) })) }
+      : { day, tokens: null, requests: null, credits: null, reported: false, reported_users: 0, parts: [] };
   });
   const firstDays = rows.users.map(row => row.first_day).filter(Boolean).sort();
   if (rows.tool) for (const key of ['requests', 'input_tokens', 'output_tokens', 'cache_read', 'cache_write']) summary[key] = null;
@@ -107,6 +160,7 @@ export function aggregateAnalytics(rows) {
     ...(rows.tool ? { tool: rows.tool, association: { linked_tokens: summary.breakdown_tokens - summary.unclassified_tokens,
       unlinked_tokens: summary.unclassified_tokens, percent: percent(summary.breakdown_tokens - summary.unclassified_tokens, summary.breakdown_tokens) } } : {}),
     from: range.period === 'all' ? firstDays[0] || range.to : range.from, to: range.to, summary,
+    credits: { scope: creditsByTool ? 'tools' : 'unavailable', total: round6(summary.credits) },
     items: details, daily, trend_days: trendDays, updated_at: rows.users.reduce((latest, row) => Math.max(latest, positive(row.updated_at)), 0) || null,
     preference_basis: 'largest_reported_share_including_unclassified', has_overlap: summary.breakdown_tokens > summary.tokens } };
 }
