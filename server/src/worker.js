@@ -809,6 +809,19 @@ async function leaderboard(request, env, url) {
     FROM public_usage ds, json_each(ds.models_json) je
     WHERE ds.day >= ?1 AND ds.day <= ?2${memberFilter}
     GROUP BY ds.user_id, model`).bind(...binds).all();
+  // 使用率最高的工具：与榜单同一统计周期，Token 榜按 tokens、纯积分用户回退到积分口径的计费工具
+  const toolTask = env.DB.prepare(`
+    SELECT ds.user_id AS uid, json_extract(je.value, '$[0]') AS tool,
+           SUM(json_extract(je.value, '$[1]')) AS t
+    FROM public_usage ds, json_each(ds.tools_json) je
+    WHERE ds.day >= ?1 AND ds.day <= ?2${memberFilter}
+    GROUP BY ds.user_id, tool`).bind(...binds).all();
+  const creditToolTask = env.DB.prepare(`
+    SELECT ds.user_id AS uid, json_extract(je.value, '$[0]') AS tool,
+           SUM(json_extract(je.value, '$[1]')) AS t
+    FROM public_usage ds, json_each(CASE WHEN json_type(ds.credits_json)='object' THEN ds.credits_json ELSE '{}' END, '$.tools') je
+    WHERE ds.day >= ?1 AND ds.day <= ?2${memberFilter}
+    GROUP BY ds.user_id, tool`).bind(...binds).all();
   // 更新时间：所选范围内最后一次数据写入
   const updateTask = env.DB.prepare(`SELECT MAX(updated_at) AS ts FROM public_usage ds WHERE ds.day >= ?1 AND ds.day <= ?2${memberFilter}`).bind(...binds).first();
 
@@ -816,7 +829,7 @@ async function leaderboard(request, env, url) {
     FROM public_usage ds WHERE ds.day >= ?1 AND ds.day <= ?2
     GROUP BY ds.user_id HAVING ${metricSql} > 0
     ORDER BY ${metricSql} DESC, uid ASC`).bind(from, to).all() : Promise.resolve(null);
-  const [rows, modelRows, upRow, allRows] = await Promise.all([rowsTask, modelTask, updateTask, globalTask]);
+  const [rows, modelRows, toolRows, creditToolRows, upRow, allRows] = await Promise.all([rowsTask, modelTask, toolTask, creditToolTask, updateTask, globalTask]);
   const globalRankMap = allRows ? new Map(allRows.results.map((r, i) => [r.uid, i + 1])) : null;
   // Group aggregates also supply the total and a stable fingerprint. Only one
   // page is returned to the phone; raw user IDs never leave the server.
@@ -825,11 +838,18 @@ async function leaderboard(request, env, url) {
   const pageRows = rows.results.slice(offset, offset + LEADERBOARD_LIMIT);
   const nextOffset = offset + pageRows.length;
 
-  const topModel = new Map();
-  for (const r of modelRows.results) {
-    const cur = topModel.get(r.uid);
-    if (!cur || r.t > cur.t) topModel.set(r.uid, { model: r.model, t: r.t });
-  }
+  const topOf = (detailRows, field) => {
+    const top = new Map();
+    for (const r of detailRows.results) {
+      const cur = top.get(r.uid);
+      if (!cur || r.t > cur.t) top.set(r.uid, { [field]: r[field], t: r.t });
+    }
+    return top;
+  };
+  const topModel = topOf(modelRows, 'model');
+  const topTool = topOf(toolRows, 'tool');
+  const topCreditTool = topOf(creditToolRows, 'tool');
+  const toolOf = (uid) => topTool.get(uid)?.tool ?? topCreditTool.get(uid)?.tool ?? null;
 
   const origin = userOrigin(env, request);
   const entries = pageRows.map((r, i) => ({
@@ -841,6 +861,7 @@ async function leaderboard(request, env, url) {
     requests: r.requests,
     cache: r.cache || 0,
     top_model: topModel.get(r.uid)?.model ?? null,
+    top_tool: toolOf(r.uid),
     global_rank: globalRankMap ? (globalRankMap.get(r.uid) ?? null) : null,
   }));
 
@@ -853,6 +874,7 @@ async function leaderboard(request, env, url) {
       // 群榜时 me.rank 是群内名次，global_rank 是广场名次；全局榜两者相同
       me = { rank: idx + 1, tokens: mine.tokens, credits: Math.round((mine.credits || 0) * 1e6) / 1e6, requests: mine.requests,
         top_model: topModel.get(session.id)?.model ?? null,
+        top_tool: toolOf(session.id),
         global_rank: globalRankMap ? (globalRankMap.get(session.id) ?? null) : idx + 1 };
     }
   }

@@ -1,6 +1,6 @@
 # TokenRank 独立同步器
 
-v0.2.23 为独立只读适配器，接入原版 [luwill/token-watcher](https://github.com/luwill/token-watcher)。Node.js 22.13+，无第三方运行依赖。
+v0.2.24 为独立只读适配器，接入原版 [luwill/token-watcher](https://github.com/luwill/token-watcher)。Node.js 22.13+，无第三方运行依赖。
 
 更换服务器、接入码或统计库后，会重新全量上传本机保留的历史用量，包含注销后重新接入的情况。上传中断可分批续传；重复执行同一账号的接入命令不会重传未变化的日期。
 
@@ -154,6 +154,16 @@ token-watcher 1.8 首次迁移 Codex 去重键时，会在统计库里留下一�
 Trae 本机没有明文用量：会话库 `ModularData/ai-agent/database.db` 是 SQLCipher 加密的。0.2.22 增加 [`sync/trae.js`](sync/trae.js)，只读 `~/.trae-cn/credits-usage.json`（schema 1，按天聚合的 token 四分量、会话行数、credits 与模型榜），把结果并入日桶；该文件由仓库内的 Trae 扩展 [`trae-extension/`](trae-extension/README.md) 调用 Trae 官方用量接口写出。未装扩展时静默无数据，快照 schema 不匹配、日行越界或 JSON 损坏都只告警跳过，不阻断同步。`TOKENRANK_TRAE_DISABLE=1` 关闭该来源。接口口径、验证数据与排障见 [`../docs/trae-collection.md`](../docs/trae-collection.md)。
 
 同日合并支持 credits：`mergeOortDays` 现在把补充源的 credits（`{ total, tools }`）与上游同日数值相加、按工具名合并取前 8，分项之和钳回不超过 total（与服务端 1e-6 容差对齐），Trae 与 Qoder 等只上报 credits 的工具可并列。
+
+## Trae 模型维度积分与 Auto 归因（0.2.24）
+
+扩展 0.1.0 把快照升级为 **schema 2**（`models_full` / `credits_tools` / `credits_models*` / `credits_tool_models` / `truncated` 全量明细），并给出确定性模型归因：
+
+- 接口行无 `model_name` 且判定为 Auto 模式（`mode` 归一匹配 `auto(mode)?`，或显式 `use_max_mode === false` 兜底）→ 上报固定名 `auto`，不再落入“未关联模型”；
+- 自定义模型（BYOK）上报名 `[Provider] 模型名`（Provider 取模型清单或 `provider//模型` 前缀），内置模型保持接口原值；
+- 归因与按天聚合的纯函数在 [`trae-extension/model-resolve.cjs`](trae-extension/model-resolve.cjs)，配套 [`test-sync/extension-model.test.mjs`](../test-sync/extension-model.test.mjs) 可脱离 Trae 运行。
+
+采集器与协议同步扩为 credits 四字段（`total` / `tools` / `models` / `tool_models`，上限 8/8/8/128），`*_full` 优先、按上限截断；任一分项之和超过 `total` 时丢弃该分项并告警，不摊派。服务端 `ranked_usage` 视图与校验同步支持（迁移 `0022_credits_models.sql`），模型维度积分在榜单按去前缀+小写+空白折叠合并同名（`server/src/model-key.js`）。**上线顺序：服务端先于客户端**（旧服务端会拒绝带 `models` 字段的 credits）。
 
 ## Windows 采集任务恢复（0.2.17）
 

@@ -33,10 +33,10 @@ function weeklyTitle(user, usage) {
 }
 function trendsView(result) {
   const max = Math.max(0, ...result.entries.map(row => row[result.metric]));
-  // 趋势榜的 Credits 只按工具归属；模型维度不显示，也不补 0
-  const byTool = result.dimension === 'tools' && result.credits && result.credits.scope === 'tools';
-  const creditsText = value => (byTool && Number(value) > 0 ? formatCredits(value) : '');
-  return { ...result, creditsAvailable: !!byTool, creditsText: creditsText(result.summary?.credits),
+  // 趋势榜的 Credits 按维度归属（工具/模型）；该维度没有分项时不显示，也不补 0
+  const byDimension = result.credits && result.credits.scope === result.dimension;
+  const creditsText = value => (byDimension && Number(value) > 0 ? formatCredits(value) : '');
+  return { ...result, creditsAvailable: !!byDimension, creditsText: creditsText(result.summary?.credits),
     entries: result.entries.map(row => ({ ...row, amount: compact(row.tokens), exact: integer(row.tokens),
     creditsText: creditsText(row.credits), previousCreditsText: creditsText(row.previous_credits),
     width: max ? Math.max(1, row[result.metric] / max * 100) : 0,

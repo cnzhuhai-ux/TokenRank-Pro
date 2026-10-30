@@ -9,7 +9,7 @@ $ver = $pkg.version
 $stage = Join-Path $env:TEMP ('trae-credits-poc-stage-' + [guid]::NewGuid().ToString('N'))
 $ext = Join-Path $stage 'extension'
 New-Item -ItemType Directory -Path $ext -Force | Out-Null
-foreach ($f in 'package.json', 'extension.js', 'README.md') {
+foreach ($f in 'package.json', 'extension.js', 'model-resolve.cjs', 'README.md') {
     Copy-Item (Join-Path $root $f) (Join-Path $ext $f)
 }
 
@@ -47,6 +47,7 @@ $ctypes = @'
 <Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
   <Default Extension="json" ContentType="application/json"/>
   <Default Extension="js" ContentType="application/javascript"/>
+  <Default Extension="cjs" ContentType="text/javascript"/>
   <Default Extension="md" ContentType="text/markdown"/>
   <Default Extension="vsixmanifest" ContentType="text/xml"/>
   <Default Extension="xml" ContentType="text/xml"/>

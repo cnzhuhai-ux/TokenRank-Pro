@@ -1,12 +1,14 @@
-// extension.js —— Trae Credits POC v0.0.7（只读查询 + 本地快照输出；遵守 trae-credits-agent-test.md 安全边界）
+// extension.js —— Trae Credits 采集扩展 v0.1.0（只读查询 + 本地快照；遵守 docs/trae-collection.md 的安全边界）
 // v0.0.2 修复：credits 字段映射 credits_float（修正 credits=0 根因）
 // v0.0.3 增强：模型分类映射 + 全量行 + token 汇总
 // v0.0.4 增强：30 天窗口；缺失 model 行诊断；大小写精确匹配优先
-// v0.0.5 修正：分类以"计费事实"为准 —— credits_float>0 即 Trae credits 计费（preset 官方模型）；
-//              credits_float==0 才可能是自定义模型（BYOK 不计 credits，用量走 /api/ide/v1/report_custom_model_token_usage）。
-// v0.0.7 上报：每次查询后把按天聚合（token 维度 + credits）写入 ~/.trae-cn/credits-usage.json
-//          （schema 1，供 tokenrank 客户端 trae 采集器只读消费）；运行期间每 6 小时自动刷新。
-//          自定义模型（BYOK）不计 credits，统计口径 = token 维度（custom_* 字段单列）。
+// v0.0.5 修正：分类以"计费事实"为准 —— credits_float>0 即 Trae credits 计费（preset 官方模型）
+// v0.0.7 上报：按天聚合并写入 ~/.trae-cn/credits-usage.json；运行期间每 6 小时自动刷新
+// v0.1.0 模型归因与积分分项（schema 2）：
+//          - 无 model_name 且判定为 Auto 的行固定上报 `auto`（不再落进“未关联模型”）；
+//          - 自定义模型（BYOK）上报名为 `[Provider] 模型名`，内置模型保持接口原值；
+//          - credits 同时给出 tools / models / tool_models 三个维度的分项（同日边际一致），
+//            全量明细写入 *_full 字段，上报分项按协议上限截断并置 truncated 标记。
 // 安全声明：只读查询（≤3 页、页间隔 ≥2s）；快照仅含按天聚合数字，不含 session_id、提示词、对话内容；
 //          不打印 token；不读取加密库；不上传任何数据（上传由 tokenrank 客户端独立完成）。
 const vscode = require('vscode');
@@ -14,6 +16,7 @@ const { createHash } = require('crypto');
 const { writeFileSync, readFileSync, existsSync, unlinkSync } = require('fs');
 const { tmpdir, homedir } = require('os');
 const { join } = require('path');
+const { buildModelIndex, resolveModel, buildSnapshot, clip, round6 } = require('./model-resolve.cjs');
 
 const ENDPOINT = 'https://api.trae.cn/trae/api/v1/pay/query_user_usage_group_by_session';
 const SESSION_USAGE = 'https://api.trae.cn/api/v1/commercial/get_session_usage';
@@ -23,9 +26,7 @@ const TRIGGER = join(tmpdir(), 'trae-credits-poc.trigger');
 const MARKER = join(tmpdir(), 'trae-credits-poc.autorun');
 const MODELMAP = join(tmpdir(), 'trae-credits-poc-models.json');
 const SNAPSHOT = join(homedir(), '.trae-cn', 'credits-usage.json');
-const SNAPSHOT_SCHEMA = 1;
 const REFRESH_MS = 6 * 3600 * 1000;   // 运行期间每 6 小时自动刷新快照
-const round6 = v => Math.round(v * 1e6) / 1e6;
 const PAGE_SIZE = 50;
 const MAX_PAGES = 3;
 const PAGE_GAP_MS = 2000;
@@ -35,12 +36,26 @@ const hash8 = s => createHash('sha256').update(String(s == null ? '' : s)).diges
 const numOf = (v, d = 0) => (typeof v === 'number' && Number.isFinite(v) ? v : d);
 const bjDay = e => new Date((Number(e) + 8 * 3600) * 1000).toISOString().slice(0, 10);
 
-function loadModelMap() {
+/**
+ * 模型清单（可选）。用于把接口返回的模型名判定为内置/自定义并取 Provider：
+ *   - `%TEMP%\trae-credits-poc-models.json` 支持 `[{name, display_name, provider, config_source, is_preset}]`、
+ *     `{items:[…]}`，也兼容早期 POC 的 `{exact:{名:类型}, lower:{名:类型}}` 写法；
+ *   - 文件缺失时仍可工作：模型名形如 `provider//模型` 判为自定义，其余按内置上报原值。
+ * 只读取分类需要的字段，配置里的 ak/sk/base_url 等一律不读。
+ */
+function loadModelIndex() {
+  const fromLegacy = (map) => Object.entries(map).map(([name, kind]) => ({
+    name, config_source: kind === 'custom' ? 3 : 1, is_preset: kind !== 'custom', provider: '',
+  }));
   try {
-    if (!existsSync(MODELMAP)) return { exact: {}, lower: {} };
-    const j = JSON.parse(readFileSync(MODELMAP, 'utf8'));
-    return { exact: j.exact || {}, lower: j.lower || j.map || {} };
-  } catch { return { exact: {}, lower: {} }; }
+    if (!existsSync(MODELMAP)) return buildModelIndex([]);
+    const json = JSON.parse(readFileSync(MODELMAP, 'utf8'));
+    const items = Array.isArray(json) ? json
+      : Array.isArray(json.items) ? json.items
+      : Array.isArray(json.models) ? json.models
+      : fromLegacy(Object.assign({}, json.exact || {}, json.lower || {}, json.map || {}));
+    return buildModelIndex(items);
+  } catch { return buildModelIndex([]); }
 }
 
 function safeExtra(v) {
@@ -65,27 +80,6 @@ function safeShape(v, depth = 0) {
     return o;
   }
   return String(v);
-}
-
-function classify(name, maps, credits) {
-  let byName = 'unknown';
-  if (name) {
-    if (maps.exact[name]) byName = maps.exact[name];
-    else {
-      const l = name.toLowerCase();
-      if (maps.lower[l]) byName = maps.lower[l];
-      else {
-        const base = l.includes('//') ? l.split('//').pop() : l;
-        byName = maps.lower[base] || (l.includes('//') ? 'custom' : 'unknown');
-      }
-    }
-  }
-  // 计费事实优先：credits>0 一定走了 Trae credits 计费（官方预置模型或其路由结果）
-  if (credits > 0) {
-    if (byName === 'custom') return 'preset';     // 计费与 BYOK 矛盾 → 以计费为准
-    return byName === 'unknown' ? 'preset(model_name 缺失)' : byName;
-  }
-  return byName;
 }
 
 // 定点会话探针：对 %TEMP%\trae-credits-poc-sessions.json 中列出的会话做单会话用量查询（最多 3 个、间隔 ≥2s）
@@ -144,8 +138,8 @@ async function queryUsage(out, report) {
     + ' expiredAt=' + (tok.expiredAt ? new Date(tok.expiredAt).toISOString() : 'n/a'));
   report.get_token = { ok: true, token_len: tok.token.length, expired_at: tok.expiredAt || null };
 
-  const modelMap = loadModelMap();
-  report.model_map_loaded = { exact: Object.keys(modelMap.exact).length, lower: Object.keys(modelMap.lower).length };
+  const modelIndex = loadModelIndex();
+  report.model_map_loaded = { preset: modelIndex.counts.preset, custom: modelIndex.counts.custom };
 
   const now = Math.floor(Date.now() / 1000);
   const rowsAll = [];
@@ -187,16 +181,20 @@ async function queryUsage(out, report) {
   report.fields_first_row = rowsAll.length ? Object.keys(rowsAll[0]) : [];
 
   const mapped = rowsAll.map(x => {
-    const name = typeof x.model_name === 'string' && x.model_name ? x.model_name : undefined;
+    const resolved = resolveModel(x, modelIndex);
     const ex = safeExtra(x.extra_info);
+    const credits = numOf(x.credits_float);
     const row = {
       session: hash8(x.session_id),
       day: bjDay(x.usage_time),
       usage_time: x.usage_time,
-      model: name,
-      kind: classify(name, modelMap, numOf(x.credits_float)),
-      billed: numOf(x.credits_float) > 0,
-      credits: numOf(x.credits_float),
+      model: resolved.label,                                  // 上报名：内置原值 / [Provider] 名 / auto
+      model_raw: clip(x.model_name, 60) || undefined,          // 接口原值，仅本机诊断
+      kind: resolved.kind,
+      source: resolved.source,
+      mode: resolved.mode,
+      billed: credits > 0,
+      credits,
       amount: numOf(x.amount_float),
       dollar: numOf(x.dollar_float),
       cost_money: numOf(x.cost_money_float),
@@ -205,13 +203,12 @@ async function queryUsage(out, report) {
       cache_read_token: ex ? numOf(ex.cache_read_token) : undefined,
       cache_write_token: ex ? numOf(ex.cache_write_token) : undefined,
       usage_source: x.usage_source,
-      mode: x.mode,
       use_max_mode: x.use_max_mode,
       group_details: Array.isArray(x.usage_group_details) ? x.usage_group_details.length : undefined,
       product_type_list: safeShape(x.product_type_list),
     };
-    // model_name 缺失时补充诊断（不含任何文本内容）
-    if (!name) {
+    // 无法归因（无模型名且非 Auto）时补充诊断，不含任何文本内容
+    if (!row.model) {
       row.diag = {
         group_details_shape: safeShape(x.usage_group_details),
         extra_keys: ex ? Object.keys(ex) : undefined,
@@ -230,6 +227,11 @@ async function queryUsage(out, report) {
     cache_read: sum(mapped, 'cache_read_token'),
     cache_write: sum(mapped, 'cache_write_token'),
   };
+  // 归因诊断：Auto 行数、兜底 Auto、无法归因的行与对应积分（不输出任何文本内容）
+  report.auto_rows = mapped.filter(x => x.source === 'auto').length;
+  report.fallback_auto_rows = mapped.filter(x => x.source === 'fallback-auto').length;
+  report.unknown_rows = mapped.filter(x => !x.model).length;
+  report.credits_unattributed = round6(mapped.filter(x => !x.model).reduce((a, x) => a + numOf(x.credits), 0));
 
   report.by_kind = {};
   for (const k of new Set(mapped.map(x => x.kind))) {
@@ -288,51 +290,33 @@ async function queryUsage(out, report) {
   return report;
 }
 
-// 按天快照：供 tokenrank trae 采集器消费。
+// 按天快照（schema 2）：供 tokenrank trae 采集器只读消费。
 // 口径（与 usage 接口行语义一致）：
 //   - token：extra_info 的 input/output/cache_read/cache_write（会话累计值，活跃会话随用量增长，
 //     整行快照整体替换 + 服务端按天替换语义收敛，与 DSH 采集口径一致）；
 //   - requests：当日出现的会话行数（即活跃会话数，非请求数）；
-//   - credits：credits_float 合计（round6）；billed=credits>0 为预置模型计费；
-//   - 自定义模型（BYOK）不计 credits，token 单列 custom_*；model 含 "//" 视为自定义。
+//   - credits：credits_float 合计（round6），并同时给出 tools / models / tool_models 三个维度的分项；
+//   - 无法归因（无模型名且非 Auto）的行只进总额，服务端按“未关联模型”残差处理，不摊派。
 function writeSnapshot(mapped, report) {
-  const days = new Map();
-  for (const x of mapped) {
-    const d0 = days.get(x.day) || {
-      day: x.day, input_tokens: 0, output_tokens: 0, cache_read: 0, cache_write: 0, tokens: 0,
-      requests: 0, credits: 0, billed_sessions: 0, custom_sessions: 0,
-      custom_input_tokens: 0, custom_output_tokens: 0, models: {},
-    };
-    const clamp = v => Math.max(0, Math.round(Number(v) || 0));
-    d0.input_tokens += clamp(x.input_token);
-    d0.output_tokens += clamp(x.output_token);
-    d0.cache_read += clamp(x.cache_read_token);
-    d0.cache_write += clamp(x.cache_write_token);
-    d0.requests += 1;
-    d0.credits = round6(d0.credits + (x.credits || 0));
-    if (x.billed) d0.billed_sessions += 1; else d0.custom_sessions += 1;
-    if (!x.billed) { d0.custom_input_tokens += clamp(x.input_token); d0.custom_output_tokens += clamp(x.output_token); }
-    if (x.model) {
-      const m = x.model.slice(0, 60);
-      d0.models[m] = (d0.models[m] || 0) + clamp(x.input_token) + clamp(x.output_token) + clamp(x.cache_read_token) + clamp(x.cache_write_token);
-    }
-    d0.tokens = d0.input_tokens + d0.output_tokens + d0.cache_read + d0.cache_write;
-    days.set(x.day, d0);
+  const snapshot = buildSnapshot(
+    mapped.map(x => ({ day: x.day, label: x.model, kind: x.kind, mode: x.mode, billed: x.billed,
+      input_token: x.input_token, output_token: x.output_token,
+      cache_read_token: x.cache_read_token, cache_write_token: x.cache_write_token,
+      credits: x.credits, tool: 'Trae' })),
+    { windowDays: WINDOW_DAYS });
+  // 一致性自检：未截断时三个维度的合计应等于当日 credits 总额
+  let inconsistent = 0, truncatedDays = 0;
+  for (const day of snapshot.days) {
+    const sum = (list, index) => list.reduce((a, row) => a + numOf(row[index]), 0);
+    const models = sum(day.credits_models_full, 1), pairs = sum(day.credits_tool_models, 2);
+    if (Math.abs(models - day.credits) > 1e-6 || Math.abs(pairs - day.credits) > 1e-6) inconsistent++;
+    if (day.truncated.models || day.truncated.credits_models || day.truncated.credits_tool_models) truncatedDays++;
   }
-  const snapshot = {
-    schema: SNAPSHOT_SCHEMA,
-    generated_at: new Date().toISOString(),
-    window_days: WINDOW_DAYS,
-    days: [...days.values()].sort((a, b) => a.day.localeCompare(b.day)).map(d => ({
-      ...d,
-      credits: round6(d.credits),
-      models: Object.entries(d.models).sort((a, b) => b[1] - a[1]).slice(0, 8),
-    })),
-  };
+  report.snapshot_consistency = { days: snapshot.days.length, inconsistent, truncated_days: truncatedDays };
   try {
     writeFileSync(SNAPSHOT, JSON.stringify(snapshot, null, 2));
-    report.snapshot = { path: SNAPSHOT, days: snapshot.days.length };
-    if (outCh) outCh.appendLine('    快照: ' + SNAPSHOT + '（' + snapshot.days.length + ' 天）');
+    report.snapshot = { path: SNAPSHOT, schema: snapshot.schema, days: snapshot.days.length };
+    if (outCh) outCh.appendLine('    快照: ' + SNAPSHOT + '（schema ' + snapshot.schema + '，' + snapshot.days.length + ' 天）');
   } catch (e) {
     report.snapshot = { path: SNAPSHOT, error: String(e && e.message || e).slice(0, 120) };
     if (outCh) outCh.appendLine('    快照写入失败: ' + report.snapshot.error);
@@ -372,7 +356,7 @@ function activate(context) {
   const refresh = setInterval(() => runOnce('periodic'), REFRESH_MS);
   context.subscriptions.push({ dispose: () => clearInterval(refresh) });
   if (existsSync(MARKER)) { try { unlinkSync(MARKER); } catch {} setTimeout(() => runOnce('autorun'), 1500); }
-  outCh.appendLine('[activate] Trae Credits POC v0.0.7 已激活（快照: ' + SNAPSHOT + '）');
+  outCh.appendLine('[activate] Trae Credits 采集扩展 v0.1.0 已激活（快照: ' + SNAPSHOT + '）');
 }
 
 function deactivate() {}

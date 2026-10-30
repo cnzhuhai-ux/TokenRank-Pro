@@ -2,9 +2,9 @@ const { compact, formatCredits, integer } = require('./usage');
 const COLORS = ['#D88A2D', '#668A75', '#657F99', '#9B8670', '#8B8898'];
 function presentAnalysis(result, { metric = 'tokens', name = '' } = {}) {
   const people = metric === 'people' && result.scope === 'public';
-  // Credits 只能按工具归属；模型维度不编造，返回 null 让界面省略
-  const byTool = result.credits && result.credits.scope === 'tools';
-  const creditsText = value => (byTool && Number(value) > 0 ? formatCredits(value) : '');
+  // Credits 分项按维度归属：工具读 credits_json.tools，模型读 credits.models（旧上报没有模型分项时界面省略）
+  const byDimension = result.credits && (result.credits.scope === 'tools' || result.credits.scope === 'models');
+  const creditsText = value => (byDimension && Number(value) > 0 ? formatCredits(value) : '');
   const items = result.items.map((item, index) => ({ ...item, color: item.unclassified ? '#D5D5D5' : COLORS[index % COLORS.length],
     amount: compact(item.tokens), exact: integer(item.tokens), value: people ? item.preferred_users : item.tokens,
     creditsText: creditsText(item.credits),
@@ -24,7 +24,7 @@ function presentAnalysis(result, { metric = 'tokens', name = '' } = {}) {
   })).map(day => ({ ...day, amount: day.value === null ? '未同步' : compact(day.value),
     exact: day.value === null ? day.reported ? '模型明细待补齐' : '未同步' : integer(day.value) }));
   return { ...result, items, segments, daily, selected: selected || null, amount: compact(result.summary.tokens),
-    creditsAvailable: !!byTool, creditsText: creditsText(result.summary.credits),
+    creditsAvailable: !!byDimension, creditsText: creditsText(result.summary.credits),
     exact: integer(result.summary.tokens), requestsText: result.summary.requests === null ? '' : integer(result.summary.requests),
     categoryCount: items.filter(item => !item.unclassified).length, centerValue: center.value + center.unit,
     centerLabel: people ? '常用用户' : result.has_overlap ? '明细用量' : 'Tokens' };

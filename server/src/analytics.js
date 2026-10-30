@@ -2,6 +2,7 @@ import { usageWindow } from './usage.js';
 import { beijingDaysAgo, jsonError } from './lib.js';
 import { insightPolicy } from './insight-access.js';
 import { toolModelRows } from './tool-models.js';
+import { modelKey, pickDisplay } from './model-key.js';
 const positive = value => Number.isFinite(Number(value)) ? Math.max(0, Number(value)) : 0;
 const percent = (value, total) => total ? Math.round(value / total * 1000) / 10 : 0;
 const UNKNOWN = '其他 / 未分类';
@@ -11,6 +12,8 @@ export async function analyticsRows(env, { scope, userId = null, period, dimensi
   if (tool) return toolModelRows(env, { scope, userId, period, tool, trend, now });
   const range = usageWindow(period, now), view = scope === 'mine' ? 'ranked_usage' : 'public_usage';
   const column = dimension === 'models' ? 'models_json' : 'tools_json';
+  // Credits 分项按维度取：工具维度读 credits_json.tools，模型维度读 credits_json.models
+  const creditPath = dimension === 'models' ? '$.models' : '$.tools';
   const where = `ds.day>=?1 AND ds.day<=?2 AND (?3 IS NULL OR ds.user_id=?3)
     AND (?3 IS NOT NULL OR ds.user_id IN (SELECT user_id FROM ${view} WHERE day>=?4 AND day<=?2
       GROUP BY user_id HAVING SUM(tokens)>0 OR SUM(COALESCE(json_extract(credits_json,'$.total'),0))>0))`;
@@ -24,9 +27,9 @@ export async function analyticsRows(env, { scope, userId = null, period, dimensi
     AND json_type(${pair},'$[1]') IN ('integer','real') AND json_extract(${pair},'$[1]')>0`;
   const detailSource = `${view} ds, json_each(CASE WHEN json_valid(ds.${column}) THEN
     CASE WHEN json_type(ds.${column})='array' THEN ds.${column} ELSE '[]' END ELSE '[]' END) je`;
-  // Credits 只有工具维度（credit_usage 无模型列）：从 credits_json.tools 直接聚合
-  const creditSource = `${view} ds, json_each(CASE WHEN json_valid(ds.credits_json) THEN ds.credits_json ELSE '{}' END, '$.tools') je`;
-  const withCredits = dimension === 'tools';
+  // Credits 分项来自 credits_json：工具维度读 $.tools，模型维度读 $.models（旧上报没有模型分项时为空）
+  const creditSource = `${view} ds, json_each(CASE WHEN json_type(ds.credits_json)='object' THEN ds.credits_json ELSE '{}' END, '${creditPath}') je`;
+  const withCredits = dimension === 'tools' || dimension === 'models';
   const trendDays = period === 'day' || period === 'week' ? 7 : 30;
   const trendFrom = beijingDaysAgo(trendDays - 1, now);
   const statements = [
@@ -62,23 +65,28 @@ export function aggregateAnalytics(rows) {
   const { scope, dimension, range, now, trendDays } = rows;
   const unknownName = rows.unknownName || UNKNOWN;
   const round6 = value => Math.round(value * 1e6) / 1e6;
-  // Credits 只能按工具归属（上游 credit_usage 没有模型列）；模型维度返回 null 而不是 0
-  const creditsByTool = dimension === 'tools' && !rows.tool;
+  // Credits 明细来自上报的 credits_json 分项：工具维度读 $.tools，模型维度读 $.models。
+  // 模型分项只有新版采集器上报后才有；缺失时模型维度不返回 credits 字段，而不是补 0。
+  const creditDetails = rows.creditDetails || [];
+  const creditsAttributed = creditDetails.length > 0;
   const users = new Map(rows.users.map(row => [row.uid, row]));
   const perUser = new Map(), items = new Map(), preferences = new Map();
   const creditPerUser = new Map();
-  for (const row of rows.creditDetails || []) {
+  for (const row of creditDetails) {
     if (!users.has(row.uid)) continue;
     const credits = positive(row.credits); if (!credits) continue;
     if (!creditPerUser.has(row.uid)) creditPerUser.set(row.uid, []);
     creditPerUser.get(row.uid).push({ name: row.name, credits });
   }
   const item = (name, unclassified = false) => {
-    const key = unclassified ? 'unclassified' : 'named:' + name;
+    // 模型榜单合并同名异写：剥离 [Provider] 前缀、忽略大小写与多余空白；工具名保持精确匹配
+    const label = dimension === 'models' && !unclassified ? modelKey(name) : name;
+    const key = unclassified ? 'unclassified' : 'named:' + label;
     if (!items.has(key)) items.set(key, { key, name, unclassified, tokens: 0, users: new Set(), preferred_users: 0 });
-    return items.get(key);
+    const entry = items.get(key);
+    if (!unclassified) entry.name = pickDisplay(entry.name, name);
+    return entry;
   };
-  // credits 只在工具维度累加，避免模型维度带出无意义的 0
   const addCredits = (entry, value) => { entry.credits = positive(entry.credits) + value; };
   for (const row of rows.details) {
     if (!users.has(row.uid)) continue;
@@ -87,7 +95,7 @@ export function aggregateAnalytics(rows) {
     if (!perUser.has(row.uid)) perUser.set(row.uid, []);
     perUser.get(row.uid).push({ name: row.name, tokens });
   }
-  if (creditsByTool) for (const [uid, list] of creditPerUser) {
+  if (creditsAttributed) for (const [uid, list] of creditPerUser) {
     for (const detail of list) { const entry = item(detail.name); addCredits(entry, detail.credits); entry.users.add(uid); }
   }
   const summary = { tokens: 0, requests: 0, input_tokens: 0, output_tokens: 0, cache_read: 0, cache_write: 0, credits: 0,
@@ -99,8 +107,8 @@ export function aggregateAnalytics(rows) {
     const missing = Math.max(0, positive(row.tokens) - classified), denominator = Math.max(positive(row.tokens), classified);
     summary.breakdown_tokens += denominator; summary.unclassified_tokens += missing;
     if (missing) { const unknown = item(unknownName, true); unknown.tokens += missing; unknown.users.add(row.uid); }
-    if (creditsByTool) {
-      // 工具名被截断到 8 项时，剩余 credits 计入未分类，不摊派给某个具体工具
+    if (creditsAttributed) {
+      // 分项被截断到协议上限（8 条）时，剩余 credits 计入未分类，不摊派给某个具体工具或模型
       const credits = positive(row.credits), creditList = creditPerUser.get(row.uid) || [];
       const creditRest = Math.max(0, credits - creditList.reduce((sum, value) => sum + value.credits, 0));
       if (creditRest) addCredits(item(unknownName, true), creditRest);
@@ -120,18 +128,23 @@ export function aggregateAnalytics(rows) {
     }
   }
   const details = [...items.values()].sort(byTokens).map(row => ({ ...row, users: row.users.size,
-    ...(creditsByTool ? { credits: round6(positive(row.credits)) } : {}),
+    ...(creditsAttributed ? { credits: round6(positive(row.credits)) } : {}),
     percent: percent(row.tokens, summary.breakdown_tokens), preferred_percent: percent(row.preferred_users, summary.users) }));
   const dayMap = new Map(), detailMap = new Map(), dayCreditMap = new Map();
+  // 模型维度的日明细也归一到合并后的展示名，避免同一条明细在榜单与单日里条数不一致
+  const mergedName = new Map([...items].filter(([, entry]) => !entry.unclassified).map(([key, entry]) => [key, entry.name]));
+  const canonicalName = dimension === 'models'
+    ? (name) => mergedName.get('named:' + modelKey(name)) || name
+    : (name) => name;
   for (const row of rows.dayDetails) {
     const key = row.uid + ':' + row.day;
     if (!detailMap.has(key)) detailMap.set(key, []);
-    detailMap.get(key).push({ name: row.name, tokens: positive(row.tokens) });
+    detailMap.get(key).push({ name: canonicalName(row.name), tokens: positive(row.tokens) });
   }
-  if (creditsByTool) for (const row of rows.dayCreditDetails || []) {
+  if (creditsAttributed) for (const row of rows.dayCreditDetails || []) {
     const key = row.uid + ':' + row.day;
     if (!dayCreditMap.has(key)) dayCreditMap.set(key, []);
-    dayCreditMap.get(key).push({ name: row.name, credits: positive(row.credits) });
+    dayCreditMap.get(key).push({ name: canonicalName(row.name), credits: positive(row.credits) });
   }
   for (const row of rows.days) {
     if (!dayMap.has(row.day)) dayMap.set(row.day, { day: row.day, tokens: 0, requests: 0, credits: 0, reported_users: 0, parts: new Map(), creditParts: new Map() });
@@ -140,7 +153,7 @@ export function aggregateAnalytics(rows) {
     for (const detail of named) day.parts.set(detail.name, (day.parts.get(detail.name) || 0) + detail.tokens);
     const missing = Math.max(0, positive(row.tokens) - named.reduce((sum, detail) => sum + detail.tokens, 0));
     if (missing) day.parts.set(unknownName, (day.parts.get(unknownName) || 0) + missing);
-    if (creditsByTool) {
+    if (creditsAttributed) {
       const creditList = dayCreditMap.get(row.uid + ':' + row.day) || [];
       for (const detail of creditList) day.creditParts.set(detail.name, (day.creditParts.get(detail.name) || 0) + detail.credits);
       const creditRest = Math.max(0, positive(row.credits) - creditList.reduce((sum, value) => sum + value.credits, 0));
@@ -151,7 +164,7 @@ export function aggregateAnalytics(rows) {
     const day = beijingDaysAgo(trendDays - 1 - i, now), value = dayMap.get(day);
     return value ? { day, tokens: value.tokens, requests: value.requests, credits: round6(value.credits), reported: true, reported_users: value.reported_users,
       ...(rows.tool ? { details_complete: !rows.incompleteDays.has(day) } : {}),
-      parts: [...value.parts].map(([name, tokens]) => ({ name, tokens, ...(creditsByTool ? { credits: round6(value.creditParts.get(name) || 0) } : {}) })) }
+      parts: [...value.parts].map(([name, tokens]) => ({ name, tokens, ...(creditsAttributed ? { credits: round6(value.creditParts.get(name) || 0) } : {}) })) }
       : { day, tokens: null, requests: null, credits: null, reported: false, reported_users: 0, parts: [] };
   });
   const firstDays = rows.users.map(row => row.first_day).filter(Boolean).sort();
@@ -161,7 +174,8 @@ export function aggregateAnalytics(rows) {
     ...(rows.tool ? { tool: rows.tool, association: { linked_tokens: summary.breakdown_tokens - summary.unclassified_tokens,
       unlinked_tokens: summary.unclassified_tokens, percent: percent(summary.breakdown_tokens - summary.unclassified_tokens, summary.breakdown_tokens) } } : {}),
     from: range.period === 'all' ? firstDays[0] || range.to : range.from, to: range.to, summary,
-    credits: { scope: creditsByTool ? 'tools' : 'unavailable', total: round6(summary.credits) },
+    credits: { scope: creditsAttributed ? (dimension === 'models' ? 'models' : 'tools') : 'unavailable',
+      total: round6(summary.credits) },
     items: details, daily, trend_days: trendDays, updated_at: rows.users.reduce((latest, row) => Math.max(latest, positive(row.updated_at)), 0) || null,
     preference_basis: 'largest_reported_share_including_unclassified', has_overlap: summary.breakdown_tokens > summary.tokens } };
 }

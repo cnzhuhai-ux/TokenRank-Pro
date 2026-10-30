@@ -177,16 +177,24 @@ export function leaderboardCard({ title, entries, members, updatedAt, nowMs, per
   elements.push(markdown(PERIOD_TABS.map(([k, label]) =>
     k === period ? `**<font color='orange'>${label}</font>**` : `<font color='grey'>${label}</font>`).join('　')));
   elements.push(divider());
-  // 五列单行（序号/头像/成员/模型/用量）：单行等高，头像垂直居中，各列左右对齐
+  // 六列单行（序号/头像/成员/工具/模型/用量）：单行等高，头像垂直居中，各列左右对齐。
+  // 工具名列展示使用率最高的工具，长名截到 12 字（长工具名优先取首段），避免整行过挤。
   const credits2 = (n) => (Number(n) || 0).toFixed(2);
-  const W_RANK = 1, W_AVATAR = 1, W_NAME = 5, W_MODEL = 4, W_VALUE = 3; // 合计 14
+  const W_RANK = 1, W_AVATAR = 1, W_NAME = 4, W_TOOL = 3, W_MODEL = 3, W_VALUE = 3; // 合计 15
   const empty = "<font color='grey'></font>";
-  const boardRow = ({ rank, entry, nameHtml, suffix = '', modelText, valueText, bold, grey }) => {
+  const shortTool = (name) => {
+    const text = String(name || '').trim();
+    if (!text) return '';
+    const compact = text.length > 12 ? (text.split(' ')[0] || text).slice(0, 12) : text;
+    return compact;
+  };
+  const boardRow = ({ rank, entry, nameHtml, suffix = '', modelText, toolText, valueText, bold, grey }) => {
     const text = (content) => markdown(content);
     const columns = [
       col(W_RANK, [text(String(rank))]),
       col(W_AVATAR, [entry.img_key ? avatarImg(entry.img_key) : text(empty)]),
       col(W_NAME, [text(`${bold ? `**${nameHtml}**` : nameHtml}${suffix}`)]),
+      col(W_TOOL, [text(toolText ? `<font color='grey'>${mdEscape(shortTool(toolText))}</font>` : empty)]),
       col(W_MODEL, [text(modelText ? `<font color='grey'>${mdEscape(modelText)}</font>` : empty)]),
       col(W_VALUE, [text(`<font color='orange'>${bold ? '**' : ''}${valueText}${bold ? '**' : ''}</font>`)]),
     ];
@@ -199,6 +207,7 @@ export function leaderboardCard({ title, entries, members, updatedAt, nowMs, per
     col(W_RANK, [markdown(`<font color='grey'>#</font>`)]),
     col(W_AVATAR, [markdown(empty)]),
     col(W_NAME, [markdown(`<font color='grey'>成员 · ${members ?? tokenEntries.length} 人</font>`)]),
+    col(W_TOOL, [markdown(`<font color='grey'>工具</font>`)]),
     col(W_MODEL, [markdown(`<font color='grey'>模型</font>`)]),
     col(W_VALUE, [markdown(`<font color='grey'>Token 用量</font>`)]),
   ]));
@@ -209,7 +218,7 @@ export function leaderboardCard({ title, entries, members, updatedAt, nowMs, per
     const mine = meUid != null && e.uid === meUid;
     elements.push(boardRow({ rank: i + 1, entry: e,
       nameHtml: mdEscape(String(e.nickname || '').slice(0, 14)), suffix: mine ? ' 我' : '',
-      modelText: e.top_model || '', valueText: formatTokens(e.tokens), bold: mine }));
+      modelText: e.top_model || '', toolText: e.top_tool || '', valueText: formatTokens(e.tokens), bold: mine }));
     elements.push(divider());
   });
   // 我的行：只有本人没出现在上面列表里（50 名外/未展示）才补一行灰底，避免与榜内行重复；
@@ -217,9 +226,9 @@ export function leaderboardCard({ title, entries, members, updatedAt, nowMs, per
   const meInTokensBoard = meUid != null && tokenEntries.slice(0, BOARD_LIMIT).some((e) => e.uid === meUid);
   if (me && (me.tokens || 0) > 0 && !meInTokensBoard) {
     elements.push(boardRow({ rank: me.rank, entry: {}, nameHtml: mdEscape(me.nickname), suffix: ' 我',
-      modelText: me.top_model || '', valueText: formatTokens(me.tokens), bold: true, grey: true }));
+      modelText: me.top_model || '', toolText: me.top_tool || '', valueText: formatTokens(me.tokens), bold: true, grey: true }));
   }
-  // Credits 榜单（Qoder 等按 Credits 计费的工具），与 Token 榜并列
+  // Credits 榜单（Qoder 等按 Credits 计费的工具），与 Token 榜并列；工具列显示积分最多的计费工具
   const creditsEntries = entries.filter((e) => (e.credits || 0) > 0).sort((a, b) => b.credits - a.credits || a.uid - b.uid);
   if (creditsEntries.length) {
     elements.push(markdown(`### <font color='grey'>Credits 榜单</font>`));
@@ -228,6 +237,7 @@ export function leaderboardCard({ title, entries, members, updatedAt, nowMs, per
       col(W_RANK, [markdown(`<font color='grey'>#</font>`)]),
       col(W_AVATAR, [markdown(empty)]),
       col(W_NAME, [markdown(`<font color='grey'>成员 · ${creditsEntries.length} 人</font>`)]),
+      col(W_TOOL, [markdown(`<font color='grey'>工具</font>`)]),
       col(W_MODEL, [markdown(empty)]),
       col(W_VALUE, [markdown(`<font color='grey'>Credits</font>`)]),
     ]));
@@ -235,13 +245,13 @@ export function leaderboardCard({ title, entries, members, updatedAt, nowMs, per
       const mine = meUid != null && e.uid === meUid;
       elements.push(boardRow({ rank: i + 1, entry: e,
         nameHtml: mdEscape(String(e.nickname || '').slice(0, 14)), suffix: mine ? ' 我' : '',
-        modelText: '', valueText: `${credits2(e.credits)} Credits`, bold: mine }));
+        modelText: '', toolText: e.top_tool || '', valueText: `${credits2(e.credits)} Credits`, bold: mine }));
       elements.push(divider());
     });
     const meInCreditsBoard = meUid != null && creditsEntries.slice(0, BOARD_LIMIT).some((e) => e.uid === meUid);
     if (me && (me.credits || 0) > 0 && !meInCreditsBoard) {
       elements.push(boardRow({ rank: me.credits_rank ?? '-', entry: {}, nameHtml: mdEscape(me.nickname), suffix: ' 我',
-        modelText: '', valueText: `${credits2(me.credits)} Credits`, bold: true, grey: true }));
+        modelText: '', toolText: me.top_tool || '', valueText: `${credits2(me.credits)} Credits`, bold: true, grey: true }));
     }
     if (creditsEntries.length > BOARD_LIMIT) elements.push(noteEl(`Credits 榜单仅展示前 ${BOARD_LIMIT} 名，共 ${creditsEntries.length} 人有 Credits 用量`));
   }
@@ -464,25 +474,40 @@ export function createFeishuService({ fetcher = (...args) => fetch(...args), now
   async function boardRows(env, { groupId: gid = null, from, to }) {
     const memberFilter = gid ? ` AND ds.user_id IN (SELECT user_id FROM rank_group_members WHERE group_id = ?3 AND hidden = 0)` : '';
     const binds = gid ? [from, to, gid] : [from, to];
-    const [rows, modelRows, upRow] = await Promise.all([
+    const detailOf = (column, alias) => env.DB.prepare(`SELECT ds.user_id AS uid, json_extract(je.value, '$[0]') AS ${alias},
+        SUM(json_extract(je.value, '$[1]')) AS t
+      FROM public_usage ds, json_each(ds.${column}) je
+      WHERE ds.day >= ?1 AND ds.day <= ?2${memberFilter}
+      GROUP BY ds.user_id, ${alias}`).bind(...binds).all();
+    const [rows, modelRows, toolRows, creditToolRows, upRow] = await Promise.all([
       env.DB.prepare(`SELECT u.id AS uid, u.nickname, u.avatar_path, u.avatar_url,
         SUM(ds.tokens) AS tokens, SUM(ds.requests) AS requests,
         SUM(COALESCE(json_extract(ds.credits_json,'$.total'),0)) AS credits
         FROM public_usage ds JOIN users u ON u.id = ds.user_id
         WHERE ds.day >= ?1 AND ds.day <= ?2${memberFilter}
         GROUP BY ds.user_id HAVING SUM(ds.tokens) > 0 OR SUM(COALESCE(json_extract(ds.credits_json,'$.total'),0)) > 0 ORDER BY SUM(ds.tokens) DESC, uid ASC`).bind(...binds).all(),
-      env.DB.prepare(`SELECT ds.user_id AS uid, json_extract(je.value, '$[0]') AS model, SUM(json_extract(je.value, '$[1]')) AS t
-        FROM public_usage ds, json_each(ds.models_json) je
-        WHERE ds.day >= ?1 AND ds.day <= ?2${memberFilter}
-        GROUP BY ds.user_id, model`).bind(...binds).all(),
+      detailOf('models_json', 'model'),
+      detailOf('tools_json', 'tool'),
+      env.DB.prepare(`SELECT ds.user_id AS uid, json_extract(je.value, '$[0]') AS tool,
+        SUM(json_extract(je.value, '$[1]')) AS t
+      FROM public_usage ds, json_each(CASE WHEN json_type(ds.credits_json)='object' THEN ds.credits_json ELSE '{}' END, '$.tools') je
+      WHERE ds.day >= ?1 AND ds.day <= ?2${memberFilter}
+      GROUP BY ds.user_id, tool`).bind(...binds).all(),
       env.DB.prepare(`SELECT MAX(ds.updated_at) AS ts FROM public_usage ds WHERE ds.day >= ?1 AND ds.day <= ?2${memberFilter}`)
         .bind(...binds).first(),
     ]);
-    const topModel = new Map();
-    for (const r of modelRows.results) {
-      const cur = topModel.get(r.uid);
-      if (!cur || r.t > cur) topModel.set(r.uid, r.model);
-    }
+    // 使用率最高的工具/模型：同一统计周期内按用量求和后取最大者；Credits 榜用积分口径的计费工具
+    const nameOf = (detailRows, field) => {
+      const top = new Map();
+      for (const r of detailRows.results) {
+        const cur = top.get(r.uid);
+        if (!cur || r.t > cur.t) top.set(r.uid, { name: r[field], t: r.t });
+      }
+      return new Map([...top].map(([uid, v]) => [uid, v.name]));
+    };
+    const modelNames = nameOf(modelRows, 'model');
+    const toolNames = nameOf(toolRows, 'tool');
+    const creditToolNames = nameOf(creditToolRows, 'tool');
     return {
       entries: rows.results.map((r) => ({
         uid: r.uid,
@@ -490,7 +515,8 @@ export function createFeishuService({ fetcher = (...args) => fetch(...args), now
         avatar_path: r.avatar_path ?? null, avatar_url: r.avatar_url ?? null,
         tokens: r.tokens, requests: r.requests,
         credits: Math.round((r.credits || 0) * 1e6) / 1e6,
-        top_model: topModel.get(r.uid) ?? null,
+        top_model: modelNames.get(r.uid) ?? null,
+        top_tool: toolNames.get(r.uid) ?? creditToolNames.get(r.uid) ?? null,
       })),
       updatedAt: upRow?.ts ?? null,
     };
@@ -720,7 +746,7 @@ export function createFeishuService({ fetcher = (...args) => fetch(...args), now
       const shown = board.entries.slice(0, BOARD_LIMIT);
       await Promise.all(shown.map(async (e) => { e.img_key = await ensureAvatarKey(env, e); }));
       const meEntry = mine && account ? board.entries.find((e) => e.uid === account.id) : null;
-      const me = mine ? { rank: mine.rank, tokens: mine.tokens, nickname: account.nickname, top_model: meEntry?.top_model ?? null } : null;
+      const me = mine ? { rank: mine.rank, tokens: mine.tokens, nickname: account.nickname, top_model: meEntry?.top_model ?? null, top_tool: meEntry?.top_tool ?? null } : null;
       return reply(leaderboardCard({
         title: `${mdEscape(found.name)} · Token 排行榜`,
         entries: board.entries, members: memberCount?.c ?? null, updatedAt: board.updatedAt, nowMs,
@@ -733,7 +759,7 @@ export function createFeishuService({ fetcher = (...args) => fetch(...args), now
     await Promise.all(shownAll.map(async (e) => { e.img_key = await ensureAvatarKey(env, e); }));
     const mine = account ? await globalStanding(env, account.id, from, to) : null;
     const meEntry = mine ? board.entries.find((e) => e.uid === account.id) : null;
-    const me = mine ? { rank: mine.rank, tokens: mine.tokens, nickname: account.nickname, top_model: meEntry?.top_model ?? null } : null;
+    const me = mine ? { rank: mine.rank, tokens: mine.tokens, nickname: account.nickname, top_model: meEntry?.top_model ?? null, top_tool: meEntry?.top_tool ?? null } : null;
     return reply(leaderboardCard({
       title: `广场 · Token 排行榜`,
       entries: board.entries, members: board.entries.length, updatedAt: board.updatedAt, nowMs,

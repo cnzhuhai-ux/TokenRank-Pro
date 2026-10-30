@@ -18,7 +18,8 @@ export async function trendReport(env, query) {
   const column = dimension === 'models' ? 'models_json' : 'tools_json';
   const part = `CASE WHEN ds.day>=?3 THEN 1 ELSE 0 END`;
   const pair = `CASE WHEN je.type='array' THEN je.value ELSE '[]' END`;
-  const creditSource = `public_usage ds, json_each(CASE WHEN json_valid(ds.credits_json) THEN ds.credits_json ELSE '{}' END, '$.tools') je`;
+  const creditSource = `public_usage ds, json_each(CASE WHEN json_type(ds.credits_json)='object' THEN ds.credits_json ELSE '{}' END,
+    '${dimension === 'models' ? '$.models' : '$.tools'}') je`;
   const detailSource = `public_usage ds,
       json_each(CASE WHEN json_valid(ds.${column}) THEN CASE WHEN json_type(ds.${column})='array' THEN ds.${column} ELSE '[]' END ELSE '[]' END) je`;
   const [totals, details, creditDetails = { results: [] }] = await env.DB.batch([
@@ -34,12 +35,12 @@ export async function trendReport(env, query) {
       WHERE ds.day>=?1 AND ds.day<=?2 AND json_type(${pair},'$[0]')='text' AND LENGTH(json_extract(${pair},'$[0]'))>0
       AND json_type(${pair},'$[1]') IN ('integer','real') AND json_extract(${pair},'$[1]')>0 GROUP BY ds.user_id,part,name`)
       .bind(previous_from, end, from),
-    // Credits 只有工具维度可归属；模型维度不查、返回 unavailable
-    ...(dimension === 'tools' ? [env.DB.prepare(`SELECT ds.user_id AS uid,${part} AS part,json_extract(${pair},'$[0]') AS name,
+    // Credits 分项按维度归属：工具读 $.tools，模型读 $.models（旧上报没有模型分项时为空）
+    ...[env.DB.prepare(`SELECT ds.user_id AS uid,${part} AS part,json_extract(${pair},'$[0]') AS name,
       SUM(json_extract(${pair},'$[1]')) AS credits FROM ${creditSource}
       WHERE ds.day>=?1 AND ds.day<=?2 AND json_type(${pair},'$[0]')='text' AND LENGTH(json_extract(${pair},'$[0]'))>0
       AND json_type(${pair},'$[1]') IN ('integer','real') AND json_extract(${pair},'$[1]')>0 GROUP BY ds.user_id,part,name`)
-      .bind(previous_from, end, from)] : []),
+      .bind(previous_from, end, from)],
   ]);
   const build = partFlag => aggregateAnalytics({ scope: 'public', dimension, range: { period, from: partFlag ? from : previous_from, to: partFlag ? end : previous_to },
     now: Date.parse(end + 'T23:59:59.999+08:00'), trendDays: 0,
@@ -48,15 +49,17 @@ export async function trendReport(env, query) {
     details: details.results.filter(row => row.part === partFlag), days: [], dayDetails: [],
     creditDetails: creditDetails.results.filter(row => row.part === partFlag) }).data;
   const current = build(1), previous = build(0);
+  // 有积分分项才输出 credits（模型维度只有新版采集器上报后才有，缺失时不编造 0）
+  const withCredits = current.credits.scope !== 'unavailable';
   const sort = items => items.filter(row => !row.unclassified && row[metric] > 0).sort((a, b) => b[metric] - a[metric] ||
     b[metric === 'users' ? 'tokens' : 'users'] - a[metric === 'users' ? 'tokens' : 'users'] || a.name.localeCompare(b.name));
   const before = new Map(sort(previous.items).map((row, index) => [row.name, { ...row, rank: index + 1 }]));
   const entries = sort(current.items).map((row, index) => {
     const old = before.get(row.name);
     return { rank: index + 1, name: row.name, users: row.users, tokens: row.tokens, percent: row.percent,
-      ...(dimension === 'tools' ? { credits: row.credits ?? 0 } : {}),
+      ...(withCredits ? { credits: row.credits ?? 0 } : {}),
       previous_rank: old?.rank ?? null, previous_users: old?.users ?? null, previous_tokens: old?.tokens ?? null,
-      ...(dimension === 'tools' ? { previous_credits: old?.credits ?? null } : {}),
+      ...(withCredits ? { previous_credits: old?.credits ?? null } : {}),
       rank_change: old ? old.rank - index - 1 : null, value_change: old ? row[metric] - old[metric] : null };
   });
   const fingerprint = await digest([period, dimension, metric, from, end, current.summary, previous.summary, entries]);

@@ -88,6 +88,20 @@ test('分析页与广场环形图：工具维度带 Credits，模型维度不编
   assert.equal(models.daily[0].creditsText, '');
 });
 
+// 新采集器（0.2.24 + Trae 扩展 0.1.0）上报 credits.models 后，模型维度按真实分项展示
+test('模型维度有积分分项时按分项展示，缺失时仍标注原因', () => {
+  const models = presentAnalysis(analysisResult({ dimension: 'models', credits: { scope: 'models', total: 30 },
+    summary: { tokens: 5000, requests: 20, users: 3, breakdown_tokens: 5000, credits: 30 },
+    items: [{ name: 'GLM-5.3', tokens: 4000, percent: 80, users: 2, preferred_users: 2, credits: 30 },
+      { name: 'auto', tokens: 1000, percent: 20, users: 1, preferred_users: 1, credits: 0 }],
+    daily: [{ day: '2026-10-29', tokens: 5000, requests: 20, credits: 30, reported: true, reported_users: 2,
+      parts: [{ name: 'GLM-5.3', tokens: 4000, credits: 30 }] }] }));
+  assert.equal(models.creditsAvailable, true);
+  assert.equal(models.creditsText, '30');
+  assert.equal(models.items.find(item => item.name === 'GLM-5.3').creditsText, '30');
+  assert.equal(models.daily[0].creditsText, '30');
+});
+
 test('趋势榜：工具项带积分与合计，模型项不显示积分', () => {
   const entry = { rank: 1, name: 'Qoder', users: 2, tokens: 3000, percent: 60, credits: 42.5,
     previous_rank: null, previous_users: null, previous_tokens: null, previous_credits: null, rank_change: null };
@@ -110,12 +124,15 @@ test('飞书网页应用：我的用量、群榜统计与群内行都带 Credits
   assert.match(app, /Credits 计费工具/);
   assert.match(app, /creditsBlock\(usage\.credits\)/);
   assert.match(app, /class="l3"/);
-  // 广场环形图与工具分布同样带积分；模型维度给出说明而不是 0
-  assert.match(app, /d\.credits\.scope === 'tools'/);
-  assert.match(app, /Credits 按工具归属/);
+  // 广场环形图与工具分布同样带积分；模型维度给出说明而不是 0；新增 Credits 饼图与 Tokens 饼并排
+  assert.match(app, /d\.credits\.scope === dimension/);
+  assert.match(app, /donut-row/);
+  assert.match(app, /该维度暂无积分明细/);
   const css = fs.readFileSync(path.resolve(root, '../server/public/app/app.css'), 'utf8');
   assert.match(css, /\.stats\.dense \{ display: grid/);
   assert.match(css, /\.group-row \.l3/);
+  assert.match(css, /\.donut-row/);
+  assert.match(css, /\.donut-empty/);
 });
 
 test('分析、广场与趋势榜标记同步展示 Credits', () => {
@@ -123,7 +140,7 @@ test('分析、广场与趋势榜标记同步展示 Credits', () => {
   assert.match(analysis, /\{\{report\.creditsText\}\} Credits/);
   assert.match(analysis, /\{\{item\.creditsText\}\} Credits/);
   assert.match(analysis, /selectedDay\.creditsText \+ ' Credits'/);
-  assert.match(analysis, /Credits 由上游按工具上报/);
+  assert.match(analysis, /该维度暂无积分分项/);
   const square = read('pages', 'square', 'square.wxml');
   assert.match(square, /\{\{insights\.creditsText\}\} Credits/);
   assert.match(square, /\{\{item\.creditsText\}\} Credits/);

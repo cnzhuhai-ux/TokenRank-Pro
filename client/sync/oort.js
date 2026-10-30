@@ -199,22 +199,53 @@ export function collectOortDays({ home = homedir(), appData = process.env.APPDAT
 }
 
 /**
- * 合并两份 credits（{ total, tools: [[name, amount]] }）：total 相加（round6），tools 按名
- * 合并后按量取前 8，分项之和钳回 ≤ total（与服务端 1e-6 容差对齐）。任一为空取另一方。
+ * 合并两份 credits：total 相加（round6），各分项按键合并、按量取协议上限，
+ * 分项之和钳回 ≤ total（与服务端 1e-6 容差对齐）。
+ *   { total, tools: [[工具, 积分]], models?: [[模型, 积分]], tool_models?: [[工具, 模型, 积分]] }
+ * 任一为空取另一方；旧客户端只报 total/tools，缺的维度不输出空字段。
  */
-function mergeCredits(a, b) {
-  if (!a) return b ? { total: round6(b.total), tools: b.tools.map(([n, v]) => [n, round6(v)]) } : null;
-  if (!b) return { total: round6(a.total), tools: a.tools.map(([n, v]) => [n, round6(v)]) };
-  const total = round6(a.total + b.total);
+const CREDIT_LIMITS = { tools: 8, models: 8, tool_models: 128 };
+// 复合键分隔符（名称已在采集侧清掉控制字符）
+const CREDIT_SEP = String.fromCharCode(30);
+
+function mergeDetailList(a, b, field) {
+  const rows = [...(a || []), ...(b || [])];
+  if (!rows.length) return null;
+  const arity = field === 'tool_models' ? 3 : 2;
   const merged = new Map();
-  for (const [name, amount] of [...a.tools, ...b.tools]) {
-    merged.set(name, round6((merged.get(name) || 0) + amount));
+  for (const row of rows) {
+    if (!Array.isArray(row) || row.length !== arity) continue;
+    const amount = Number(row[arity - 1]);
+    if (!Number.isFinite(amount) || amount <= 0) continue;
+    const key = row.slice(0, arity - 1).join(CREDIT_SEP);
+    merged.set(key, round6((merged.get(key) || 0) + amount));
   }
-  const tools = [...merged.entries()].filter(([, amount]) => amount > 0)
-    .sort((x, y) => y[1] - x[1] || String(x[0]).localeCompare(String(y[0]))).slice(0, 8);
-  let sum = tools.reduce((n, [, amount]) => n + amount, 0);
-  if (sum > total && tools.length) tools.at(-1)[1] = round6(Math.max(0, tools.at(-1)[1] - (sum - total)));
-  return { total, tools };
+  const list = [...merged.entries()].filter(([, amount]) => amount > 0)
+    .sort((x, y) => y[1] - x[1] || String(x[0]).localeCompare(String(y[0])))
+    .slice(0, CREDIT_LIMITS[field])
+    .map(([key, amount]) => [...key.split(CREDIT_SEP), amount]);
+  return list.length ? list : null;
+}
+
+function mergeCredits(a, b) {
+  if (!a && !b) return null;
+  const total = round6(Math.max(0, Number(a && a.total) || 0) + Math.max(0, Number(b && b.total) || 0));
+  const out = { total, tools: clampSum(mergeDetailList(a && a.tools, b && b.tools, 'tools') || [], total) };
+  for (const field of ['models', 'tool_models']) {
+    const list = mergeDetailList(a && a[field], b && b[field], field);
+    if (list) out[field] = clampSum(list, total);
+  }
+  return out;
+}
+
+// 分项之和超过 total 时从末位扣减，保持 Σ分项 ≤ total（与服务端 1e-6 容差对齐）
+function clampSum(list, total) {
+  const sum = list.reduce((n, row) => n + row[row.length - 1], 0);
+  if (sum > total && list.length) {
+    const last = list.at(-1);
+    last[last.length - 1] = round6(Math.max(0, last[last.length - 1] - (sum - total)));
+  }
+  return list;
 }
 
 /**
@@ -237,9 +268,14 @@ export function mergeOortDays(days, oortDays = []) {
       const name = rename(tool), key = modelKey(name, model);
       toolModels.set(key, (toolModels.get(key) || 0) + Number(tokens || 0));
     }
-    const credits = day.credits
-      ? { total: round6(day.credits.total), tools: (day.credits.tools || []).map(([n, v]) => [n, round6(v)]) }
-      : null;
+    const credits = day.credits ? {
+      total: round6(day.credits.total),
+      tools: (day.credits.tools || []).map(([n, v]) => [n, round6(v)]),
+      ...(Array.isArray(day.credits.models) && day.credits.models.length
+        ? { models: day.credits.models.map(([n, v]) => [n, round6(v)]) } : {}),
+      ...(Array.isArray(day.credits.tool_models) && day.credits.tool_models.length
+        ? { tool_models: day.credits.tool_models.map(([t, m, v]) => [t, m, round6(v)]) } : {}),
+    } : null;
     return { ...day, tools, models, tool_models: toolModels, ...(credits ? { credits } : {}) };
   });
   for (const oort of oortDays) {

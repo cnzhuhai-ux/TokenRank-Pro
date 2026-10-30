@@ -203,3 +203,44 @@ test('mergeOortDays 输出可被 JSON 序列化（tools 为数组而非 Map）',
   assert.match(json, /OortCloud AI Studio/);
   assert.ok(!/"tools":\s*{}/.test(json));
 });
+
+test('mergeOortDays 的 credits 合并覆盖 models/tool_models 四字段，分项和不超过 total', () => {
+  const upstream = [{
+    day: '2026-10-30', tokens: 100, input_tokens: 60, output_tokens: 40, cache_read: 0, cache_write: 0,
+    requests: 1, models: [], tools: [['qoder', 100]], tool_models: [],
+    credits: {
+      total: 10, tools: [['qoder', 10]],
+      models: [['GLM-5.3', 6], ['glm-5.3', 4]],
+      tool_models: [['qoder', 'GLM-5.3', 6], ['qoder', 'glm-5.3', 4]],
+    },
+  }];
+  const trae = [{
+    day: '2026-10-30', tokens: 200, input_tokens: 120, output_tokens: 80, cache_read: 0, cache_write: 0,
+    requests: 2, models: [['auto', 200]], tools: [['Trae', 200]], tool_models: [['Trae', 'auto', 200]],
+    credits: {
+      total: 16.5, tools: [['Trae', 16.5]],
+      models: [['GLM-5.3', 10], ['auto', 6.5]],
+      tool_models: [['Trae', 'GLM-5.3', 10], ['Trae', 'auto', 6.5]],
+    },
+  }];
+  const day = mergeOortDays(upstream, trae)[0];
+  assert.equal(day.credits.total, 26.5);
+  assert.deepEqual(day.credits.tools, [['Trae', 16.5], ['qoder', 10]]);
+  // 同名异写在此处保持原样（归一化在服务端榜单），只做同键相加
+  assert.deepEqual(day.credits.models, [['GLM-5.3', 16], ['auto', 6.5], ['glm-5.3', 4]]);
+  assert.equal(day.credits.tool_models.length, 4);
+  const sum = (rows) => rows.reduce((n, row) => n + row[row.length - 1], 0);
+  assert.ok(Math.abs(sum(day.credits.models) - 26.5) < 1e-6);
+  // 旧客户端只报 total/tools 时，合并结果不出现空的 models 字段
+  const legacy = mergeOortDays([{
+    day: '2026-10-29', tokens: 1, input_tokens: 1, output_tokens: 0, cache_read: 0, cache_write: 0,
+    requests: 1, models: [], tools: [['qoder', 1]], tool_models: [],
+    credits: { total: 2, tools: [['qoder', 2]] },
+  }], [{
+    day: '2026-10-29', tokens: 3, input_tokens: 3, output_tokens: 0, cache_read: 0, cache_write: 0,
+    requests: 1, models: [], tools: [['Trae', 3]], tool_models: [],
+    credits: { total: 1, tools: [['Trae', 1]] },
+  }]);
+  assert.deepEqual(Object.keys(legacy[0].credits).sort(), ['tools', 'total']);
+  assert.equal(legacy[0].credits.total, 3);
+});

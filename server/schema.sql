@@ -187,7 +187,22 @@ SELECT d.user_id, d.day,
        JOIN usage_device_state sx ON sx.user_id=x.user_id AND sx.device_id=x.device_id AND sx.active=1,
          json_each(CASE WHEN json_valid(x.credits_json) THEN x.credits_json ELSE '{}' END, '$.tools') je
        WHERE x.user_id=d.user_id AND x.day=d.day AND json_valid(x.credits_json) AND x.credits_json IS NOT NULL
-       GROUP BY name ORDER BY amt DESC, name))
+       GROUP BY name ORDER BY amt DESC, name)),
+    'models', (SELECT COALESCE(json_group_array(json_array(name, amt)), '[]') FROM (
+       SELECT json_extract(CASE WHEN je.type='array' THEN je.value ELSE '[]' END, '$[0]') AS name, SUM(json_extract(CASE WHEN je.type='array' THEN je.value ELSE '[]' END, '$[1]')) AS amt
+       FROM daily_totals x
+       JOIN usage_device_state sx ON sx.user_id=x.user_id AND sx.device_id=x.device_id AND sx.active=1,
+         json_each(CASE WHEN json_valid(x.credits_json) THEN x.credits_json ELSE '{}' END, '$.models') je
+       WHERE x.user_id=d.user_id AND x.day=d.day AND json_valid(x.credits_json) AND x.credits_json IS NOT NULL
+       GROUP BY name ORDER BY amt DESC, name LIMIT 8)),
+    'tool_models', (SELECT COALESCE(json_group_array(json_array(tool, model, amt)), '[]') FROM (
+       SELECT json_extract(CASE WHEN je.type='array' THEN je.value ELSE '[]' END, '$[0]') AS tool, json_extract(CASE WHEN je.type='array' THEN je.value ELSE '[]' END, '$[1]') AS model,
+         SUM(json_extract(CASE WHEN je.type='array' THEN je.value ELSE '[]' END, '$[2]')) AS amt
+       FROM daily_totals x
+       JOIN usage_device_state sx ON sx.user_id=x.user_id AND sx.device_id=x.device_id AND sx.active=1,
+         json_each(CASE WHEN json_valid(x.credits_json) THEN x.credits_json ELSE '{}' END, '$.tool_models') je
+       WHERE x.user_id=d.user_id AND x.day=d.day AND json_valid(x.credits_json) AND x.credits_json IS NOT NULL
+       GROUP BY tool, model ORDER BY amt DESC, tool, model LIMIT 128))
   ) END AS credits_json
 FROM daily_totals d
 JOIN usage_device_state s ON s.user_id=d.user_id AND s.device_id=d.device_id AND s.active=1

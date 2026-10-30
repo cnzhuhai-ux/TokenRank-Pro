@@ -144,3 +144,69 @@ test('mergeOortDays：仅补充源带 credits 的日（新建日行）与仅上�
   assert.equal(noCredits.find((d) => d.day === '2026-10-27').credits, undefined);
   assert.equal(noCredits.find((d) => d.day === '2026-10-28').credits.total, 3.3);
 });
+
+const SNAPSHOT_V2 = {
+  schema: 2,
+  generated_at: '2026-10-30T04:00:00.000Z',
+  window_days: 30,
+  days: [{
+    day: '2026-10-30',
+    input_tokens: 1000, output_tokens: 200, cache_read: 5000, cache_write: 0, tokens: 6200,
+    requests: 5, credits: 26.7916, billed_sessions: 4, custom_sessions: 1,
+    custom_input_tokens: 100, custom_output_tokens: 20,
+    models: [['GLM-5.3', 6000]], models_full: [['GLM-5.3', 6000], ['auto', 200]],
+    credits_tools: [['Trae', 26.7916]],
+    credits_models: [['GLM-5.3', 20], ['auto', 6.7916]],
+    credits_models_full: [['GLM-5.3', 20], ['auto', 6.7916]],
+    credits_tool_models: [['Trae', 'GLM-5.3', 20], ['Trae', 'auto', 6.7916]],
+    modes: [['Max', 4], ['Auto', 1]],
+    truncated: { models: false, credits_models: false, credits_tool_models: false },
+  }],
+};
+
+test('schema 2 快照：credits 四字段透传，*_full 优先并按上限截断', (t) => {
+  const { home, done } = makeHome();
+  t.after(done);
+  writeSnapshot(home, SNAPSHOT_V2);
+  const days = collectTraeDays({ home, log: () => {} });
+  assert.equal(days.length, 1);
+  const today = days[0];
+  assert.deepEqual(today.models, [['GLM-5.3', 6000], ['auto', 200]]);
+  assert.deepEqual(today.tool_models, [[TOOL_NAME, 'GLM-5.3', 6000], [TOOL_NAME, 'auto', 200]]);
+  assert.deepEqual(today.credits, {
+    total: 26.7916,
+    tools: [[TOOL_NAME, 26.7916]],
+    models: [['GLM-5.3', 20], ['auto', 6.7916]],
+    tool_models: [[TOOL_NAME, 'GLM-5.3', 20], [TOOL_NAME, 'auto', 6.7916]],
+  });
+});
+
+test('schema 2 分项之和超过 total：丢弃该分项并告警，保留 total 与 tools', (t) => {
+  const { home, done } = makeHome();
+  t.after(done);
+  const bad = JSON.parse(JSON.stringify(SNAPSHOT_V2));
+  bad.days[0].credits_models_full = [['GLM-5.3', 999], ['auto', 999]];
+  bad.days[0].credits_tool_models = [['Trae', 'GLM-5.3', 999]];
+  writeSnapshot(home, bad);
+  const logs = [];
+  const days = collectTraeDays({ home, log: (m) => logs.push(m) });
+  const today = days[0];
+  assert.deepEqual(today.credits, { total: 26.7916, tools: [[TOOL_NAME, 26.7916]] });
+  assert.equal(logs.some((m) => m.includes('模型积分')), true);
+  assert.equal(logs.some((m) => m.includes('工具×模型积分')), true);
+});
+
+test('credits=0 的 schema 2 日行不带 credits 对象，token 模型分项照常', (t) => {
+  const { home, done } = makeHome();
+  t.after(done);
+  const zero = JSON.parse(JSON.stringify(SNAPSHOT_V2));
+  zero.days[0].credits = 0;
+  zero.days[0].credits_models = []; zero.days[0].credits_models_full = [];
+  zero.days[0].credits_tool_models = []; zero.days[0].credits_tools = [];
+  writeSnapshot(home, zero);
+  const logs = [];
+  const days = collectTraeDays({ home, log: (m) => logs.push(m) });
+  assert.equal(days[0].credits, null);
+  assert.equal(days[0].tokens, 6200);
+  assert.deepEqual(days[0].models, [['GLM-5.3', 6000], ['auto', 200]]);
+});

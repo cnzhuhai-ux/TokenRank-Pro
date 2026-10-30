@@ -148,10 +148,12 @@
       const alt = (e) => creditsView
         ? (Number(e.tokens) > 0 ? `<div class="sub alt">${fmt(e.tokens)} tokens</div>` : '')
         : (Number(e.credits) > 0 ? `<div class="sub alt">${esc(creditsText(e.credits))} Credits</div>` : '');
-      // 绑定了接入码但还没上报的成员也留在榜上，标出原因而不是只显示 0
-      const note = (e) => e.top_model
-        ? `<div class="sub">${esc(e.top_model)}</div>`
-        : (!Number(e.tokens) && !Number(e.credits) ? '<div class="sub">尚未上报</div>' : '');
+      // 绑定了接入码但还没上报的成员也留在榜上，标出原因而不是只显示 0；常用工具与模型同一行展示
+      const note = (e) => {
+        const bits = [e.top_tool, e.top_model].filter(Boolean).map(esc).join(' · ');
+        if (bits) return `<div class="sub">${bits}</div>`;
+        return (!Number(e.tokens) && !Number(e.credits) ? '<div class="sub">尚未上报</div>' : '');
+      };
       const rows = d.entries.map((e) => `
         <div class="row ${state.me && e.rank === d.me?.rank && e.nickname === d.me?.nickname ? 'me' : ''}">
           <div class="rank num">${e.rank}</div>
@@ -166,7 +168,7 @@
             <div class="rank num">${d.me.rank}</div>
             ${avatar(state.me?.avatar_url, state.me?.nickname)}
             <div class="who"><div class="nick">${esc(state.me?.nickname || '')} 我</div>
-              <div class="sub">我的全站排名${d.me.top_model ? ' · ' + esc(d.me.top_model) : ''}</div>${alt(d.me)}</div>
+              <div class="sub">我的全站排名${[d.me.top_tool, d.me.top_model].filter(Boolean).map(esc).map((s) => ' · ' + s).join('')}</div>${alt(d.me)}</div>
             <div class="amt num">${creditsView ? amt(d.me) : fmt(d.me.tokens)}</div>
           </div>` : ''}
         <div class="footnote">${creditsView ? 'Credits 为 Qoder 等按 Credits 计费工具的自报数字' : '数据由用户电脑上报，仅供参考'}</div>`;
@@ -178,30 +180,49 @@
       const details = (d.items || []).filter((x) => !x.unclassified);
       const colors = ['#fa8919', '#7a9e7e', '#8e9aaf', '#c9b27c', '#b5651d', '#c8c8c8', '#9e7bb5', '#5b8c5a'];
       const R = 70, C = 2 * Math.PI * R;
-      let offset = 0;
-      const arcs = details.slice(0, 8).map((x, i) => {
-        const len = (x.percent || 0) / 100 * C;
-        const arc = `<circle r="${R}" cx="110" cy="110" fill="none" stroke="${colors[i % colors.length]}" stroke-width="26"
-          stroke-dasharray="${len} ${C - len}" stroke-dashoffset="${-offset}" transform="rotate(-90 110 110)"></circle>`;
-        offset += len;
-        return arc;
-      }).join('');
-      const creditsByTool = d.credits && d.credits.scope === 'tools';
-      const rowCredits = (x) => (creditsByTool && Number(x.credits) > 0 ? ` · ${esc(creditsText(x.credits))} Credits` : '');
+      // 同一工具/模型在两个饼图里同色：颜色按 Token 榜的顺序分配
+      const colorOf = new Map(details.map((x, i) => [x.name, colors[i % colors.length]]));
+      const arcsOf = (items, percentOf) => {
+        let offset = 0;
+        return items.map((x, i) => {
+          const len = Math.max(0, Number(percentOf(x)) || 0) / 100 * C;
+          const arc = `<circle r="${R}" cx="110" cy="110" fill="none" stroke="${colorOf.get(x.name) || colors[i % colors.length]}" stroke-width="26"
+            stroke-dasharray="${len} ${C - len}" stroke-dashoffset="${-offset}" transform="rotate(-90 110 110)"><title>${esc(x.name)} ${(Number(percentOf(x)) || 0).toFixed(1)}%</title></circle>`;
+          offset += len;
+          return arc;
+        }).join('');
+      };
+      const donutCell = (inner, big, key) => `
+        <div class="donut-cell"><div class="donut-wrap">${inner}
+          <div class="donut-center"><div class="v num">${esc(big)}</div><div class="k">${esc(key)}</div></div></div></div>`;
+      // Tokens 饼：沿用服务端 percent 口径（未分类份额表现为空档）
+      const tokensPie = donutCell(`<svg width="220" height="220" viewBox="0 0 220 220">${arcsOf(details.slice(0, 8), (x) => x.percent)}</svg>`,
+        fmt(sum.tokens || 0), 'Tokens');
+      // Credits 饼：同一批条目按积分份额展开，分母用上报的 Credits 总额（未关联份额同样表现为空档）；
+      // 该维度没有积分分项时给出说明而不是空图
+      const creditItems = details.filter((x) => Number(x.credits) > 0)
+        .sort((a, b) => b.credits - a.credits).slice(0, 8);
+      const creditSum = creditItems.reduce((n, x) => n + x.credits, 0);
+      const creditsByScope = d.credits && d.credits.scope === dimension && Number(d.credits.total) > 0;
+      const creditBase = creditsByScope ? Number(d.credits.total) : creditSum;
+      const creditsPie = creditItems.length
+        ? donutCell(`<svg width="220" height="220" viewBox="0 0 220 220">${arcsOf(creditItems, (x) => x.credits / creditBase * 100)}</svg>`,
+          creditsText(creditSum), 'Credits')
+        : '<div class="donut-cell"><div class="donut-empty">该维度暂无积分明细：需新版同步器与 Trae 采集扩展上报</div></div>';
+      const rowCredits = (x) => (creditsByScope && Number(x.credits) > 0 ? ` · ${esc(creditsText(x.credits))} Credits` : '');
       body.innerHTML = `
         <div class="section"><span class="t">${label}</span><span class="more">完整分析</span></div>
-        <div class="caption">${sum.users || 0} 位公开用户 · ${details.length} 种${dimension === 'tools' ? '工具' : '模型'}${creditsByTool && sum.credits > 0 ? ` · ${esc(creditsText(sum.credits))} Credits` : ''}</div>
-        <div class="donut-wrap">
-          <svg width="220" height="220" viewBox="0 0 220 220">${arcs}</svg>
-          <div class="donut-center"><div class="v num">${fmt(sum.tokens || 0)}</div><div class="k">Tokens</div></div>
-        </div>
+        <div class="caption">${sum.users || 0} 位公开用户 · ${details.length} 种${dimension === 'tools' ? '工具' : '模型'}${creditsByScope && sum.credits > 0 ? ` · ${esc(creditsText(sum.credits))} Credits` : ''}</div>
+        <div class="donut-row">${tokensPie}${creditsPie}</div>
         ${details.slice(0, 10).map((x) => `
           <div class="dist">
             <div class="head"><span class="name">${esc(x.name)}</span><span class="pct num">${(x.percent || 0).toFixed(1)}%</span></div>
             <div class="bar"><i style="width:${Math.min(100, x.percent || 0)}%"></i></div>
             <div class="meta"><span>${fmt(x.tokens)} tokens${rowCredits(x)}</span><span>${x.preferred_users || 0} 人常用 · ${x.users || 0} 人用过</span></div>
           </div>`).join('')}
-        <div class="footnote">${creditsByTool ? 'Credits 按工具归属，由电脑上报的积分明细汇总' : 'Credits 只按工具上报，模型维度没有积分明细'} · 仅代表已上报数据 · 数据由用户电脑上报，仅供参考</div>`;
+        <div class="footnote">${creditsByScope
+          ? `Credits 按${dimension === 'tools' ? '工具' : '模型'}归属，由电脑上报的积分明细汇总，未覆盖部分计入未关联`
+          : 'Credits 只按工具上报，该维度暂无积分分项'} · 仅代表已上报数据 · 数据由用户电脑上报，仅供参考</div>`;
     }
   }
 
@@ -225,7 +246,7 @@
       `<div><div class="v num">${usage.activity?.current_streak ?? 0} 天</div><div class="k">连续记录</div></div>`,
     ].filter(Boolean);
     body.innerHTML = `
-      <div class="section"><span class="t">我的用量</span><span class="more">详情</span></div>
+      <div class="section"><span class="t">我的用量</span><button class="more" data-go="me">详情 ›</button></div>
       <div class="hero">
         ${heroLine(heroUnit.length > 1 ? heroUnit.slice(0, -1).join(' ') : heroUnit[0], heroUnit.length > 1 ? heroUnit.at(-1) : '', 'tokens')}
         <div class="full num">${periodLabels[state.period]} · ${full(usage.summary.requests)} 次调用</div>
@@ -245,6 +266,11 @@
           <div class="l3">${fmt(g.my_tokens)} tokens${inlineCredits(g.my_credits > 0 ? g.my_credits : null)}</div>
         </div>`).join('') || '<div class="empty">还没有加入群榜：把机器人拉进飞书群，在群里发「加入」</div>'}
       <div class="footnote">数据由用户电脑上报，仅供参考</div>`;
+    // 详情 = 打开「我的用量」详情页（与小程序一致），并沿用当前统计周期
+    body.querySelector('[data-go="me"]')?.addEventListener('click', () => {
+      state.mePeriod = state.period;
+      switchTab('me');
+    });
   }
 
   // ── 页面：我的（汇总 / 日报 / 日历 / 走势） ──

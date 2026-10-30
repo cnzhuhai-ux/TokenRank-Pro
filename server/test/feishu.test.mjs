@@ -510,3 +510,49 @@ test('ensureAvatarKey 上传头像换 img_key 并按来源缓存，命中后不�
   // 无头像来源返回 null，不报错
   assert.equal(await service._internals.ensureAvatarKey(env, { uid: 2, avatar_path: null, avatar_url: null }), null);
 });
+
+test('榜单卡片新增「工具」列：位于成员与模型之间，展示使用率最高的工具', async (t) => {
+  const { db, env } = fixture(t);
+  await seedGroupBoard(db);
+  // 张三：codex 用量高于 claude-code → 工具列取 codex；李四只有 claude-code
+  const today = beijingDay(NOW);
+  db.prepare('UPDATE daily_totals SET tools_json=? WHERE user_id=1 AND day=?')
+    .run(JSON.stringify([['codex', 2_000_000], ['claude-code', 1_000_000]]), today);
+  console.error('DEBUG-TOOLS', JSON.stringify(db.prepare('SELECT day, tools_json FROM daily_totals WHERE user_id=1').all()));
+  console.error('DEBUG-VIEW', JSON.stringify(db.prepare('SELECT day, tools_json FROM public_usage WHERE user_id=1').all()));
+  db.prepare('UPDATE daily_totals SET tools_json=? WHERE user_id=2 AND day=?')
+    .run(JSON.stringify([['claude-code', 1_200_000]]), today);
+  const log = [];
+  const service = createFeishuService({ fetcher: fakeFeishuApi(log), now: () => NOW });
+  await fire(service, env, messageEvent({ openId: 'ou_2', eventId: 'evt-tool-col' }));
+  const card = sentCards(log)[0];
+  console.error('DEBUG-BOARD', JSON.stringify(await service._internals.boardRows(env, { groupId: 'g1', from: today, to: today })));
+  const rows = card.body.elements.filter((el) => el.tag === 'column_set');
+  const cell = (row, index) => flat({ body: { elements: row.columns[index].elements } });
+  console.error('DEBUG-CELLS', JSON.stringify(rows.map((r) => r.columns.map((_, i) => cell(r, i)))));
+  // 表头：# / 成员 / 工具 / 模型 / Token 用量（头像列为空占位）；单元格文本带 grey font 标记
+  const header = rows[0];
+  assert.equal(header.columns.length, 6, '六列：序号/头像/成员/工具/模型/用量');
+  assert.match(cell(header, 2), /成员/);
+  assert.equal(cell(header, 3), "<font color='grey'>工具</font>");
+  assert.equal(cell(header, 4), "<font color='grey'>模型</font>");
+  // 第一名（张三）行：工具列 = 使用率最高的 codex，模型列仍是主力模型（列序：名次/头像/成员/工具/模型/用量）
+  const first = rows[1];
+  assert.equal(cell(first, 2), '张三');
+  assert.match(cell(first, 3), /codex/);
+  assert.match(cell(first, 4), /claude-sonnet-4\.5/);
+  // Credits 榜（纯积分用户）同样带工具列：取积分口径的计费工具
+  db.prepare('UPDATE daily_totals SET tokens=0, requests=0, tools_json=?, credits_json=? WHERE user_id=3 AND day=?').run('[]', JSON.stringify({ total: 12, tools: [['qoder', 12]] }), today);
+  db.prepare("UPDATE rank_group_members SET hidden=0 WHERE user_id=3").run();
+  const log2 = [];
+  const service2 = createFeishuService({ fetcher: fakeFeishuApi(log2), now: () => NOW });
+  await fire(service2, env, messageEvent({ openId: 'ou_2', eventId: 'evt-tool-col-2' }));
+  const card2 = sentCards(log2)[0];
+  const creditRows = card2.body.elements.filter((el) => el.tag === 'column_set');
+  const creditHeader = creditRows.find((r) => cell(r, 5) === "<font color='grey'>Credits</font>");
+  assert.ok(creditHeader, '存在 Credits 榜表头');
+  assert.equal(cell(creditHeader, 3), "<font color='grey'>工具</font>");
+  const wangwu = creditRows.find((r) => cell(r, 2) === '王五');
+  assert.ok(wangwu, '王五出现在 Credits 榜');
+  assert.match(cell(wangwu, 3), /qoder/);
+});

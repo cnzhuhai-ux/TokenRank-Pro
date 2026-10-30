@@ -1,8 +1,8 @@
 {
   "name": "trae-credits-poc",
-  "displayName": "Trae Credits POC",
-  "description": "POC: 验证能否在 Trae 扩展内读取每会话 Credits（icube.common.getToken + query_user_usage_group_by_session）。只读查询，不打印任何 token。",
-  "version": "0.0.7",
+  "displayName": "Trae Credits 采集扩展",
+  "description": "只读查询每会话 Credits 与 token（icube.common.getToken + query_user_usage_group_by_session），按天写本地快照供 TokenRank 采集；不打印任何 token。",
+  "version": "0.1.0",
   "publisher": "local-poc",
   "private": true,
   "license": "UNLICENSED",
@@ -20,7 +20,7 @@
     "commands": [
       {
         "command": "trae-credits-poc.query",
-        "title": "Trae Credits POC: 查询每会话 Credits"
+        "title": "Trae Credits: 查询每会话 Credits"
       }
     ]
   }

@@ -4,6 +4,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { readFileSync } from 'node:fs';
 import worker from '../src/worker.js';
 import { beijingDay } from '../src/lib.js';
+import { modelKey } from '../src/model-key.js';
 function fixture(t, count = 6) {
   const db = new DatabaseSync(':memory:'); db.exec(readFileSync(new URL('../schema.sql', import.meta.url), 'utf8')); t.after(() => db.close());
   const env = { DB: { prepare(sql) {
@@ -188,4 +189,49 @@ test('工具分布、趋势榜与每日走势带 Credits；模型维度标记为
   assert.equal(mine.items.find(row => row.name === 'Qoder').credits, 30.5);
   const mineModels = (await f.request('/api/my/analysis?period=week&dimension=models', 1)).data;
   assert.equal(mineModels.credits.scope, 'unavailable');
+});
+
+// 新采集器（0.2.24 + Trae 扩展 0.1.0）会上报 credits_json.models：模型维度改用真实分项
+test('模型维度按 credits_json.models 归属，同名异写合并为一条', async t => {
+  const f = fixture(t);
+  const day = f.seed(1, -1, 1000, [['Trae', 1000]], [['GLM-5.3', 600], ['glm-5.3', 200], ['auto', 200]]);
+  f.db.prepare('UPDATE daily_totals SET credits_json=? WHERE user_id=1 AND day=?').run(JSON.stringify({
+    total: 60, tools: [['Trae', 60]],
+    models: [['GLM-5.3', 40], ['[bigmodel-plan] GLM-5.3', 10], ['auto', 10]],
+    tool_models: [['Trae', 'GLM-5.3', 40], ['Trae', '[bigmodel-plan] GLM-5.3', 10], ['Trae', 'auto', 10]],
+  }), day);
+  const models = (await f.request('/api/insights?period=week&dimension=models')).data;
+  assert.equal(models.credits.scope, 'models');
+  assert.equal(models.credits.total, 60);
+  assert.equal(models.summary.credits, 60);
+  // GLM-5.3 / glm-5.3 / [bigmodel-plan] GLM-5.3 合并成一条，展示名取无前缀的原写法
+  const glm = models.items.filter(row => modelKey(row.name) === 'glm-5.3');
+  assert.equal(glm.length, 1);
+  assert.equal(glm[0].name, 'GLM-5.3');
+  assert.equal(glm[0].tokens, 800);
+  assert.equal(glm[0].credits, 50);
+  const auto = models.items.find(row => row.name === 'auto');
+  assert.equal(auto.credits, 10);
+  assert.equal(models.items.some(row => row.name.startsWith('[bigmodel-plan]')), false);
+  // 工具维度不受模型分项影响，仍按 credits_json.tools 归属
+  const tools = (await f.request('/api/insights?period=week&dimension=tools')).data;
+  assert.equal(tools.credits.scope, 'tools');
+  assert.equal(tools.items.find(row => row.name === 'Trae').credits, 60);
+  // 趋势榜模型维度同步带上积分
+  const trend = (await f.request('/api/insights/trends?period=week&dimension=models&metric=tokens')).data;
+  assert.equal(trend.credits.scope, 'models');
+  assert.equal(trend.entries.find(row => row.name === 'GLM-5.3').credits, 50);
+});
+
+test('模型分项缺失的部分计入未关联模型，不摊派到具体模型', async t => {
+  const f = fixture(t);
+  const day = f.seed(1, -1, 1000, [['Trae', 1000]], [['GLM-5.3', 1000]]);
+  f.db.prepare('UPDATE daily_totals SET credits_json=? WHERE user_id=1 AND day=?')
+    .run(JSON.stringify({ total: 100, tools: [['Trae', 100]], models: [['GLM-5.3', 40]] }), day);
+  const models = (await f.request('/api/insights?period=week&dimension=models')).data;
+  assert.equal(models.items.find(row => row.name === 'GLM-5.3').credits, 40);
+  const unknown = models.items.find(row => row.unclassified);
+  assert.ok(unknown, '未关联分项应保留');
+  assert.equal(unknown.credits, 60);
+  assert.equal(Math.round((models.items.reduce((sum, row) => sum + (row.credits || 0), 0) - 100) * 1e6), 0);
 });
