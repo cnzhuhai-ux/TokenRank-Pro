@@ -1,6 +1,6 @@
 # TokenRank 独立同步器
 
-v0.2.20 为独立只读适配器，接入原版 [luwill/token-watcher](https://github.com/luwill/token-watcher)。Node.js 22.13+，无第三方运行依赖。
+v0.2.21 为独立只读适配器，接入原版 [luwill/token-watcher](https://github.com/luwill/token-watcher)。Node.js 22.13+，无第三方运行依赖。
 
 更换服务器、接入码或统计库后，会重新全量上传本机保留的历史用量，包含注销后重新接入的情况。上传中断可分批续传；重复执行同一账号的接入命令不会重传未变化的日期。
 
@@ -138,9 +138,9 @@ token-watcher 1.8 首次迁移 Codex 去重键时，会在统计库里留下一�
 
 只读按事件的工具与模型联合分组，日桶新增 `tool_models: [[工具, 模型, 含缓存总量], ...]`，最多保留 128 组。现有工具与模型各自的前八项、总用量和金额口径保持不变。超出保留范围或缺少工具／模型的用量仍计入总量，在小程序中显示为未关联模型。字段参与同步指纹，升级后的下一次正常同步会补传保留历史，不需要重算或清空云端数据。旧同步器仍可上报，缺少关联明细不会被猜测为某个模型。
 
-## 全盘补充采集（0.2.20）
+## 全盘补充采集（0.2.21）
 
-原版 token-watcher 对 WorkBuddy 只扫 `~/.WorkBuddy/projects`，也不认识 DevEco Code。0.2.20 在同步器内增加 [`sync/extra.js`](sync/extra.js)：
+原版 token-watcher 对 WorkBuddy 只扫 `~/.WorkBuddy/projects`，也不认识 DevEco Code。0.2.21 在同步器内增加 [`sync/extra.js`](sync/extra.js)：
 
 - **全部磁盘发现**：Windows 遍历 C–Z 盘符，macOS 遍历 `/Volumes/*`，Linux 遍历 `/`、`/mnt/*`、`/media/*`；每盘最多向下 5 层，跳过 `Windows`、`Program Files`、`node_modules`、缓存等系统目录，再补充检查 `APPDATA`、`LOCALAPPDATA`、`XDG_DATA_HOME`、`XDG_CONFIG_HOME` 和主目录。
 - **WorkBuddy**：识别 `.WorkBuddy`、`.workbuddy-ai`、`.workbuddy-cn`、`.workbuddy-intl`、`WorkBuddy AI` 等产品目录，只读取其中的 `*.jsonl` 转录。排除原版已覆盖的 `~/.WorkBuddy/projects` 和 `~/.tokenmeter/extra-roots.json` 登记的目录，避免重复计数；同一消息 ID 只计一次。
@@ -148,3 +148,19 @@ token-watcher 1.8 首次迁移 Codex 去重键时，会在统计库里留下一�
 - **容错**：每个文件或数据库单独捕获异常，损坏项写入同步日志后跳过，不影响其他来源和正常上报。数据目录只读，不修改任何产品文件。
 
 `TOKENRANK_OORT_DISABLE=1` 可关闭全部补充采集，`TOKENRANK_EXTRA_DISABLE=1` 只关闭 WorkBuddy / DevEco 部分。
+
+## Windows 采集任务恢复（0.2.17）
+
+Windows 上的原版采集计划任务 `TokenWatcherForTokenRank` 被手动或清理工具删除后，启动脚本和接入状态仍在，旧版会误判为"原版后台已配置"而跳过，采集从此停止，更新命令也会因找不到任务而报错。0.2.17 起，接入和更新都会先确认该任务存在，缺失时按原方式重新注册（只针对接入脚本自己安装的原版）；更新时找不到的计划任务按"未运行"处理，不再抛出 PowerShell 原始错误。安装脚本以 UTF-8 声明下发，Windows PowerShell 5.1 不再把中文提示显示为乱码。
+
+## 扫描失败说明与打包（0.2.18）
+
+更新重算或回传前的扫描如有文件失败，提示按工具列出失败数量和原版给出的原因（如 `codex 2 个：EBUSY …`），文件路径一律替换为 `<路径>`，便于用户把报错直接发出来排查，不泄露项目或会话名称。打包时不再带入 macOS 的 `._*` 元数据文件，Windows 更新结束时不会再因无法删除 `._.` 而报错。
+
+## zstd 预检（0.2.19）
+
+原版读取 dsh 的多帧压缩会话（`.jsonl.zstd`）依赖系统 `zstd` 程序，Node 内置解码只能读第一帧。本机存在 `~/.dsh/sessions` 而找不到 `zstd` 时：更新命令在下载和停止任何服务之前就停下，给出对应系统的安装命令（Windows `winget install -e --id Meta.Zstandard` 或 `scoop install zstd`，macOS `brew install zstd`，Linux 用包管理器）；接入时只提示，不阻断安装，因为缺少 zstd 时日常采集仍可运行，只是 dsh 用量会漏算。查找顺序与原版一致。
+
+## Windows 自动准备 zstd（0.2.20）
+
+Windows 上存在 dsh 会话（`~/.dsh/sessions`）而找不到 `zstd` 时，接入和更新会从 TokenRank 服务器下载官方 zstd 1.5.7 Windows 版（facebook/zstd 发布的 `zstd-v1.5.7-win64.zip` 中的 `zstd.exe`，BSD 许可），按固定 SHA-256 校验后只放在 `~/.tokenrank/bin`：不需要管理员权限，不改系统 PATH，不调用 winget。原版的首次扫描、更新重算和 `TokenWatcherForTokenRank` 采集任务都把这个目录放在 PATH 最前；已接入用户的采集启动脚本会在下次接入或更新时改写并重启一次。下载失败或校验不符时不使用该文件，并给出手动安装命令。macOS 与 Linux 仍只提示 `brew install zstd` 或用包管理器安装。删除 `~/.tokenrank/bin/zstd.exe` 即可移除。

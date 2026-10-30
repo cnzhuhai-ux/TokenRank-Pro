@@ -1,6 +1,5 @@
 param([Parameter(Mandatory=$true)][string]$Server, [Parameter(Mandatory=$true)][string]$Token)
 $ErrorActionPreference = 'Stop'
-$VERSION = '0.2.18'
 $node = (Get-Command node -ErrorAction Stop).Source
 function Run-Node { & $node @args; if ($LASTEXITCODE -ne 0) { throw '同步器检查或操作失败，请按提示处理后重试' } }
 $nodeVersion = & $node --version
@@ -19,19 +18,15 @@ $tmp = Join-Path $root ('install-' + [guid]::NewGuid().ToString('N'))
 $stage = Join-Path $tmp 'stage'
 New-Item -ItemType Directory -Path $stage -Force | Out-Null
 try {
-  $base = $Server.TrimEnd('/')
-  $pkg = "tokenrank-client-$VERSION.tar.gz"
-  Write-Host '下载接入程序，校验完整性并准备原版 token-watcher…'
-  Invoke-WebRequest -Uri ($base + '/dl/' + $pkg) -OutFile (Join-Path $tmp 'app.tar.gz') -UseBasicParsing
-  Invoke-WebRequest -Uri ($base + '/dl/' + $pkg + '.sha256') -OutFile (Join-Path $tmp 'app.sha256') -UseBasicParsing
-  $expected = (Get-Content -LiteralPath (Join-Path $tmp 'app.sha256') -Raw).Trim().ToLower()
-  $actual = (Get-FileHash -LiteralPath (Join-Path $tmp 'app.tar.gz') -Algorithm SHA256).Hash.ToLower()
-  if (-not $expected -or $expected -ne $actual) { throw '安装包校验失败，已停止安装' }
+  Write-Host '下载接入程序，检查并准备原版 token-watcher…'
+  Invoke-WebRequest -Uri ($Server.TrimEnd('/') + '/dl/tokenrank-client-0.2.20.tar.gz') -OutFile (Join-Path $tmp 'app.tar.gz') -UseBasicParsing
   tar -xzf (Join-Path $tmp 'app.tar.gz') -C $stage
   if ($LASTEXITCODE -ne 0) { throw '解压失败，旧版本尚未替换' }
-  $manifest = Get-Content (Join-Path $stage 'package.json') -Raw | ConvertFrom-Json
-  if ($manifest.name -ne 'tokenrank-client' -or $manifest.version -ne $VERSION) { throw '下载内容不是预期的独立同步器' }
+  $pkg = Get-Content (Join-Path $stage 'package.json') -Raw | ConvertFrom-Json
+  if ($pkg.name -ne 'tokenrank-client' -or $pkg.version -ne '0.2.20') { throw '下载内容不是预期的独立同步器' }
   $entry = Join-Path $stage 'bin\tokenrank.js'
+  # Before connect writes config.json, the downloads of this install (such as zstd for dsh) come from this server.
+  $env:TOKENRANK_SERVER = $Server.TrimEnd('/')
   Run-Node --no-warnings $entry prepare-upstream
   Run-Node --no-warnings $entry migrate-legacy-agent --app-root $app
   Run-Node --no-warnings $entry start-upstream
@@ -47,8 +42,8 @@ try {
   & $node --no-warnings $entry connect $Server $Token
   if ($LASTEXITCODE -ne 0) { Write-Warning '首次同步未完成，配置已保留。检查网络或接入码；后台服务将重试。' }
   Run-Node --no-warnings $entry install-agent
-  Run-Node --no-warnings $entry update-if-outdated
-  if ($LASTEXITCODE -ne 0) { throw ('统计内核检查或升级未完成。按上面的提示处理后重新运行：& ([scriptblock]::Create((irm ''' + $Server.TrimEnd('/') + '/update.ps1''))) ''' + $Server.TrimEnd('/') + '''') }
+  & $node --no-warnings $entry update-if-outdated
+  if ($LASTEXITCODE -ne 0) { throw ('统计内核检查或升级未完成。按上面的提示处理后重新运行：& ([scriptblock]::Create((irm ''' + $Server.TrimEnd('/') + '/update.ps1'')))') }
   Write-Host "独立同步服务已安装。可把 $binDir 加入 PATH。"
   Write-Host '原版负责采集，TokenRank 负责只读同步；已检查统计内核最新稳定版。'
 } finally { Remove-Item -LiteralPath $tmp -Recurse -Force }

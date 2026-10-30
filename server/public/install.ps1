@@ -1,6 +1,6 @@
 param([Parameter(Mandatory=$true)][string]$Server, [Parameter(Mandatory=$true)][string]$Token)
 $ErrorActionPreference = 'Stop'
-$VERSION = '0.2.20'
+$VERSION = '0.2.21'
 $node = (Get-Command node -ErrorAction Stop).Source
 function Run-Node { & $node @args; if ($LASTEXITCODE -ne 0) { throw '同步器检查或操作失败，请按提示处理后重试' } }
 $nodeVersion = & $node --version
@@ -32,6 +32,8 @@ try {
   $manifest = Get-Content (Join-Path $stage 'package.json') -Raw | ConvertFrom-Json
   if ($manifest.name -ne 'tokenrank-client' -or $manifest.version -ne $VERSION) { throw '下载内容不是预期的独立同步器' }
   $entry = Join-Path $stage 'bin\tokenrank.js'
+  # Before connect writes config.json, the downloads of this install (such as zstd for dsh) come from this server.
+  $env:TOKENRANK_SERVER = $Server.TrimEnd('/')
   Run-Node --no-warnings $entry prepare-upstream
   Run-Node --no-warnings $entry migrate-legacy-agent --app-root $app
   Run-Node --no-warnings $entry start-upstream

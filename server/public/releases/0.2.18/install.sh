@@ -2,7 +2,6 @@
 # Reuse an existing original collector; bootstrap a missing dependency before sync.
 set -eu
 SERVER="${1:-}"; TOKEN="${2:-}"
-VERSION=0.2.18
 [ -n "$SERVER" ] && [ -n "$TOKEN" ] || { echo '缺少服务器地址或接入码'; exit 1; }
 command -v node >/dev/null 2>&1 || { echo '请先安装 Node.js 22.13+'; exit 1; }
 node -e 'const [a,b]=process.versions.node.split(".").map(Number); if(a<22||(a===22&&b<13))process.exit(1)' || { echo '需要 Node.js 22.13+'; exit 1; }
@@ -14,16 +13,10 @@ mkdir -p "$HOME/.tokenrank"
 TMP=$(mktemp -d "$HOME/.tokenrank/install.XXXXXX")
 trap 'rm -rf "$TMP"' EXIT HUP INT TERM
 mkdir "$TMP/stage"
-BASE="${SERVER%/}"
-PKG="tokenrank-client-$VERSION.tar.gz"
-echo '下载接入程序，校验完整性并准备原版 token-watcher…'
-curl -fsSL "$BASE/dl/$PKG" -o "$TMP/app.tar.gz"
-curl -fsSL "$BASE/dl/$PKG.sha256" -o "$TMP/app.sha256"
-EXPECTED=$(tr -d ' \t\r\n' < "$TMP/app.sha256")
-ACTUAL=$(node -e 'const c=require("crypto"),f=require("fs");process.stdout.write(c.createHash("sha256").update(f.readFileSync(process.argv[1])).digest("hex"))' "$TMP/app.tar.gz")
-[ -n "$EXPECTED" ] && [ "$EXPECTED" = "$ACTUAL" ] || { echo '安装包校验失败，已停止安装'; exit 1; }
+echo '下载接入程序，检查并准备原版 token-watcher…'
+curl -fsSL "${SERVER%/}/dl/tokenrank-client-0.2.20.tar.gz" -o "$TMP/app.tar.gz"
 tar -xzf "$TMP/app.tar.gz" -C "$TMP/stage"
-node -e 'const p=require(process.argv[1]); if(p.name!=="tokenrank-client"||p.version!==process.argv[2])process.exit(1)' "$TMP/stage/package.json" "$VERSION" || { echo '下载内容不是预期版本，已停止安装'; exit 1; }
+node -e 'const p=require(process.argv[1]); if(p.name!=="tokenrank-client"||p.version!=="0.2.20")process.exit(1)' "$TMP/stage/package.json"
 node --no-warnings "$TMP/stage/bin/tokenrank.js" prepare-upstream
 node --no-warnings "$TMP/stage/bin/tokenrank.js" migrate-legacy-agent --app-root "$APP"
 node --no-warnings "$TMP/stage/bin/tokenrank.js" start-upstream
@@ -41,7 +34,7 @@ fi
 # Explicit installation checks the current official release, including reliability fixes.
 if ! "$BIN_DIR/tokenrank" update-if-outdated; then
   echo '统计内核检查或升级未完成。按上面的提示处理后重新运行：'
-  echo "curl -fsSL $BASE/update.sh | sh -s $BASE"
+  echo "curl -fsSL ${SERVER%/}/update.sh | sh"
   exit 1
 fi
 echo "独立同步服务已安装。查看状态：$BIN_DIR/tokenrank rank status"

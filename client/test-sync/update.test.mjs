@@ -11,6 +11,9 @@ import { updateAndResync, resolveUpdate, FIXED_SOURCE, backupSource } from '../s
 import { readConfig, writeConfig } from '../sync/config.js';
 import { acquireLock } from '../sync/lock.js';
 import { sync } from '../sync/report.js';
+import { describeScanErrors } from '../sync/scan-errors.js';
+import { ensureZstd, WINDOWS_ZSTD } from '../sync/zstd-check.js';
+import { createHash } from 'node:crypto';
 import { updateServices } from '../sync/update-services.js';
 const ADAPTER_VERSION = JSON.parse(readFileSync(new URL('../package.json', import.meta.url))).version;
 
@@ -97,6 +100,63 @@ test('explicit update backs up old totals, upgrades and restarts, uploads reduce
   f.actions.length = 0;
   await updateAndResync(f.options); assert.equal(f.actions.includes('download'), false); assert.equal(f.bodies.length, 2);
   assert.equal(f.bodies[1].days[0].tokens, 100);
+});
+
+test('Windows update restores a deleted collector task before verifying services', async t => {
+  const f = fixture(t), order = [];
+  await assert.rejects(updateAndResync({ ...f.options, platform: 'win32',
+    restore: () => order.push('restore'), services: () => { order.push('services'); throw new Error('stop here'); } }), /stop here/);
+  assert.deepEqual(order, ['restore', 'services']);
+  order.length = 0;
+  await assert.rejects(updateAndResync({ ...f.options, platform: 'darwin',
+    restore: () => order.push('restore'), services: () => { order.push('services'); throw new Error('stop here'); } }), /stop here/);
+  assert.deepEqual(order, ['services']);
+});
+
+test('zstd check only speaks up when dsh sessions exist and no zstd program runs', async t => {
+  const home = mkdtempSync(join(tmpdir(), 'tokenrank-zstd-')), dir = join(home, '.tokenrank'); t.after(() => rmSync(home, { recursive: true, force: true }));
+  const tried = [], missing = (bin) => { tried.push(bin); throw Object.assign(new Error('not found'), { code: 'ENOENT' }); };
+  assert.equal((await ensureZstd({ home, dir, platform: 'darwin', runner: missing })).problem, null); assert.deepEqual(tried, []);
+  mkdirSync(join(home, '.dsh/sessions'), { recursive: true });
+  assert.match((await ensureZstd({ home, dir, platform: 'darwin', runner: missing })).problem, /brew install zstd/);
+  assert.deepEqual(tried, ['zstd', '/opt/homebrew/bin/zstd', '/usr/local/bin/zstd', '/usr/bin/zstd']);
+  assert.equal((await ensureZstd({ home, dir, platform: 'darwin', runner: () => 'zstd v1.5.7' })).problem, null);
+  // Windows without a known server cannot fetch, so it falls back to the manual hint.
+  assert.match((await ensureZstd({ home, dir, platform: 'win32', runner: missing, fetcher: () => assert.fail('no fetch') })).problem, /winget install -e --id Meta\.Zstandard/);
+});
+
+test('Windows fetches the pinned zstd into ~/.tokenrank/bin and puts it first on PATH, refusing a mismatched download', async t => {
+  const home = mkdtempSync(join(tmpdir(), 'tokenrank-zstd-')), dir = join(home, '.tokenrank'); t.after(() => rmSync(home, { recursive: true, force: true }));
+  mkdirSync(join(home, '.dsh/sessions'), { recursive: true });
+  const exe = join(dir, 'bin', 'zstd.exe'), urls = [];
+  // The fake runner finds zstd only once zstd.exe sits in the bin directory named first on PATH.
+  const runner = (bin, args, opts) => { const path = opts.env.Path ?? opts.env.PATH; if (!(path.startsWith(join(dir, 'bin') + ';') && existsSync(exe))) throw new Error('ENOENT'); return ''; };
+  const bad = Buffer.from('not zstd');
+  let result = await ensureZstd({ home, dir, platform: 'win32', runner, server: 'https://example.test/', fetcher: async url => { urls.push(url); return new Response(bad); } });
+  assert.match(result.problem, /校验不符/); assert.equal(existsSync(exe), false); assert.equal(existsSync(exe + '.download'), false);
+  assert.deepEqual(urls, [`https://example.test/dl/${WINDOWS_ZSTD.file}`]);
+  const good = Buffer.from('pinned-build'), sha = createHash('sha256').update(good).digest('hex'), pinned = WINDOWS_ZSTD.sha256;
+  WINDOWS_ZSTD.sha256 = sha; t.after(() => { WINDOWS_ZSTD.sha256 = pinned; });
+  result = await ensureZstd({ home, dir, platform: 'win32', runner, server: 'https://example.test', fetcher: async () => new Response(good) });
+  assert.equal(result.problem, null); assert.deepEqual(readFileSync(exe), good);
+  const pathKey = Object.keys(result.env).filter(k => k.toUpperCase() === 'PATH'); assert.equal(pathKey.length, 1);
+  assert.ok(result.env[pathKey[0]].startsWith(join(dir, 'bin') + ';'));
+  // Already in place: no second download.
+  result = await ensureZstd({ home, dir, platform: 'win32', runner, server: 'https://example.test', fetcher: () => assert.fail('downloaded twice') });
+  assert.equal(result.problem, null);
+});
+
+test('update refuses before downloading or stopping anything when zstd is missing, install check only warns, rebuild gets the zstd PATH', async t => {
+  const f = fixture(t);
+  await assert.rejects(updateAndResync({ ...f.options, zstd: async () => ({ problem: '缺少 zstd', env: process.env }) }), /缺少 zstd；本次未更改程序或数据/);
+  assert.deepEqual(f.actions, []);
+  const g = fixture(t, '1.8.3'), logs = [];
+  const result = await updateAndResync({ ...g.options, onlyIfOutdated: true, zstd: async () => ({ problem: '缺少 zstd', env: process.env }), log: line => logs.push(line) });
+  assert.equal(result.skipped, 'up-to-date'); assert.ok(logs.includes('缺少 zstd'));
+  const h = fixture(t), seen = [], runner = h.options.runner;
+  await updateAndResync({ ...h.options, zstd: async () => ({ problem: null, env: { MARK: 'zstd-path' } }),
+    runner: (command, args, opts = {}) => { if (args.some(a => String(a).endsWith('rebuild-worker.js'))) seen.push(opts.env?.MARK); return runner(command, args, opts); } });
+  assert.deepEqual(seen, ['zstd-path']);
 });
 
 test('install checks upgrade a statistically valid 1.8.2 collector to the reliability release', async t => {
@@ -354,6 +414,24 @@ test('Windows update verifies the exact scheduled task and script before stoppin
   unrelated = true; assert.throws(() => updateServices(options), /归属/);
 });
 
+test('Windows update skips a collector task that was deleted while its script remains', t => {
+  const f = fixture(t), syncEntry = join(f.dir, 'app/bin/tokenrank.js');
+  mkdirSync(join(f.dir, 'app/bin'), { recursive: true }); writeFileSync(syncEntry, '// sync');
+  writeFileSync(join(f.dir, 'app/package.json'), '{"name":"tokenrank-client"}');
+  const vbs = join(f.home, 'AppData/Local/TokenWatcher/collector.vbs'); mkdirSync(join(vbs, '..'), { recursive: true });
+  writeFileSync(vbs, '\uFEFF' + f.entry, 'utf16le'); writeFileSync(join(f.dir, 'sync.vbs'), syncEntry);
+  const runner = (cmd, args) => {
+    const script = args.at(-1);
+    if (script.includes('ConvertTo-Json')) return script.includes('TokenWatcherForTokenRank') ? ''
+      : JSON.stringify({ Execute: 'wscript.exe', Arguments: `"${join(f.dir, 'sync.vbs')}"` });
+    return '';
+  };
+  const options = { home: f.home, dir: f.dir, platform: 'win32', found: { entry: f.entry }, runner };
+  const plans = updateServices({ ...options, requireServices: false });
+  assert.equal(plans.collector.length, 0); assert.equal(plans.sync.length, 1);
+  assert.throws(() => updateServices(options), /未找到可验证的采集和同步后台/);
+});
+
 test('Linux update checks the effective unit executable and preserves both unit files', t => {
   const f = fixture(t), syncEntry = join(f.dir, 'app/bin/tokenrank.js'), unitDir = join(f.home, '.config/systemd/user');
   mkdirSync(join(f.dir, 'app/bin'), { recursive: true }); writeFileSync(syncEntry, '// sync');
@@ -374,7 +452,15 @@ test('rescan helper treats upstream swallowed parse errors as failure, without l
   const f = fixture(t), root = join(f.home, 'scan-fixture'); mkdirSync(join(root, 'src'), { recursive: true });
   writeFileSync(join(root, 'package.json'), '{"type":"module"}');
   writeFileSync(join(root, 'src/store.js'), 'export class Store {close(){}}');
-  writeFileSync(join(root, 'src/scanner.js'), 'export class Scanner {stats={dsh:{parse_errors:1,last_error:"private-session-path"}};async scanAll(){return {files:1}}}');
+  writeFileSync(join(root, 'src/scanner.js'), 'export class Scanner {stats={dsh:{parse_errors:1,last_error:"2026-10-28T01:02:03.000Z ENOENT /Users/me/private-session-path.jsonl"}};async scanAll(){return {files:1}}}');
   const result = spawnSync(process.execPath, ['--no-warnings', new URL('../sync/rescan-worker.js', import.meta.url).pathname, root, f.dbPath], { encoding: 'utf8' });
   assert.equal(result.status, 1); assert.match(result.stderr, /1 个文件扫描失败/); assert.doesNotMatch(result.stderr, /private-session-path/);
+});
+
+test('scan failures name the tool and reason but never a path', () => {
+  const out = describeScanErrors({ codex: { parse_errors: 2, last_error: '2026-10-28T01:02:03.000Z EBUSY: resource busy or locked, open \'C:\\Users\\me\\.codex\\sessions\\a.jsonl\'' },
+    cursor: { parse_errors: 0 }, dsh: { parse_errors: 1, last_error: '2026-10-28T01:02:03.000Z bad /Users/me/proj/x.jsonl' } });
+  assert.equal(out.total, 3);
+  assert.equal(out.text, "原版有 3 个文件扫描失败（codex 2 个：EBUSY: resource busy or locked, open '<路径>'；dsh 1 个：bad <路径>）");
+  assert.equal(describeScanErrors({ codex: { parse_errors: 0 } }), null);
 });

@@ -27,7 +27,7 @@ node node-service.mjs
 
 ## 支持采集的终端
 
-采集分两层：统计内核 [token-watcher](https://github.com/luwill/token-watcher)（1.9.x，13 种 AI 编程工具）+ 本仓库在同步器内的补充采集。补充采集包括 Oort 系（[`client/sync/oort.js`](client/sync/oort.js)，详见 [`docs/oort-collection.md`](docs/oort-collection.md)）和 WorkBuddy 各版本、DevEco Code（[`client/sync/extra.js`](client/sync/extra.js)）。0.2.20 起，WorkBuddy / DevEco Code 的数据目录在**全部本地磁盘**上发现，不只看系统盘；只读取目录名和统计库，跳过系统与缓存目录，并排除 token-watcher 已覆盖的位置，避免重复计数。一台电脑可同时安装任意多个，用量按天汇总、按工具分别展示。
+采集分两层：统计内核 [token-watcher](https://github.com/luwill/token-watcher)（1.9.x，13 种 AI 编程工具）+ 本仓库在同步器内的补充采集。补充采集包括 Oort 系（[`client/sync/oort.js`](client/sync/oort.js)，详见 [`docs/oort-collection.md`](docs/oort-collection.md)）和 WorkBuddy 各版本、DevEco Code（[`client/sync/extra.js`](client/sync/extra.js)）。0.2.21 起，WorkBuddy / DevEco Code 的数据目录在**全部本地磁盘**上发现，不只看系统盘；只读取目录名和统计库，跳过系统与缓存目录，并排除 token-watcher 已覆盖的位置，避免重复计数。一台电脑可同时安装任意多个，用量按天汇总、按工具分别展示。
 
 **token-watcher 官方支持**
 
@@ -57,7 +57,7 @@ node node-service.mjs
 | OortOffice | 本地无 token 明细（LevelDB） | ❌ 需平台侧配合，方案见文档 |
 | OortCodex CLI | 本地暂无用量落盘 | ❌ 同上 |
 
-**WorkBuddy 与 DevEco Code 补充采集（本仓库新增，0.2.20 起全盘只读扫描）**
+**WorkBuddy 与 DevEco Code 补充采集（本仓库新增，0.2.21 起全盘只读扫描）**
 
 | 终端 | 数据源 | 状态 |
 |---|---|---|
@@ -136,7 +136,7 @@ tokenrank rank push --full --dry-run
 
 | 目录 | 内容 |
 |---|---|
-| `client/sync` | 电脑端同步器（当前 0.2.20）：接入、只读同步、心跳、超时恢复、更新重算、备份清理；含 Oort 系工具补充采集（`client/sync/oort.js`，见 [`docs/oort-collection.md`](docs/oort-collection.md)）与 WorkBuddy / DevEco Code 全盘补充采集（`client/sync/extra.js`） |
+| `client/sync` | 电脑端同步器（当前 0.2.21）：接入、只读同步、心跳、超时恢复、更新重算、备份清理；含 Oort 系工具补充采集（`client/sync/oort.js`，见 [`docs/oort-collection.md`](docs/oort-collection.md)）与 WorkBuddy / DevEco Code 全盘补充采集（`client/sync/extra.js`） |
 | `client/bin/tokenrank.js` | 同步器命令行入口 |
 | `server` | Cloudflare Worker、D1 表结构与迁移、安装和更新脚本；含飞书机器人（`server/src/feishu.js`）与 Node 单进程部署入口（`server/node-service.mjs` + `server/src/d1-node.mjs`） |
 | `miniprogram` | 原生微信小程序 |
