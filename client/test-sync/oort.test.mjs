@@ -87,6 +87,27 @@ test('collectOortDays 解析 AI Studio 的 Cline/Roo 请求记录（跨扩展、
   assert.equal(yesterday.requests, 1);
 });
 
+test('collectOortDays 采集 OortCodex 原生扩展 tasks 的请求用量，并与 AI Studio 分工具', (t) => {
+  const { home, done } = makeHome();
+  t.after(done);
+  const appData = join(home, 'appdata');
+  writeAiStudioTask(appData, 'oortcodex.oortcodex', 'task-codex', [
+    { ts: NOW, usage: { tokensIn: 1000, tokensOut: 100, cacheWrites: 0, cacheReads: 500, cost: 0 } },
+  ], NOW);
+  writeAiStudioTask(appData, 'saoudrizwan.claude-dev', 'task-cline', [
+    { ts: NOW, usage: { tokensIn: 200, tokensOut: 20, cacheWrites: 0, cacheReads: 0, cost: 0 } },
+  ], NOW);
+
+  const days = collectOortDays({ home, appData, log: () => {} });
+  assert.equal(days.length, 1);
+  assert.equal(days[0].tokens, 1820);
+  assert.equal(days[0].requests, 2);
+  assert.deepEqual(days[0].tools, [
+    [TOOL_NAMES.oortCodex, 1600],
+    [TOOL_NAMES.aiStudio, 220],
+  ]);
+});
+
 test('collectOortDays 同日多源合并、无数据目录时返回空', (t) => {
   const { home, done } = makeHome();
   t.after(done);

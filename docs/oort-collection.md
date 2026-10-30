@@ -8,9 +8,9 @@ TokenRank 的采集内核 token-watcher 官方支持 13 种 AI 编程工具，�
 
 | 产品 | 展示名 | 数据源 | 状态 |
 |---|---|---|---|
-| OortCodex（独立程序） | `OortCodex` | `%APPDATA%\OortCloud AI Studio\User\globalStorage\oortcodex.oortcodex\claude-agent-acp\projects` 下的 Claude Code 格式转录（逐条 `message.usage`，含缓存细分与毫秒时间戳） | ✅ 已生效。注意：OortCodex 与 ZCode 是两个独立程序——ZCode 由 token-watcher 按 `zcode` 采集（`~/.zcode`），二者互不合并、互不改名。OortCodex 的 codex-acp 后端 token_count 事件 `info` 为 null（该版本不落盘）、cline-acp 只存设置、`~/.oortcodex/cli` 为空，故 OortCodex CLI 暂无本地可用量数据 |
+| OortCodex（独立程序） | `OortCodex` | ① `%APPDATA%\OortCloud AI Studio\User\globalStorage\oortcodex.oortcodex\tasks\*\ui_messages.json` 中 `api_req_started` 消息尾带的 `{tokensIn, tokensOut, cacheReads, cacheWrites}`（原生扩展实际落盘，逐请求、毫秒时间戳）；② 同目录 `claude-agent-acp\projects` 下的 Claude Code 格式转录（逐条 `message.usage`，用于 acp 后端的安装） | ✅ 已生效（0.2.23 起补上 ①）。注意：OortCodex 与 ZCode 是两个独立程序——ZCode 由 token-watcher 按 `zcode` 采集（`~/.zcode`），二者互不合并、互不改名。codex-acp 后端 token_count 事件 `info` 为 null（该版本不落盘）、cline-acp 只存设置、`~/.oortcodex/cli` 为空，故 OortCodex CLI 暂无本地可用量数据 |
 | DSH For OortCloud Work | `DSH For OortCloud Work` | `~/.dsh-oortcloud-work/storages/session_projcache/sessions/*.json` 的 `tokenUsage.totals`（会话累计：uncachedInput / output / cacheRead / cacheWrite） | ✅ 已生效 |
-| OortCloud AI Studio | `OortCloud AI Studio` | `%APPDATA%\OortCloud AI Studio\User\globalStorage\{saoudrizwan.claude-dev, rooveterinaryinc.roo-cline}\tasks\...\ui_messages.json` 中 `api_req_started` 消息尾带的 `{tokensIn, tokensOut, cacheReads, cacheWrites}`（逐请求、带毫秒时间戳） | ✅ 已生效（覆盖 Cline/Roo 插件用量；原生 oortcodex 扩展只有上下文快照、无计费 token） |
+| OortCloud AI Studio | `OortCloud AI Studio` | `%APPDATA%\OortCloud AI Studio\User\globalStorage\{saoudrizwan.claude-dev, rooveterinaryinc.roo-cline}\tasks\...\ui_messages.json` 中 `api_req_started` 消息尾带的 `{tokensIn, tokensOut, cacheReads, cacheWrites}`（逐请求、带毫秒时间戳） | ✅ 已生效（Cline/Roo 插件用量）。原生 `oortcodex.oortcodex` 扩展的同类任务记录按 **OortCodex** 统计，不归入 AI Studio |
 | OortOffice | — | 本地聊天存于浏览器 Local Storage（LevelDB），无 token 明细 | ❌ 暂无法本地采集，见下 |
 
 刻意不读基础版 `~/.dsh`：token-watcher 官方支持该目录，读了会重复计数；只读 `-oortcloud-work` 变体。
@@ -52,6 +52,6 @@ new-api 令牌（OortCodex=43、OortOffice=90 等），按令牌即可区分产�
 node --test client/test-sync/oort.test.mjs   # 采集与合并的单元测试
 ```
 
-排障：同步日志中 `oort dsh 会话 … 解析失败，已跳过` / `oort ai-studio 任务 …` 为单文件容错
+排障：同步日志中 `oort dsh 会话 … 解析失败，已跳过` / `oort <扩展目录> 任务 …` 为单文件容错
 提示，不影响其余数据。设置环境变量 `TOKENRANK_OORT_DISABLE=1` 可临时关闭补充采集（测试亦用
 此开关做隔离）。
