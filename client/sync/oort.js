@@ -195,34 +195,48 @@ export function collectOortDays({ home = homedir(), appData = process.env.APPDAT
 }
 
 /**
- * 把 Oort 系日行合并进 token-watcher 的日行：
+ * 把补充采集的日行合并进 token-watcher 的日行：
  *   - 展示名重命名（zcode → OortCodex）同步作用于 tools 与 tool_models；
- *   - 同日数字相加、工具条目合并，tools/tool_models 按量取前 8（协议上限）；
+ *   - 同日数字相加，tools/models 按量取前 8，tool_models 按工具+模型合并后取前 128；
  *   - 返回新数组，不改入参。重命名会改变日指纹，相关日会在下次同步时整行重传。
  */
 export function mergeOortDays(days, oortDays = []) {
   const rename = (name) => TOOL_RENAME[name] || name;
+  const keyed = (pairs, map = new Map()) => {
+    for (const [name, tokens] of pairs || []) map.set(name, (map.get(name) || 0) + Number(tokens || 0));
+    return map;
+  };
+  const modelKey = (tool, model) => tool + '\u0000' + model;
   const out = days.map((day) => {
-    const tools = new Map();
-    for (const [tool, tokens] of day.tools || []) {
-      const key = rename(tool);
-      tools.set(key, (tools.get(key) || 0) + tokens);
+    const tools = keyed(day.tools), models = keyed(day.models), toolModels = new Map();
+    for (const [tool, model, tokens] of day.tool_models || []) {
+      const name = rename(tool), key = modelKey(name, model);
+      toolModels.set(key, (toolModels.get(key) || 0) + Number(tokens || 0));
     }
-    return { ...day, tools, tool_models: (day.tool_models || []).map(([tool, model, tokens]) => [rename(tool), model, tokens]) };
+    return { ...day, tools, models, tool_models: toolModels };
   });
   for (const oort of oortDays) {
     let day = out.find((d) => d.day === oort.day);
     if (!day) {
       day = { day: oort.day, tokens: 0, input_tokens: 0, output_tokens: 0, cache_read: 0, cache_write: 0,
-        requests: 0, models: [], tools: new Map(), tool_models: [] };
+        requests: 0, tools: new Map(), models: new Map(), tool_models: new Map() };
       out.push(day);
     }
     day.tokens += oort.tokens; day.input_tokens += oort.input_tokens; day.output_tokens += oort.output_tokens;
     day.cache_read += oort.cache_read; day.cache_write += oort.cache_write; day.requests += oort.requests;
-    for (const [tool, tokens] of oort.tools) day.tools.set(tool, (day.tools.get(tool) || 0) + tokens);
+    keyed(oort.tools, day.tools);
+    keyed(oort.models, day.models);
+    for (const [tool, model, tokens] of oort.tool_models || []) {
+      const name = rename(tool), key = modelKey(name, model);
+      day.tool_models.set(key, (day.tool_models.get(key) || 0) + Number(tokens || 0));
+    }
   }
+  const top = (map, limit) => [...map.entries()].filter(([, tokens]) => tokens > 0)
+    .sort((a, b) => b[1] - a[1] || String(a[0]).localeCompare(String(b[0]))).slice(0, limit);
   return out.sort((a, b) => a.day.localeCompare(b.day)).map((day) => ({
     ...day,
-    tools: [...day.tools.entries()].sort((a, b) => b[1] - a[1]).slice(0, 8),
+    tools: top(day.tools, 8),
+    models: top(day.models, 8),
+    tool_models: [...top(day.tool_models, 128)].map(([key, tokens]) => [...key.split('\u0000'), tokens]),
   }));
 }

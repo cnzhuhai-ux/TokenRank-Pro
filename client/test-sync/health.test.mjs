@@ -10,6 +10,8 @@ import {writeConfig,readConfig} from '../sync/config.js';
 import {sendHeartbeat,notifyStopped,readHealth,CLIENT_VERSION} from '../sync/health.js';
 import {startWatch,startCheck} from '../sync/watch.js';
 import {installAgent,windowsScript,plist} from '../sync/agent.js';
+// 真实子进程用例只验证核心同步；关闭补充采集，避免读到宿主机上的产品数据。
+process.env.TOKENRANK_OORT_DISABLE = '1';
 
 const sleep=ms=>new Promise(r=>setTimeout(r,ms));
 async function until(test) { const end=Date.now()+3000;while(!test()){if(Date.now()>end)throw new Error('condition timed out');await sleep(5);} }

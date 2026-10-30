@@ -27,7 +27,7 @@ node node-service.mjs
 
 ## 支持采集的终端
 
-采集分两层：统计内核 [token-watcher](https://github.com/luwill/token-watcher)（1.9.x，13 种 AI 编程工具）+ 本仓库的 Oort 系补充采集（[`client/sync/oort.js`](client/sync/oort.js)，详见 [`docs/oort-collection.md`](docs/oort-collection.md)）。一台电脑可同时安装任意多个，用量按天汇总、按工具分别展示。
+采集分两层：统计内核 [token-watcher](https://github.com/luwill/token-watcher)（1.9.x，13 种 AI 编程工具）+ 本仓库在同步器内的补充采集。补充采集包括 Oort 系（[`client/sync/oort.js`](client/sync/oort.js)，详见 [`docs/oort-collection.md`](docs/oort-collection.md)）和 WorkBuddy 各版本、DevEco Code（[`client/sync/extra.js`](client/sync/extra.js)）。0.2.20 起，WorkBuddy / DevEco Code 的数据目录在**全部本地磁盘**上发现，不只看系统盘；只读取目录名和统计库，跳过系统与缓存目录，并排除 token-watcher 已覆盖的位置，避免重复计数。一台电脑可同时安装任意多个，用量按天汇总、按工具分别展示。
 
 **token-watcher 官方支持**
 
@@ -44,7 +44,7 @@ node node-service.mjs
 | Antigravity | Google |
 | DSH（DeepSeek Harness） | 基础版（`~/.dsh`） |
 | ZCode | `~/.zcode`，桌面/CLI 一体 |
-| WorkBuddy | |
+| WorkBuddy | 官方覆盖 `~/.WorkBuddy/projects`；其他版本与安装位置由同步器补充采集 |
 | Lines | |
 
 **Oort 系补充采集（本仓库新增，只读各产品自己的本机状态目录）**
@@ -56,6 +56,17 @@ node node-service.mjs
 | OortCloud AI Studio | Cline/Roo 任务逐请求用量 | ✅ |
 | OortOffice | 本地无 token 明细（LevelDB） | ❌ 需平台侧配合，方案见文档 |
 | OortCodex CLI | 本地暂无用量落盘 | ❌ 同上 |
+
+**WorkBuddy 与 DevEco Code 补充采集（本仓库新增，0.2.20 起全盘只读扫描）**
+
+| 终端 | 数据源 | 状态 |
+|---|---|---|
+| WorkBuddy（国内版、国际版、便携安装） | 各产品目录下的 `projects/*.jsonl` 转录；只采集 token-watcher 未覆盖的目录，按消息 ID 去重 | ✅ |
+| DevEco Code | OpenCode 同构的 `deveco.db`（`session` / `message.data.tokens`） | ✅ |
+
+扫描范围是 Windows 的全部盘符、macOS 的 `/Volumes/*`、Linux 的 `/` 与 `/mnt/*`、`/media/*`；逐盘有界遍历并跳过系统、缓存和依赖目录，再补充检查 `APPDATA`、`LOCALAPPDATA`、`XDG_*` 和用户主目录等已知位置。单文件或单个统计库损坏只跳过该项并在同步日志中告警，不中断同步。
+
+同一个接入码可以同时接入多台电脑：服务端按设备分别保存日桶，同一天相加后进入榜单，单台设备重新上报只替换它自己的数据。
 
 <p align="center">
   <img src="miniprogram/assets/mini-program-code.jpg" width="220" alt="Token 群排名小程序码">
@@ -125,7 +136,7 @@ tokenrank rank push --full --dry-run
 
 | 目录 | 内容 |
 |---|---|
-| `client/sync` | 电脑端同步器（当前 0.2.16）：接入、只读同步、心跳、超时恢复、更新重算、备份清理；含 Oort 系工具补充采集（`client/sync/oort.js`，见 [`docs/oort-collection.md`](docs/oort-collection.md)） |
+| `client/sync` | 电脑端同步器（当前 0.2.20）：接入、只读同步、心跳、超时恢复、更新重算、备份清理；含 Oort 系工具补充采集（`client/sync/oort.js`，见 [`docs/oort-collection.md`](docs/oort-collection.md)）与 WorkBuddy / DevEco Code 全盘补充采集（`client/sync/extra.js`） |
 | `client/bin/tokenrank.js` | 同步器命令行入口 |
 | `server` | Cloudflare Worker、D1 表结构与迁移、安装和更新脚本；含飞书机器人（`server/src/feishu.js`）与 Node 单进程部署入口（`server/node-service.mjs` + `server/src/d1-node.mjs`） |
 | `miniprogram` | 原生微信小程序 |
@@ -165,7 +176,7 @@ node --test client/test-sync/*.test.mjs server/test/*.test.mjs miniprogram/test/
 
 ## 部署
 
-1. 新建数据库用 `server/schema.sql`；已有数据库只执行尚未执行过的迁移，当前最新 `0017_topups_and_api_key.sql`。`0009` 是注销并发保护，`0010` 新增心跳表，`0011` 为工具下的模型分布增加可选 JSON 列，`0012` 增加提醒预约和首次接入询问状态，`0013` 将常规提醒调整为昨日用量日报（不改用量），`0014` 仅增加私有邮箱登记表（不启用发信），`0015` 增加私有订阅记录表，`0016` 重建该表以支持六种币种，`0017` 增加按量充值记录表和订阅的 API Key 标记；必须先执行迁移再部署相应 Worker。当前正式库此前通过 SQL 文件逐项迁移，不要依赖 Wrangler 的迁移追踪表重跑全部迁移。
+1. 新建数据库用 `server/schema.sql`；已有数据库只执行尚未执行过的迁移，当前最新 `0021_multi_device.sql`。`0009` 是注销并发保护，`0010` 新增心跳表，`0011` 为工具下的模型分布增加可选 JSON 列，`0012` 增加提醒预约和首次接入询问状态，`0013` 将常规提醒调整为昨日用量日报（不改用量），`0014` 仅增加私有邮箱登记表（不启用发信），`0015` 增加私有订阅记录表，`0016` 重建该表以支持六种币种，`0017` 增加按量充值记录表和订阅的 API Key 标记，`0018` / `0019` 增加飞书接入与头像缓存，`0020` 增加积分记录，`0021` 让一个接入码按设备分别保存状态并在同一天相加；必须先执行 `0021` 再部署多设备 Worker。当前正式库此前通过 SQL 文件逐项迁移，不要依赖 Wrangler 的迁移追踪表重跑全部迁移。
 2. `cd client && npm run pack:dist`，然后在 `server` 目录 `npx wrangler deploy`，安装包和脚本作为静态资源一起发布。
 3. 在 `miniprogram/utils/env.js` 填服务端 HTTPS 域名；微信后台配置 request、uploadFile 合法域名（与之一致）；在「用户隐私保护指引」里声明“收集你的昵称、头像”和“选中的照片或视频信息”（头像选择的兜底）；启用邮箱登记时同时说明邮箱的收集用途、可选性与删除方式。
 4. 上传小程序，真机验收后提交审核。
@@ -190,7 +201,7 @@ node scripts/sync-status.mjs
 node scripts/sync-status.mjs --json   # 含每台设备的版本、状态、检查时间与错误码
 ```
 
-查询只读，使用操作者自己的 Cloudflare 权限，没有公开管理接口。列表包含曾完成同步或已有心跳的账号，默认按当前榜单来源设备展示，不把另一台在线设备当成当前用量来源在线。账号注销时同时删除心跳记录；重置接入码时清理旧状态。
+查询只读，使用操作者自己的 Cloudflare 权限，没有公开管理接口。列表包含曾完成同步或已有心跳的账号，版本和状态按最近联系的电脑展示，并列出参与榜单汇总的设备数；`--json` 可查看每台。账号注销时同时删除心跳记录；重置接入码时清理旧状态。
 
 后台进程由系统托管，异常退出后重启。读取和上传在独立子进程中执行，单次超过 15 分钟终止并在后续周期重试，心跳继续运行。电脑休眠时不会被唤醒。此状态监测的是 TokenRank 同步程序，不保证原版采集器持续采集；没有新增日志与原版停止采集仍需结合电脑状态检查。
 

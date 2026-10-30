@@ -1,5 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+// 固定用临时统计库：禁止补充采集读到真实机器上的产品数据
+process.env.TOKENRANK_OORT_DISABLE = '1';
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, existsSync, symlinkSync, realpathSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -10,6 +12,7 @@ import { readConfig, writeConfig } from '../sync/config.js';
 import { acquireLock } from '../sync/lock.js';
 import { sync } from '../sync/report.js';
 import { updateServices } from '../sync/update-services.js';
+const ADAPTER_VERSION = JSON.parse(readFileSync(new URL('../package.json', import.meta.url))).version;
 
 function pkg(root, version = '1.8.0') {
   mkdirSync(join(root, 'bin'), { recursive: true });
@@ -84,7 +87,7 @@ test('explicit update backs up old totals, upgrades and restarts, uploads reduce
   assert.equal(f.bodies[0].full, true); assert.equal(f.bodies[0].complete, true);
   assert.equal(f.bodies[0].days[0].tokens, 100); assert.equal(f.bodies[0].device_id, 'same-device');
   const c = readConfig(f.dir); assert.equal(c.token, 'a'.repeat(32)); assert.equal(c.last_update.status, 'complete');
-  assert.equal(JSON.parse(readFileSync(join(f.dir,'app/package.json'))).version,'0.2.16');
+  assert.equal(JSON.parse(readFileSync(join(f.dir,'app/package.json'))).version,ADAPTER_VERSION);
   assert.equal(readFileSync(join(c.last_update.adapter_backup,'bin/tokenrank.js'),'utf8'),'// previous sync');
   const backup = new DatabaseSync(c.last_update.backup, { readOnly: true });
   assert.equal(backup.prepare('SELECT SUM(total_tokens) t FROM events').get().t, 200); backup.close();

@@ -52,9 +52,16 @@ export async function storeTotalReport(env, conn, body, now = Date.now()) {
     return jsonError(426, '此账号已重建，请升级本机统计内核和同步脚本后再上传');
   const pending = await env.DB.prepare("SELECT 1 AS active FROM usage_replacements WHERE user_id=?1 AND status='collecting' AND expires_at>?2").bind(conn.user_id,now).first();
   if (pending) return jsonError(409, '此账号正在完整重建，请等待完成');
-  const state = await env.DB.prepare('SELECT device_id, source_at FROM usage_sync_state WHERE user_id=?1').bind(conn.user_id).first();
-  if ((!state || state.device_id !== body.device_id) && !body.full) return jsonError(409, '请执行 tokenrank rank push --full 完整同步此电脑');
-  if (state && body.source_at < state.source_at) return jsonError(409, '此批数据早于已同步记录，请重新同步');
+  // 每台电脑各自排序：同一接入码下的其他设备互不阻塞。
+  const device = await env.DB.prepare('SELECT source_at, active FROM usage_device_state WHERE user_id=?1 AND device_id=?2')
+    .bind(conn.user_id, body.device_id).first();
+  if (!device?.active && !body.full) {
+    // 升级到多设备前的旧电脑可能已有日桶但没有设备状态；这类补量允许直接续传。
+    const known = await env.DB.prepare('SELECT 1 AS found FROM daily_totals WHERE user_id=?1 AND device_id=?2 LIMIT 1')
+      .bind(conn.user_id, body.device_id).first();
+    if (!known) return jsonError(409, '请执行 tokenrank rank push --full 完整同步此电脑', 'FULL_SYNC_REQUIRED');
+  }
+  if (device && body.source_at < device.source_at) return jsonError(409, '此批数据早于已同步记录，请重新同步');
   const stmts = body.days.map(d => env.DB.prepare(`INSERT INTO daily_totals
     (user_id,device_id,day,tokens,input_tokens,output_tokens,cache_read,cache_write,requests,models_json,tools_json,source_at,updated_at,cost_json,tool_models_json,credits_json)
     SELECT ?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?15,?16,?17
@@ -68,6 +75,15 @@ export async function storeTotalReport(env, conn, body, now = Date.now()) {
       JSON.stringify(d.models),JSON.stringify(d.tools),body.source_at,now,guard?.source_at || 0,d.cost ? JSON.stringify(d.cost) : null,
       d.tool_models === undefined ? null : JSON.stringify(d.tool_models),
       d.credits === undefined ? null : JSON.stringify(d.credits)));
+  stmts.push(env.DB.prepare(`INSERT INTO usage_device_state (user_id,device_id,source_at,active,last_report_at,updated_at)
+    SELECT ?1,?2,?3,?4,?5,?5
+    WHERE COALESCE((SELECT source_at FROM usage_rebuild_guard WHERE user_id=?1),0)=?6
+      AND NOT EXISTS(SELECT 1 FROM usage_replacements WHERE user_id=?1 AND status='collecting' AND expires_at>?5)
+    ON CONFLICT(user_id,device_id) DO UPDATE SET
+      source_at=CASE WHEN excluded.source_at>usage_device_state.source_at THEN excluded.source_at ELSE usage_device_state.source_at END,
+      active=CASE WHEN excluded.active=1 THEN 1 ELSE usage_device_state.active END,
+      last_report_at=excluded.last_report_at,updated_at=excluded.updated_at`)
+    .bind(conn.user_id,body.device_id,body.source_at,body.complete ? 1 : 0,now,guard?.source_at || 0));
   if (body.complete) stmts.push(env.DB.prepare(`INSERT INTO usage_sync_state (user_id,device_id,source_at,updated_at)
     SELECT ?1,?2,?3,?4 WHERE COALESCE((SELECT source_at FROM usage_rebuild_guard WHERE user_id=?1),0)=?5
       AND NOT EXISTS(SELECT 1 FROM usage_replacements WHERE user_id=?1 AND status='collecting' AND expires_at>?4)

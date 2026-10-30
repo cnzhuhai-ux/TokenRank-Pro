@@ -531,14 +531,18 @@ async function report(request, env) {
   if (!owner) return jsonError(401, 'invalid connect token');
   if (owner?.disabled_at) return jsonError(403, '账号已停用');
   const now = Date.now();
-  if (conn.last_report_at && now - conn.last_report_at < REPORT_MIN_INTERVAL_MS) {
-    return Response.json({ error: '上报过于频繁，请稍后重试' }, { status: 429,
-      headers: { 'retry-after': String(Math.ceil((REPORT_MIN_INTERVAL_MS - (now - conn.last_report_at)) / 1000)) } });
-  }
-
   const len = Number(request.headers.get('content-length') || 0);
   if (len > MAX_REPORT_BODY) return jsonError(413, 'report too large');
   const body = await readJson(request);
+  // 限流按设备而不是按接入码：同一账号的多台电脑可以各自上报，互不挤占。
+  const device = typeof body?.device_id === 'string'
+    ? await env.DB.prepare('SELECT last_report_at FROM usage_device_state WHERE user_id=?1 AND device_id=?2')
+      .bind(conn.user_id, body.device_id).first()
+    : null;
+  if (device?.last_report_at && now - device.last_report_at < REPORT_MIN_INTERVAL_MS) {
+    return Response.json({ error: '上报过于频繁，请稍后重试' }, { status: 429,
+      headers: { 'retry-after': String(Math.ceil((REPORT_MIN_INTERVAL_MS - (now - device.last_report_at)) / 1000)) } });
+  }
   return storeTotalReport(env, conn, body, now);
 }
 

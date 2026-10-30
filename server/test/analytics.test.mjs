@@ -37,7 +37,7 @@ function basic(t) {
   const f = fixture(t); f.seed(1, 0, 100, [['A',60],['B',20]], [['X',80],['Y',20]]); f.seed(2, 0, 100, [['A',10],['B',90]], [['Y',100]]);
   f.seed(3, 0, 10000, [['A',10000]]); f.db.exec('UPDATE users SET rank_hidden=1 WHERE id=3');
   f.seed(4, 0, 10000, [['A',10000]]); f.db.exec('UPDATE users SET disabled_at=1 WHERE id=4');
-  f.seed(5, 0, 10000, [['A',10000]]); f.db.exec('DELETE FROM usage_sync_state WHERE user_id=5');
+  f.seed(5, 0, 10000, [['A',10000]]); f.db.exec('DELETE FROM usage_sync_state WHERE user_id=5; DELETE FROM usage_device_state WHERE user_id=5');
   f.seed(1, 0, 99999, [['private-wrong-device',99999]], [['wrong-model',99999]], 'old');
   return f;
 }

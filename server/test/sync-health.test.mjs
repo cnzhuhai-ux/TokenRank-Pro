@@ -77,25 +77,25 @@ test('在途心跳遇到注销或凭证轮换不能写回；轮换清理设备�
   assert.equal((await f.send()).status,401);
 });
 
-test('私有状态接口优先榜单来源设备，不泄漏到其他账号；运营报表一致',async t=>{
+test('私有状态接口汇总最近联系的设备，不泄漏到其他账号；运营报表一致',async t=>{
   const f=fixture(t);await f.send();
   f.db.prepare('INSERT INTO usage_sync_state VALUES(1,?,?,?)').run('device-a',f.now,f.now);
   await f.send({...f.body,device_id:'device-b',event_at:f.now+1,state:'error',error_code:'UPLOAD_FAILED'},'connect-1',f.now+1);
   for(const path of ['/api/me','/api/connect/token']) {
     const res=await worker.fetch(new Request('https://rank.test'+path,{headers:{authorization:'Bearer session-1'}}),f.env);
-    const body=await res.json();assert.equal(body.sync_health.device_id,'device-a');assert.equal(body.sync_health.agents.length,2);
+    const body=await res.json();assert.equal(body.sync_health.device_id,'device-b');assert.equal(body.sync_health.agents.length,2);
+    assert.equal(body.sync_health.devices,1);
     const other=await worker.fetch(new Request('https://rank.test'+path,{headers:{authorization:'Bearer session-2'}}),f.env);
     assert.equal((await other.json()).sync_health.supported,false);
   }
-  const rows=f.db.prepare("SELECT *, 'device-a' AS ranked_device_id, '测试' AS nickname, 10 AS last_report_at FROM sync_agents").all();
+  const rows=f.db.prepare("SELECT *, '测试' AS nickname, 10 AS last_report_at FROM sync_agents").all();
   const report=summarize([...rows,{user_id:2,nickname:null,last_report_at:5}],f.now+10);
-  assert.equal(report.users,2);assert.equal(report.states.online,1);assert.equal(report.states.unknown,1);
-  assert.equal(report.accounts[0].current.device_id,'device-a');
+  assert.equal(report.users,2);assert.equal(report.states.error,1);assert.equal(report.states.unknown,1);
+  assert.equal(report.accounts[0].current.device_id,'device-b');
   f.db.exec("UPDATE usage_sync_state SET device_id='legacy-device' WHERE user_id=1");
   const legacy=await syncHealth(f.env,1,f.now+10);
-  assert.equal(legacy.supported,false);assert.equal(legacy.state,'unknown');assert.equal(legacy.agents.length,2);
-  const legacyReport=summarize(rows.map(row=>({...row,ranked_device_id:'legacy-device'})),f.now+10);
-  assert.equal(legacyReport.states.unknown,1);assert.equal(legacyReport.accounts[0].current,undefined);
+  assert.equal(legacy.supported,true);assert.equal(legacy.devices,2);assert.equal(legacy.agents.length,2);
+  assert.equal(summarize(rows,f.now+10).accounts[0].current.device_id,'device-b');
   f.db.exec(readFileSync(new URL('../migrations/0010_sync_agents.sql',import.meta.url),'utf8'));
   assert.equal(f.db.prepare('SELECT COUNT(*) n FROM sync_agents').get().n,2);
 });

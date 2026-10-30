@@ -109,7 +109,7 @@ test('趋势排名按每项使用人数去重及Token双口径，排除隐藏、
   f.seed(1,end,100,{tools:[['A',10],['B',90]],models:[['X',100]]}); f.seed(1,addDays(end,-1),100,{tools:[['A',100]]});
   f.seed(2,end,500,{tools:[['B',500],['C',1]],models:[['Y',500]]}); f.seed(1,old,200,{tools:[['A',200]]}); f.seed(2,old,800,{tools:[['B',800]]});
   f.seed(3,end,99999); f.seed(4,end,99999); f.seed(5,end,99999); f.seed(1,end,99999,{device:'old',tools:[['private-device',99999]]});
-  f.db.exec('UPDATE users SET rank_hidden=1 WHERE id=3; UPDATE users SET disabled_at=1 WHERE id=4; DELETE FROM usage_sync_state WHERE user_id=5');
+  f.db.exec('UPDATE users SET rank_hidden=1 WHERE id=3; UPDATE users SET disabled_at=1 WHERE id=4; DELETE FROM usage_sync_state WHERE user_id=5; DELETE FROM usage_device_state WHERE user_id=5');
   const before=f.db.prepare('SELECT total_changes() n').get().n;
   const people=(await f.request('/api/insights/trends')).data;
   assert.equal(people.summary.tokens,700); assert.equal(people.summary.users,2); assert.equal(people.entries[0].name,'B'); assert.equal(people.entries[0].users,2);

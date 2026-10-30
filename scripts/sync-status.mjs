@@ -9,13 +9,13 @@ export const STATUS_NAMES={unknown:'旧版／状态未知',online:'在线',check
 export function summarize(rows, now=Date.now()) {
   const users=new Map();
   for(const row of rows) {
-    if(!users.has(row.user_id)) users.set(row.user_id,{user_id:row.user_id,nickname:row.nickname||'未填写昵称',last_report_at:row.last_report_at,ranked_device_id:row.ranked_device_id||null,state:'unknown',devices:[]});
+    if(!users.has(row.user_id)) users.set(row.user_id,{user_id:row.user_id,nickname:row.nickname||'未填写昵称',last_report_at:row.last_report_at,ranked_devices:row.ranked_devices||0,state:'unknown',devices:[]});
     const user=users.get(row.user_id);
-    if(row.device_id) user.devices.push({...presentAgent(row,now),ranked:row.device_id===row.ranked_device_id});
+    if(row.device_id) user.devices.push(presentAgent(row,now));
   }
   for(const user of users.values()) {
-    user.devices.sort((a,b)=>Number(b.ranked)-Number(a.ranked)||b.last_seen_at-a.last_seen_at);
-    const current=user.ranked_device_id?user.devices.find(d=>d.ranked):user.devices[0];
+    user.devices.sort((a,b)=>b.last_seen_at-a.last_seen_at);
+    const current=user.devices[0];
     if(current) Object.assign(user,{state:current.state,current});
   }
   const list=[...users.values()];
@@ -26,7 +26,8 @@ if(process.argv[1] && resolve(process.argv[1])===fileURLToPath(import.meta.url))
   try {
     const args=process.argv.slice(2);
     if(args.some(a=>!['--json','--local'].includes(a))) throw new Error('用法：node scripts/sync-status.mjs [--json] [--local]');
-    const sql=`SELECT u.id AS user_id,u.nickname,c.last_report_at,s.device_id AS ranked_device_id,
+    const sql=`SELECT u.id AS user_id,u.nickname,c.last_report_at,
+      (SELECT COUNT(*) FROM usage_device_state d WHERE d.user_id=u.id AND d.active=1) AS ranked_devices,
       a.device_id,a.platform,a.state,a.client_version,a.collector_version,a.error_code,
       a.last_seen_at,a.checked_at,a.check_started_at,a.source_day
       FROM users u LEFT JOIN connect_tokens c ON c.user_id=u.id
@@ -45,7 +46,7 @@ if(process.argv[1] && resolve(process.argv[1])===fileURLToPath(import.meta.url))
       console.table(report.accounts.map(u=>({用户:u.nickname,ID:u.user_id,状态:STATUS_NAMES[u.state],
         平台:u.current?.platform||'—',版本:u.current?.client_version||'—',最近联系:date(u.current?.last_seen_at),
         最近检查:date(u.current?.last_check_at),最近上传:date(u.last_report_at),错误:u.current?.error_code||'—',设备数:u.devices.length})));
-      console.log('状态按当前榜单来源设备展示；--json 可查看其他设备。未联系不能区分休眠、断网和程序退出；旧版没有心跳。');
+      console.log('状态按最近联系的电脑展示；一个接入码可接多台电脑，--json 可查看每台。未联系不能区分休眠、断网和程序退出；旧版没有心跳。');
     }
   } catch(error) { console.error('查询同步状态失败：'+error.message);process.exitCode=1; }
 }

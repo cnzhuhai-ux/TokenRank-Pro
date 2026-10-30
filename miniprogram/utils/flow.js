@@ -30,6 +30,7 @@ function connection(user, now = Date.now()) {
   return {
     connState,
     hasReported: !!last,
+    devices: health?.devices || 0,
     connText: labels[state] || (last?'运行状态未知 · 上次上传 '+api.fmtRelTime(last):'等待电脑接入'),
     connHint: state==='online' && health?.update_available
       ? '电脑端同步程序有新版本，可在「使用说明」复制更新命令运行一次。' : hints[state],

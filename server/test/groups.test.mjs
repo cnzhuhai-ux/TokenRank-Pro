@@ -659,25 +659,25 @@ test('新快照允许历史下调，重复上报不累加，过期快照与 v1 �
   const f=fixture(t),send=reportClient(f);const stamp=Date.now()-1000;
   assert.equal((await send(totalReport(100,{source_at:stamp}))).status,200);
   const limited=await send(totalReport(20));assert.equal(limited.status,429);assert.ok(Number(limited.headers.get('retry-after'))>0);
-  f.db.exec('UPDATE connect_tokens SET last_report_at=0');assert.equal((await send(totalReport(20,{source_at:stamp+1,full:false}))).status,200);
-  f.db.exec('UPDATE connect_tokens SET last_report_at=0');assert.equal((await send(totalReport(20,{source_at:stamp+1,full:false}))).status,200);
+  f.db.exec('UPDATE usage_device_state SET last_report_at=0');assert.equal((await send(totalReport(20,{source_at:stamp+1,full:false}))).status,200);
+  f.db.exec('UPDATE usage_device_state SET last_report_at=0');assert.equal((await send(totalReport(20,{source_at:stamp+1,full:false}))).status,200);
   assert.equal(f.db.prepare('SELECT tokens FROM ranked_usage').get().tokens,20);
-  f.db.exec('UPDATE connect_tokens SET last_report_at=0');assert.equal((await send(totalReport(999,{source_at:stamp}))).status,409);
+  f.db.exec('UPDATE usage_device_state SET last_report_at=0');assert.equal((await send(totalReport(999,{source_at:stamp}))).status,409);
   assert.equal((await send({v:1,days:[]})).status,426);
   assert.equal(f.db.prepare('SELECT tokens FROM ranked_usage').get().tokens,20);
 });
-test('初次历史分批结束前不入榜，旧 UTC 口径不混入，切换电脑须完整同步',async t=>{
+test('初次历史分批结束前不入榜，旧 UTC 口径不混入，新电脑须完整同步且两台按天合并',async t=>{
   const f=fixture(t),send=reportClient(f);
   f.db.prepare('INSERT INTO daily_stats(user_id,day,tokens,updated_at) VALUES(?,?,?,?)').run(1,beijingDay(),999,Date.now());
   assert.equal((await f.request('/api/my/usage')).status,409);
   assert.equal((await send(totalReport(100,{complete:false}))).status,200);
   assert.equal((await f.request('/api/leaderboard')).data.entries.length,0);
-  f.db.exec('UPDATE connect_tokens SET last_report_at=0');assert.equal((await send(totalReport(100))).status,200);
+  f.db.exec('UPDATE usage_device_state SET last_report_at=0');assert.equal((await send(totalReport(100))).status,200);
   assert.equal((await f.request('/api/my/usage')).data.summary.tokens,100);
   assert.equal(f.db.prepare('SELECT tokens FROM daily_stats').get().tokens,999);
-  f.db.exec('UPDATE connect_tokens SET last_report_at=0');assert.equal((await send(totalReport(500,{device_id:'other',full:false}))).status,409);
+  f.db.exec('UPDATE usage_device_state SET last_report_at=0');assert.equal((await send(totalReport(500,{device_id:'other',full:false}))).status,409);
   assert.equal((await send(totalReport(500,{device_id:'other'}))).status,200);
-  assert.equal((await f.request('/api/my/usage')).data.summary.tokens,500);
+  assert.equal((await f.request('/api/my/usage')).data.summary.tokens,600);
 });
 test('不截断不合法总量、日期或分类；整批拒绝，不写入部分数据',async t=>{
   const f=fixture(t),send=reportClient(f);

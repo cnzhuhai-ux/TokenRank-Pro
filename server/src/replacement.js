@@ -28,7 +28,7 @@ export async function storeReplacement(env, conn, body, now) {
     await prepare(`INSERT INTO usage_replacements
       (user_id,id,device_id,source_at,total_days,batch_count,client_version,collector_version,status,expires_at)
       SELECT ?1,?2,?3,?4,?5,?6,?7,?8,'collecting',?9
-      WHERE NOT EXISTS(SELECT 1 FROM usage_sync_state WHERE user_id=?1 AND source_at>?4)
+      WHERE NOT EXISTS(SELECT 1 FROM usage_device_state WHERE user_id=?1 AND device_id=?3 AND source_at>?4)
         AND COALESCE((SELECT source_at FROM usage_rebuild_guard WHERE user_id=?1),0)=?11
       ON CONFLICT(user_id) DO UPDATE SET id=excluded.id,device_id=excluded.device_id,source_at=excluded.source_at,
       total_days=excluded.total_days,batch_count=excluded.batch_count,client_version=excluded.client_version,
@@ -63,11 +63,13 @@ export async function storeReplacement(env, conn, body, now) {
     return jsonError(409, '重建数据尚未完整，或日期重复；云端旧用量未清除');
   const committing = "EXISTS(SELECT 1 FROM usage_replacements WHERE user_id=?1 AND id=?2 AND status='committing')";
   // D1 batch is one transaction. All deletes and inserts share a guarded commit marker.
+  // 重建只替换发起设备自己的日桶，同账号其他电脑的用量原样保留。
   await env.DB.batch([
     prepare(`UPDATE usage_replacements SET status='committing' WHERE user_id=?1 AND id=?2 AND status='collecting' AND expires_at>?3
-      AND NOT EXISTS(SELECT 1 FROM usage_sync_state WHERE user_id=?1 AND source_at>?4)
-      AND COALESCE((SELECT source_at FROM usage_rebuild_guard WHERE user_id=?1),0)=?5`,uid,id,now,body.source_at,guard?.source_at || 0),
-    prepare(`DELETE FROM daily_totals WHERE user_id=?1 AND ${committing}`,uid,id),
+      AND NOT EXISTS(SELECT 1 FROM usage_device_state WHERE user_id=?1 AND device_id=?6 AND source_at>?4)
+      AND COALESCE((SELECT source_at FROM usage_rebuild_guard WHERE user_id=?1),0)=?5`,
+      uid,id,now,body.source_at,guard?.source_at || 0,body.device_id),
+    prepare(`DELETE FROM daily_totals WHERE user_id=?1 AND device_id=?3 AND ${committing}`,uid,id,body.device_id),
     prepare(`DELETE FROM daily_stats WHERE user_id=?1 AND ${committing}`,uid,id),
     prepare(`INSERT INTO daily_totals(user_id,device_id,day,tokens,input_tokens,output_tokens,cache_read,cache_write,requests,models_json,tools_json,source_at,updated_at,cost_json,tool_models_json,credits_json)
       SELECT ?1,?3,json_extract(d.value,'$.day'),json_extract(d.value,'$.tokens'),json_extract(d.value,'$.input_tokens'),
@@ -75,6 +77,11 @@ export async function storeReplacement(env, conn, body, now) {
       json_extract(d.value,'$.requests'),json_extract(d.value,'$.models'),json_extract(d.value,'$.tools'),?4,?5,json_extract(d.value,'$.cost'),json_extract(d.value,'$.tool_models'),json_extract(d.value,'$.credits')
       FROM usage_replacement_chunks c,json_each(c.days_json) d WHERE c.user_id=?1 AND c.replacement_id=?2 AND ${committing}`,
     uid,id,body.device_id,body.source_at,now),
+    prepare(`INSERT INTO usage_device_state(user_id,device_id,source_at,active,last_report_at,updated_at)
+      SELECT ?1,?3,?4,1,?5,?5 WHERE ${committing}
+      ON CONFLICT(user_id,device_id) DO UPDATE SET active=1,
+      source_at=CASE WHEN excluded.source_at>usage_device_state.source_at THEN excluded.source_at ELSE usage_device_state.source_at END,
+      last_report_at=excluded.last_report_at,updated_at=excluded.updated_at`,uid,id,body.device_id,body.source_at,now),
     prepare(`INSERT INTO usage_sync_state(user_id,device_id,source_at,updated_at) SELECT ?1,?3,?4,?5 WHERE ${committing}
       ON CONFLICT(user_id) DO UPDATE SET device_id=excluded.device_id,source_at=excluded.source_at,updated_at=excluded.updated_at`,uid,id,body.device_id,body.source_at,now),
     prepare(`INSERT INTO usage_rebuild_guard(user_id,client_version,collector_version,source_at) SELECT ?1,?3,?4,?5 WHERE ${committing}

@@ -1,6 +1,6 @@
 # TokenRank 独立同步器
 
-v0.2.16 为独立只读适配器，接入原版 [luwill/token-watcher](https://github.com/luwill/token-watcher)。Node.js 22.13+，无第三方运行依赖。
+v0.2.20 为独立只读适配器，接入原版 [luwill/token-watcher](https://github.com/luwill/token-watcher)。Node.js 22.13+，无第三方运行依赖。
 
 更换服务器、接入码或统计库后，会重新全量上传本机保留的历史用量，包含注销后重新接入的情况。上传中断可分批续传；重复执行同一账号的接入命令不会重传未变化的日期。
 
@@ -87,11 +87,11 @@ v0.2.10 增加独立心跳：启动、检查完成及每 5 分钟报告状态。
 
 心跳缓存单独写入 `~/.tokenrank/health/config.json`，不与同步子进程争写检查点。`rank status` 输出最近一次确认的心跳；这是历史状态，不保证当前正在运行。`rank off` 先在本机断开，再尽力发送关闭通知；网络不可用时服务器只能显示失联。`uninstall-agent` 和 `uninstall` 同样发送明确停止事件。小程序会分别显示最后联系、检查和上传时间，旧版无心跳时标为未知。
 
-默认每 5 分钟读取同一个 SQLite 快照，包含已提交的 WAL 记录；扫描全部已保留历史以发现旧日期变更。北京时间日桶、主用量直接读取原版 total_tokens（含缓存），input_tokens、output_tokens、缓存读写单列。工具、模型按原版总量各保留每日用量前 8 项，服务端将未分类差额单列。
+默认每 5 分钟读取同一个 SQLite 快照，包含已提交的 WAL 记录；扫描全部已保留历史以发现旧日期变更。北京时间日桶、主用量直接读取原版 total_tokens（含缓存），input_tokens、output_tokens、缓存读写单列。工具、模型按原版总量各保留每日用量前 8 项，服务端将未分类差额单列。补充采集（Oort 系、WorkBuddy 各版本、DevEco Code）随后并入相同日桶，同样受前 8 项工具与模型、128 组工具—模型限制；金额估算仍只基于原版可识别的模型。
 
 历史按最多 400 天且小于 450 KiB 分批发送，无总历史天数截断；每批得到完整确认后才保存检查点。失败批次留待重试，429 按 Retry-After 等待，401 提示重新接入。超出当前计数协议范围会停止同步并提示，不裁剪源数据。原版升级后缺少必要字段时停止上报，不修改或自动升级原库。
 
-“无损”指原版安装和统计数据不被适配器改写，不代表两个产品展示完全一致，也不承诺未来数据库结构始终兼容。服务端按来源快照更新，支持历史下调或已删除日期归零；一个账号显示最近完成完整接入的电脑，多个独立设备尚不能相加。维度明细仍受前 8 项协议限制。
+“无损”指原版安装和统计数据不被适配器改写，不代表两个产品展示完全一致，也不承诺未来数据库结构始终兼容。服务端按设备保存来源快照，支持历史下调或已删除日期归零；同一个接入码可同时接入多台电脑，榜单按天累加各台设备的日桶，单台设备重新上报只替换它自己的数据。维度明细仍受前 8 项协议限制。
 
 ## 排查与卸载
 
@@ -137,3 +137,14 @@ token-watcher 1.8 首次迁移 Codex 去重键时，会在统计库里留下一�
 ## 工具下的模型分布（0.2.16）
 
 只读按事件的工具与模型联合分组，日桶新增 `tool_models: [[工具, 模型, 含缓存总量], ...]`，最多保留 128 组。现有工具与模型各自的前八项、总用量和金额口径保持不变。超出保留范围或缺少工具／模型的用量仍计入总量，在小程序中显示为未关联模型。字段参与同步指纹，升级后的下一次正常同步会补传保留历史，不需要重算或清空云端数据。旧同步器仍可上报，缺少关联明细不会被猜测为某个模型。
+
+## 全盘补充采集（0.2.20）
+
+原版 token-watcher 对 WorkBuddy 只扫 `~/.WorkBuddy/projects`，也不认识 DevEco Code。0.2.20 在同步器内增加 [`sync/extra.js`](sync/extra.js)：
+
+- **全部磁盘发现**：Windows 遍历 C–Z 盘符，macOS 遍历 `/Volumes/*`，Linux 遍历 `/`、`/mnt/*`、`/media/*`；每盘最多向下 5 层，跳过 `Windows`、`Program Files`、`node_modules`、缓存等系统目录，再补充检查 `APPDATA`、`LOCALAPPDATA`、`XDG_DATA_HOME`、`XDG_CONFIG_HOME` 和主目录。
+- **WorkBuddy**：识别 `.WorkBuddy`、`.workbuddy-ai`、`.workbuddy-cn`、`.workbuddy-intl`、`WorkBuddy AI` 等产品目录，只读取其中的 `*.jsonl` 转录。排除原版已覆盖的 `~/.WorkBuddy/projects` 和 `~/.tokenmeter/extra-roots.json` 登记的目录，避免重复计数；同一消息 ID 只计一次。
+- **DevEco Code**：读取 OpenCode 同构的 `deveco.db`，按 `message.data.tokens` 中的 input / output / cache.read / cache.write 汇总，reasoning 已包含在 output 内，不重复相加。
+- **容错**：每个文件或数据库单独捕获异常，损坏项写入同步日志后跳过，不影响其他来源和正常上报。数据目录只读，不修改任何产品文件。
+
+`TOKENRANK_OORT_DISABLE=1` 可关闭全部补充采集，`TOKENRANK_EXTRA_DISABLE=1` 只关闭 WorkBuddy / DevEco 部分。

@@ -28,6 +28,7 @@
     <view wx:if="{{error}}" class="error-note">{{error}}</view>
     <view wx:else class="status status-{{connState}}"><text class="dot"></text><text>{{connText}}</text></view>
     <view class="pending-note" wx:if="{{!error}}">{{connHint}}</view>
+    <view class="pending-note" wx:if="{{!error && devices > 1}}">已接入 {{devices}} 台电脑，用量按天合并。</view>
     <view class="sync-times" wx:if="{{!error}}"><view class="sync-time" wx:for="{{syncTimes}}" wx:key="label"><text>{{item.label}}</text><text>{{item.value}}</text></view></view>
     <button class="btn btn-primary wide return-button" wx:if="{{hasReported && !error}}" bindtap="goBoard">{{sourceGroup ? '查看本群排名' : '查看我的用量'}}</button>
     <button wx:if="{{hasReported}}" class="text-button" bindtap="goReminders">同步异常提醒设置</button>

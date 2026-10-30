@@ -78,8 +78,8 @@ export function sanitizeGroupName(raw) {
   return sanitizeName(raw, GROUP_NAME_MAX);
 }
 
-export function jsonError(status, message) {
-  return Response.json({ error: message }, { status });
+export function jsonError(status, message, code) {
+  return Response.json({ error: message, ...(code ? { code } : {}) }, { status });
 }
 
 /** Bearer 解析；没有返回 null */

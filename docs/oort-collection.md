@@ -15,6 +15,8 @@ TokenRank 的采集内核 token-watcher 官方支持 13 种 AI 编程工具，�
 
 刻意不读基础版 `~/.dsh`：token-watcher 官方支持该目录，读了会重复计数；只读 `-oortcloud-work` 变体。
 
+同一套补充合并流程还接入 WorkBuddy 各版本与 DevEco Code：由 [`client/sync/extra.js`](../client/sync/extra.js) 在全部本地磁盘上发现数据目录，排除 token-watcher 已覆盖的位置后并入日桶。详见 [`client/README.md`](../client/README.md) 的「全盘补充采集（0.2.20）」。
+
 ## 口径说明
 
 - **总量含缓存**，与项目主口径一致：`tokens = input + output + cache_read + cache_write`。

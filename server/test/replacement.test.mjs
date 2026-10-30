@@ -66,7 +66,7 @@ test('联合明细普通上报、重建和重试保留一致，旧客户端新�
   assert.equal(read(),null);
 });
 
-test('replacement stays invisible until complete; commit removes old days, devices and legacy totals only for this account', async t=>{
+test('replacement stays invisible until complete; commit replaces only the reporting device, keeps other computers and legacy totals scoped to this account', async t=>{
   const f=fixture(t), before=f.rows(1), other=f.rows(2);
   f.db.exec(`INSERT INTO daily_totals SELECT user_id,'old-device',day,tokens,input_tokens,output_tokens,cache_read,cache_write,requests,models_json,tools_json,source_at,updated_at,cost_json,tool_models_json,credits_json FROM daily_totals WHERE user_id=1;
     INSERT INTO daily_stats(user_id,day,tokens,updated_at) VALUES(1,'2025-01-01',999,1);
@@ -76,7 +76,7 @@ test('replacement stays invisible until complete; commit removes old days, devic
   const first=await f.send(f.part(0,2,[day('2026-02-01',20)],2));assert.equal(first.status,200);assert.equal((await first.json()).committed,false);
   assert.deepEqual(f.rows(1),retained);
   const last=await f.send(f.part(1,2,[day('2026-02-02',30)],2));assert.equal(last.status,200);assert.equal((await last.json()).committed,true);
-  assert.deepEqual(f.rows(1).map(r=>[r.day,r.tokens]),[['2026-02-01',20],['2026-02-02',30]]);
+  assert.deepEqual(f.rows(1).map(r=>[r.device_id,r.day,r.tokens]),[['old-device','2026-01-01',900],['same-device','2026-02-01',20],['same-device','2026-02-02',30]]);
   assert.deepEqual(f.rows(2),other);assert.equal(f.db.prepare('SELECT COUNT(*) n FROM daily_stats WHERE user_id=1').get().n,0);
   assert.equal(f.db.prepare('SELECT COUNT(*) n FROM rank_group_members WHERE user_id=1').get().n,1);
   assert.equal(f.db.prepare('SELECT nickname FROM users WHERE id=1').get().nickname,'name-1');

@@ -13,6 +13,7 @@ import { MIN_REPORT_VERSION } from '../sync/upstream.js';
 import { installAgent, uninstallAgent, migrateLegacyAgent, LABEL } from '../sync/agent.js';
 import { acquireLock } from '../sync/lock.js';
 import { createHash } from 'node:crypto';
+const ADAPTER_VERSION = JSON.parse(readFileSync(new URL('../package.json', import.meta.url))).version;
 
 function fixture(t, count=1) {
   const root=mkdtempSync(join(tmpdir(),'tokenrank-sync-test-')), dir=join(root,'rank'), source=join(root,'upstream');
@@ -177,7 +178,7 @@ test('shell installer stages package, keeps original service/data, installs isol
   let reports=0;const server=createServer((req,res)=>{let body='';req.on('data',c=>body+=c);req.on('end',()=>{res.setHeader('content-type','application/json');if(req.url==='/registry/token-watcher/latest')return res.end(JSON.stringify({name:'token-watcher',version:'1.8.3'}));reports++;res.end(JSON.stringify({ok:true,accepted:JSON.parse(body).days.length}));});});
   await new Promise(r=>server.listen(0,'127.0.0.1',r));t.after(()=>{server.closeAllConnections();server.close();});
   const project=new URL('../../',import.meta.url).pathname;
-  const pkgPath=join(project,'server/public/dl/tokenrank-client-0.2.16.tar.gz'),pkgSha=join(f.root,'package.sha256');
+  const pkgPath=join(project,'server/public/dl/tokenrank-client-'+ADAPTER_VERSION+'.tar.gz'),pkgSha=join(f.root,'package.sha256');
   writeFileSync(pkgSha,createHash('sha256').update(readFileSync(pkgPath)).digest('hex')+'\n');
   const snapshot=readFileSync(f.path+'-wal');
   const env={...process.env,HOME:home,PATH:fakeBin+':'+process.env.PATH,TOKENRANK_REGISTRY:`http://127.0.0.1:${server.address().port}/registry/`,TEST_PACKAGE:pkgPath,TEST_PACKAGE_SHA:pkgSha,TEST_SERVICES:join(f.root,'services.log')};
@@ -186,7 +187,7 @@ test('shell installer stages package, keeps original service/data, installs isol
   assert.equal(readFileSync(original,'utf8'),originalText);assert.deepEqual(readFileSync(f.path+'-wal'),snapshot);
   assert.ok(readdirSync(own).some(x=>x.startsWith('app-backup-')));
   assert.match(readFileSync(env.TEST_SERVICES,'utf8'),/com.tokenrank.sync/);assert.doesNotMatch(readFileSync(env.TEST_SERVICES,'utf8'),/(bootout|bootstrap).*com.tokenwatcher/);
-  const result=await exec(join(home,'.local/bin/tokenrank'),['--version'],{env});assert.equal(result.stdout.trim(),'0.2.16');
+  const result=await exec(join(home,'.local/bin/tokenrank'),['--version'],{env});assert.equal(result.stdout.trim(),ADAPTER_VERSION);
   assert.equal(existsSync(join(own,'app/src')),false);assert.equal(existsSync(join(own,'app/web')),false);
 });
 
@@ -209,7 +210,7 @@ if(cmd==='scan'){const folder=join(homedir(),'.tokenmeter');mkdirSync(folder,{re
     reports++;res.end(JSON.stringify({ok:true,accepted:JSON.parse(body).days.length}));});});
   await new Promise(r=>server.listen(0,'127.0.0.1',r));t.after(()=>{server.closeAllConnections();server.close();});
   const project=new URL('../../',import.meta.url).pathname;
-  const pkgPath=join(project,'server/public/dl/tokenrank-client-0.2.16.tar.gz'),pkgSha=join(f.root,'package.sha256');
+  const pkgPath=join(project,'server/public/dl/tokenrank-client-'+ADAPTER_VERSION+'.tar.gz'),pkgSha=join(f.root,'package.sha256');
   writeFileSync(pkgSha,createHash('sha256').update(readFileSync(pkgPath)).digest('hex')+'\n');
   const env={...process.env,HOME:home,PATH:bin+':/usr/bin:/bin',TOKENRANK_REGISTRY:`http://127.0.0.1:${server.address().port}/registry/`,TEST_PACKAGE:pkgPath,TEST_PACKAGE_SHA:pkgSha,TEST_TEMPLATE:template,TEST_ORIGINAL_ACTIONS:join(f.root,'actions.log')};
   const args=[join(project,'server/public/install.sh'),`http://127.0.0.1:${server.address().port}`,f.config.token];
@@ -243,7 +244,7 @@ test('shell install over a pre-fix original uploads nothing and points to the up
   let reports=0;const server=createServer((req,res)=>{res.setHeader('content-type','application/json');if(req.url==='/registry/token-watcher/latest')return res.end(JSON.stringify({name:'token-watcher',version:'1.8.3'}));reports++;res.end('{}');});
   await new Promise(r=>server.listen(0,'127.0.0.1',r));t.after(()=>{server.closeAllConnections();server.close();});
   const project=new URL('../../',import.meta.url).pathname;
-  const pkgPath=join(project,'server/public/dl/tokenrank-client-0.2.16.tar.gz'),pkgSha=join(f.root,'package.sha256');
+  const pkgPath=join(project,'server/public/dl/tokenrank-client-'+ADAPTER_VERSION+'.tar.gz'),pkgSha=join(f.root,'package.sha256');
   writeFileSync(pkgSha,createHash('sha256').update(readFileSync(pkgPath)).digest('hex')+'\n');
   const env={...process.env,HOME:home,PATH:fakeBin+':'+process.env.PATH,TOKENRANK_REGISTRY:`http://127.0.0.1:${server.address().port}/registry/`,TEST_PACKAGE:pkgPath,TEST_PACKAGE_SHA:pkgSha};
   let out;await assert.rejects(exec('sh',[join(project,'server/public/install.sh'),`http://127.0.0.1:${server.address().port}`,f.config.token],{env}),error=>{out=error;return error.code===1;});

@@ -87,12 +87,12 @@ export function presentAgent(row, now = Date.now()) {
 }
 
 export async function syncHealth(env, userId, now = Date.now()) {
-  const { results } = await env.DB.prepare(`SELECT a.*,
-    (SELECT device_id FROM usage_sync_state WHERE user_id=?1) AS ranked_device_id FROM sync_agents a WHERE user_id=?1
-    ORDER BY CASE WHEN device_id=(SELECT device_id FROM usage_sync_state WHERE user_id=?1) THEN 0 ELSE 1 END,
-      last_seen_at DESC LIMIT 20`).bind(userId).all();
+  // 多台电脑共用一个接入码：主状态取最近联系的一台，devices 是已进入榜单的设备数。
+  const [{ results }, counted] = await Promise.all([
+    env.DB.prepare('SELECT * FROM sync_agents WHERE user_id=?1 ORDER BY last_seen_at DESC LIMIT 20').bind(userId).all(),
+    env.DB.prepare('SELECT COUNT(*) AS n FROM usage_device_state WHERE user_id=?1 AND active=1').bind(userId).first(),
+  ]);
   const agents = results.map(row=>presentAgent(row,now));
-  const ranked = results[0]?.ranked_device_id;
-  const primary = ranked ? agents.find(agent=>agent.device_id===ranked) : agents[0];
-  return { ...(primary || { state:'unknown' }), supported:!!primary, agents };
+  const primary = agents[0];
+  return { ...(primary || { state:'unknown' }), supported:!!primary, devices: counted?.n || 0, agents };
 }
