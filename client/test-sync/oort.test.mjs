@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, writeFileSync, utimesSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 import { collectOortDays, mergeOortDays, TOOL_NAMES } from '../sync/oort.js';
 
 const DAY_MS = 86_400_000;
@@ -21,6 +22,17 @@ function writeDshSession(home, name, totals, mtime) {
   const file = join(dir, name);
   writeFileSync(file, JSON.stringify({ version: 7, record: { rows: { tokenUsage: { ver: 2, val: { totals } } } } }));
   utimesSync(file, new Date(mtime), new Date(mtime));
+}
+
+function writeOortCodexUsage(home, homeName, rows) {
+  const dir = join(home, homeName, 'cli', 'db');
+  mkdirSync(dir, { recursive: true });
+  const db = new DatabaseSync(join(dir, 'db.sqlite'));
+  db.exec(`CREATE TABLE model_usage (id TEXT PRIMARY KEY, model_id TEXT, started_at INTEGER,
+    input_tokens INTEGER, output_tokens INTEGER, cache_read_input_tokens INTEGER, cache_creation_input_tokens INTEGER)`);
+  const insert = db.prepare('INSERT INTO model_usage VALUES(?,?,?,?,?,?,?)');
+  for (const row of rows) insert.run(row.id, row.model, row.ts, row.input, row.output, row.cacheRead, row.cacheWrite);
+  db.close();
 }
 
 function writeAiStudioTask(appData, ext, task, apiReqs, mtime) {
@@ -103,6 +115,40 @@ test('collectOortDays 把 AI Studio 内置助手（oortcodex 扩展）与 Cline 
   assert.equal(days[0].tokens, 1820);
   assert.equal(days[0].requests, 2);
   assert.deepEqual(days[0].tools, [[TOOL_NAMES.aiStudio, 1820]]);
+});
+
+test('collectOortDays 采集 OortCodex Desktop 的 model_usage（ZCode 内核数据库）', (t) => {
+  const { home, done } = makeHome();
+  t.after(done);
+  writeOortCodexUsage(home, 'OortCodexWork', [
+    { id: 'u1', model: 'glm-5.3-flash', ts: NOW, input: 1000, output: 100, cacheRead: 600, cacheWrite: 0 },
+    { id: 'u2', model: 'glm-5.3-flash', ts: NOW - DAY_MS, input: 200, output: 20, cacheRead: 0, cacheWrite: 10 },
+    { id: 'u3', model: 'glm-5.3-flash', ts: NOW, input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+  ]);
+  // 预览版目录里的同一条记录不重复计数；损坏的库只跳过
+  writeOortCodexUsage(home, 'OortCodexWork Preview', [
+    { id: 'u1', model: 'glm-5.3-flash', ts: NOW, input: 1000, output: 100, cacheRead: 600, cacheWrite: 0 },
+  ]);
+  const broken = join(home, 'OortCodexWork Dev', 'cli', 'db');
+  mkdirSync(broken, { recursive: true });
+  writeFileSync(join(broken, 'db.sqlite'), 'not a database');
+
+  const days = collectOortDays({ home, appData: null, log: () => {} });
+  assert.equal(days.length, 2);
+  const today = days.find((d) => d.day === beijing(NOW));
+  // input_tokens 含 cache_read：新输入 1000-600，缓存命中 600，输出 100
+  assert.equal(today.tokens, 1100);
+  assert.equal(today.input_tokens, 400);
+  assert.equal(today.cache_read, 600);
+  assert.equal(today.output_tokens, 100);
+  assert.equal(today.requests, 1);
+  assert.deepEqual(today.tools, [[TOOL_NAMES.oortCodexDesktop, 1100]]);
+  assert.deepEqual(today.models, [['glm-5.3-flash', 1100]]);
+  assert.deepEqual(today.tool_models, [[TOOL_NAMES.oortCodexDesktop, 'glm-5.3-flash', 1100]]);
+  const yesterday = days.find((d) => d.day === beijing(NOW - DAY_MS));
+  assert.equal(yesterday.tokens, 230);
+  assert.equal(yesterday.cache_write, 10);
+  assert.equal(yesterday.requests, 1);
 });
 
 test('collectOortDays 同日多源合并、无数据目录时返回空', (t) => {

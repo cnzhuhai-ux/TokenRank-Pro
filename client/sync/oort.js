@@ -20,21 +20,26 @@
  *     c) {saoudrizwan.claude-dev,rooveterinaryinc.roo-cline}\tasks —— 装了 Cline/Roo 的安装。
  *     三处是不同后端/插件，同一请求只落在其中一处；都扫描以覆盖不同版本与配置。
  *   - OortCodex Desktop（独立程序，ZCode 内核，与 ZCode 本体分开）
- *     数据目录 %APPDATA%\OortCodexWork 与 ~/.oortcodex 只有浏览器 LevelDB、日志与技能，
- *     没有逐次 token；其用量只存在于平台 new-api 账单里，本地无法可靠采集。
+ *     %USERPROFILE%\OortCodexWork\cli\db\db.sqlite 的 model_usage 表（ZCode 内核同构）：
+ *     逐请求 input/output/cache_read/cache_creation 与 started_at（毫秒），按北京时间分日。
+ *     token-watcher 只读 ~/.zcode，不扫这里，二者不会重复。开发/预览版目录为
+ *     OortCodexWork Dev / OortCodexWork Preview，按记录 id 去重。
+ *     注意：%APPDATA%\OortCodexWork 只是 Electron 界面缓存，用量不在这里。
  *
- * 无法本地采集：OortOffice 与 OortCodex Desktop —— 本地无 token 明细；平台侧 new-api 有完整
- * 计量（/api/dashboard/self/overview 按天按 token），但需要有效的平台 accesstoken，本机各应用
- * 落盘的令牌均已过期、且主力应用的令牌为加密存储。
+ * 无法本地采集：OortOffice —— 本地聊天存于浏览器 Local Storage，无 token 明细；平台侧
+ * new-api 有完整计量（/api/dashboard/self/overview 按天按 token），但需要有效的平台
+ * accesstoken，本机各应用落盘的令牌均已过期、且主力应用的令牌为加密存储。
  */
 
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
+import { DatabaseSync } from 'node:sqlite';
 
 export const TOOL_NAMES = {
   dsh: 'DSH For OortCloud Work',
   aiStudio: 'OortCloud AI Studio',
+  oortCodexDesktop: 'OortCodex Desktop',
 };
 // 展示名改写表：token-watcher 的 'zcode' 与 Oort 系产品互不相干，不做任何改写。
 export const TOOL_RENAME = {};
@@ -45,17 +50,24 @@ const round6 = (v) => Math.round(v * 1e6) / 1e6;
 const beijingDayOf = (ms) => new Date(ms + 8 * 3600000).toISOString().slice(0, 10);
 
 function emptyBucket(day) {
-  return { day, tokens: 0, input_tokens: 0, output_tokens: 0, cache_read: 0, cache_write: 0, requests: 0, tools: new Map() };
+  return { day, tokens: 0, input_tokens: 0, output_tokens: 0, cache_read: 0, cache_write: 0, requests: 0,
+    tools: new Map(), models: new Map(), toolModels: new Map() };
 }
 
-function addTo(bucket, { input = 0, output = 0, cacheRead = 0, cacheWrite = 0, requests = 0, tool }) {
+function addTo(bucket, { input = 0, output = 0, cacheRead = 0, cacheWrite = 0, requests = 0, tool, model }) {
   const clamp = (v, max) => Math.max(0, Math.min(max, Math.round(Number(v) || 0)));
+  const tokens = clamp(input, MAX.tokens) + clamp(output, MAX.tokens) + clamp(cacheRead, MAX.tokens) + clamp(cacheWrite, MAX.tokens);
   bucket.input_tokens += clamp(input, MAX.tokens);
   bucket.output_tokens += clamp(output, MAX.tokens);
   bucket.cache_read += clamp(cacheRead, MAX.tokens);
   bucket.cache_write += clamp(cacheWrite, MAX.tokens);
   bucket.requests += clamp(requests, MAX.requests);
-  if (tool) bucket.tools.set(tool, (bucket.tools.get(tool) || 0) + clamp(input + output + cacheRead + cacheWrite, MAX.tokens));
+  if (tool) bucket.tools.set(tool, (bucket.tools.get(tool) || 0) + tokens);
+  if (model) bucket.models.set(model, (bucket.models.get(model) || 0) + tokens);
+  if (tool && model) {
+    const key = tool + '\u0000' + model;
+    bucket.toolModels.set(key, (bucket.toolModels.get(key) || 0) + tokens);
+  }
   bucket.tokens = bucket.input_tokens + bucket.output_tokens + bucket.cache_read + bucket.cache_write;
 }
 
@@ -176,10 +188,62 @@ function collectAiStudioTranscripts(appData, log) {
   return [...buckets.values()];
 }
 
-/** 汇总 Oort 系各源，产出与上报协议同构的日行（models/tool_models 无数据则为空） */
+/** OortCodex Desktop 的 ZCode 内核数据目录（正式/开发/预览三条安装线） */
+const OORTCODEX_HOMES = ['OortCodexWork', 'OortCodexWork Dev', 'OortCodexWork Preview'];
+
+/**
+ * OortCodex Desktop：cli/db/db.sqlite 的 model_usage（与 token-watcher 的 zcode 同构）。
+ * input_tokens 含 cache_read，入库时拆成新输入与缓存命中；按记录 id 去重，防止多条安装线
+ * 指向同一份数据。数据库缺失或被占用时只跳过本轮。
+ */
+function collectOortCodexDesktop(home, log) {
+  const buckets = new Map(), seen = new Set();
+  for (const name of OORTCODEX_HOMES) {
+    const path = join(home, name, 'cli', 'db', 'db.sqlite');
+    if (!existsSync(path)) continue;
+    let db;
+    try {
+      db = new DatabaseSync(path, { readOnly: true });
+      db.exec('PRAGMA busy_timeout = 3000');
+      if (!db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='model_usage'").get()) continue;
+      const rows = db.prepare(`SELECT id, model_id, started_at, input_tokens, output_tokens,
+        cache_creation_input_tokens, cache_read_input_tokens FROM model_usage`).all();
+      for (const row of rows) {
+        const key = 'oortcodex:' + row.id;
+        if (seen.has(key)) continue;
+        const ts = Number(row.started_at);
+        if (!Number.isFinite(ts) || ts <= 0) continue;
+        const inputRaw = Number(row.input_tokens) || 0;
+        const cached = Math.min(Number(row.cache_read_input_tokens) || 0, inputRaw);
+        const cacheWrite = Number(row.cache_creation_input_tokens) || 0;
+        const output = Number(row.output_tokens) || 0;
+        if (inputRaw + cacheWrite + output <= 0) continue;
+        seen.add(key);
+        // 与 token-watcher 的 zcode 口径一致：模型名小写，跨源合并同一模型
+        const model = String(row.model_id || '').trim().toLowerCase().slice(0, 60);
+        const day = beijingDayOf(ts);
+        const bucket = buckets.get(day) || emptyBucket(day);
+        addTo(bucket, { input: inputRaw - cached, cacheRead: cached, cacheWrite, output,
+          requests: 1, tool: TOOL_NAMES.oortCodexDesktop, model });
+        buckets.set(day, bucket);
+      }
+    } catch (err) {
+      log(`oort oortcodex ${name} 数据库读取失败，已跳过：${err?.message || err}`);
+    } finally {
+      try { db?.close(); } catch { /* 已关闭 */ }
+    }
+  }
+  return [...buckets.values()];
+}
+
+const topEntries = (map, limit) => [...map.entries()].filter(([, v]) => v > 0)
+  .sort((a, b) => b[1] - a[1] || String(a[0]).localeCompare(String(b[0]))).slice(0, limit);
+
+/** 汇总 Oort 系各源，产出与上报协议同构的日行 */
 export function collectOortDays({ home = homedir(), appData = process.env.APPDATA || null, log = () => {} } = {}) {
   const merged = new Map();
-  const sources = [...collectDsh(home, log), ...collectAiStudio(appData, log), ...collectAiStudioTranscripts(appData, log)];
+  const sources = [...collectDsh(home, log), ...collectAiStudio(appData, log),
+    ...collectAiStudioTranscripts(appData, log), ...collectOortCodexDesktop(home, log)];
   for (const bucket of sources) {
     const existing = merged.get(bucket.day) || emptyBucket(bucket.day);
     existing.input_tokens += bucket.input_tokens;
@@ -188,13 +252,16 @@ export function collectOortDays({ home = homedir(), appData = process.env.APPDAT
     existing.cache_write += bucket.cache_write;
     existing.requests += bucket.requests;
     for (const [tool, tokens] of bucket.tools) existing.tools.set(tool, (existing.tools.get(tool) || 0) + tokens);
+    for (const [model, tokens] of bucket.models) existing.models.set(model, (existing.models.get(model) || 0) + tokens);
+    for (const [key, tokens] of bucket.toolModels) existing.toolModels.set(key, (existing.toolModels.get(key) || 0) + tokens);
     existing.tokens = existing.input_tokens + existing.output_tokens + existing.cache_read + existing.cache_write;
     merged.set(bucket.day, existing);
   }
   return [...merged.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([day, bucket]) => ({
     day, tokens: bucket.tokens, input_tokens: bucket.input_tokens, output_tokens: bucket.output_tokens,
     cache_read: bucket.cache_read, cache_write: bucket.cache_write, requests: bucket.requests,
-    models: [], tools: [...bucket.tools.entries()].sort((a, b) => b[1] - a[1]).slice(0, 8), tool_models: [],
+    models: topEntries(bucket.models, 8), tools: topEntries(bucket.tools, 8),
+    tool_models: [...topEntries(bucket.toolModels, 128)].map(([key, tokens]) => [...key.split('\u0000'), tokens]),
   }));
 }
 

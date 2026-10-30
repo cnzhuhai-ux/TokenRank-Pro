@@ -53,7 +53,7 @@ node node-service.mjs
 |---|---|---|
 | OortCloud AI Studio | 内置助手 `oortcodex.oortcodex` 的任务请求记录（`tasks/*/ui_messages.json`）与 Claude agent 转录；装了 Cline/Roo 的安装也一并计入 | ✅ |
 | DSH For OortCloud Work | `~/.dsh-oortcloud-work` 会话累计用量 | ✅ |
-| OortCodex Desktop | 本地只有浏览器 LevelDB 与日志，无逐次 token | ❌ 需平台侧配合，方案见文档 |
+| OortCodex Desktop | `%USERPROFILE%\OortCodexWork\cli\db\db.sqlite` 的 `model_usage`（ZCode 内核同构，逐请求） | ✅ |
 | OortOffice | 本地无 token 明细（LevelDB） | ❌ 同上 |
 
 **WorkBuddy 与 DevEco Code 补充采集（本仓库新增，0.2.21 起全盘只读扫描）**

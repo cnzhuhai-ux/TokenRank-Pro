@@ -1,6 +1,6 @@
 # TokenRank 独立同步器
 
-v0.2.24 为独立只读适配器，接入原版 [luwill/token-watcher](https://github.com/luwill/token-watcher)。Node.js 22.13+，无第三方运行依赖。
+v0.2.25 为独立只读适配器，接入原版 [luwill/token-watcher](https://github.com/luwill/token-watcher)。Node.js 22.13+，无第三方运行依赖。
 
 更换服务器、接入码或统计库后，会重新全量上传本机保留的历史用量，包含注销后重新接入的情况。上传中断可分批续传；重复执行同一账号的接入命令不会重传未变化的日期。
 
@@ -164,6 +164,18 @@ Trae 本机没有明文用量：会话库 `ModularData/ai-agent/database.db` 是
 - 归因与按天聚合的纯函数在 [`trae-extension/model-resolve.cjs`](trae-extension/model-resolve.cjs)，配套 [`test-sync/extension-model.test.mjs`](../test-sync/extension-model.test.mjs) 可脱离 Trae 运行。
 
 采集器与协议同步扩为 credits 四字段（`total` / `tools` / `models` / `tool_models`，上限 8/8/8/128），`*_full` 优先、按上限截断；任一分项之和超过 `total` 时丢弃该分项并告警，不摊派。服务端 `ranked_usage` 视图与校验同步支持（迁移 `0022_credits_models.sql`），模型维度积分在榜单按去前缀+小写+空白折叠合并同名（`server/src/model-key.js`）。**上线顺序：服务端先于客户端**（旧服务端会拒绝带 `models` 字段的 credits）。
+
+## OortCodex Desktop 采集（0.2.25）
+
+OortCodex Desktop 用 ZCode 内核，但逐请求用量不写在 `~/.zcode`：它在
+`%USERPROFILE%OortCodexWorkclidbdb.sqlite` 的 `model_usage` 表里按请求记录
+input/output/cache_read/cache_creation 与毫秒时间戳（开发/预览版为
+`OortCodexWork Dev` / `OortCodexWork Preview`）。0.2.25 起 [`sync/oort.js`](sync/oort.js)
+以只读方式打开该库，按北京时间分日、展示名 `OortCodex Desktop`，并把模型明细一并带入
+`models` / `tool_models`；`input_tokens` 中已含的 cache_read 会拆成新输入与缓存命中，
+与 token-watcher 对 ZCode 的口径一致。同一记录 id 在多个安装线出现时只计一次；数据库缺失、
+被锁或损坏时只跳过本轮，不影响其他来源。`%APPDATA%OortCodexWork` 只是 Electron
+界面缓存，不读。`TOKENRANK_OORT_DISABLE=1` 同样可关闭该来源。
 
 ## Windows 采集任务恢复（0.2.17）
 
