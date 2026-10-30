@@ -5,3 +5,8 @@ client/.github
 miniprogram
 docs
 server/test
+
+# Distribution tarballs are rebuilt by pack-dist during the image build; never ship host leftovers
+server/public/dl/tokenrank-client*.tar.gz
+server/public/dl/tokenrank-client*.tar.gz.sha256
+server/public/dl/version.txt
