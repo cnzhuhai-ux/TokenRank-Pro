@@ -64,6 +64,7 @@ export async function trendReport(env, query) {
   const slice = entries.slice(offset, offset + 50), next = offset + slice.length;
   return Response.json({ period, dimension, metric, from, to: end, previous_from, previous_to,
     timezone: 'Asia/Shanghai', token_basis: 'upstream_total', summary: current.summary, previous_summary: previous.summary,
+    credits: current.credits,
     entries: slice, total: entries.length, snapshot: fingerprint, has_more: next < entries.length, next_offset: next < entries.length ? next : null,
     updated_at: Math.max(current.updated_at || 0, previous.updated_at || 0) || null });
 }

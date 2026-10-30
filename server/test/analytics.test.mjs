@@ -172,11 +172,15 @@ test('工具分布、趋势榜与每日走势带 Credits；模型维度标记为
   assert.equal(models.credits.total, 42.5);
   assert.equal(models.items.some(row => 'credits' in row), false);
   const trend = (await f.request('/api/insights/trends?period=week&dimension=tools&metric=users')).data;
+  assert.equal(trend.credits.scope, 'tools');
+  assert.equal(trend.credits.total, 42.5);
   assert.equal(trend.summary.credits, 42.5);
+  assert.equal(Number.isInteger(trend.summary.credits * 1e6), true);
   const qoder = trend.entries.find(row => row.name === 'Qoder');
   assert.equal(qoder.credits, 42.5); assert.equal(qoder.users, 2);
   assert.equal(trend.entries.find(row => row.name === 'Codex').credits, 0);
   const modelTrend = (await f.request('/api/insights/trends?period=week&dimension=models&metric=tokens')).data;
+  assert.equal(modelTrend.credits.scope, 'unavailable');
   assert.equal(modelTrend.entries.some(row => 'credits' in row), false);
   // 个人分析同样按工具给出 Credits，模型维度不编造
   const mine = (await f.request('/api/my/analysis?period=week&dimension=tools', 1)).data;

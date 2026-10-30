@@ -156,6 +156,7 @@ export function aggregateAnalytics(rows) {
   });
   const firstDays = rows.users.map(row => row.first_day).filter(Boolean).sort();
   if (rows.tool) for (const key of ['requests', 'input_tokens', 'output_tokens', 'cache_read', 'cache_write']) summary[key] = null;
+  summary.credits = round6(summary.credits);
   return { preferences, users, data: { scope, dimension, period: range.period, timezone: 'Asia/Shanghai', token_basis: 'upstream_total',
     ...(rows.tool ? { tool: rows.tool, association: { linked_tokens: summary.breakdown_tokens - summary.unclassified_tokens,
       unlinked_tokens: summary.unclassified_tokens, percent: percent(summary.breakdown_tokens - summary.unclassified_tokens, summary.breakdown_tokens) } } : {}),
