@@ -1,6 +1,6 @@
 # TokenRank 独立同步器
 
-v0.2.26 为独立只读适配器，接入原版 [luwill/token-watcher](https://github.com/luwill/token-watcher)。Node.js 22.13+，无第三方运行依赖。
+v0.2.27 为独立只读适配器，接入原版 [luwill/token-watcher](https://github.com/luwill/token-watcher)。Node.js 22.13+，无第三方运行依赖。
 
 更换服务器、接入码或统计库后，会重新全量上传本机保留的历史用量，包含注销后重新接入的情况。上传中断可分批续传；重复执行同一账号的接入命令不会重传未变化的日期。
 
@@ -87,7 +87,7 @@ v0.2.10 增加独立心跳：启动、检查完成及每 5 分钟报告状态。
 
 心跳缓存单独写入 `~/.tokenrank/health/config.json`，不与同步子进程争写检查点。`rank status` 输出最近一次确认的心跳；这是历史状态，不保证当前正在运行。`rank off` 先在本机断开，再尽力发送关闭通知；网络不可用时服务器只能显示失联。`uninstall-agent` 和 `uninstall` 同样发送明确停止事件。小程序会分别显示最后联系、检查和上传时间，旧版无心跳时标为未知。
 
-默认每 5 分钟读取同一个 SQLite 快照，包含已提交的 WAL 记录；扫描全部已保留历史以发现旧日期变更。北京时间日桶、主用量直接读取原版 total_tokens（含缓存），input_tokens、output_tokens、缓存读写单列。工具、模型按原版总量各保留每日用量前 8 项，服务端将未分类差额单列。补充采集（Oort 系、WorkBuddy 各版本、DevEco Code）随后并入相同日桶，同样受前 8 项工具与模型、128 组工具—模型限制；金额估算仍只基于原版可识别的模型。
+默认每 5 分钟读取同一个 SQLite 快照，包含已提交的 WAL 记录；扫描全部已保留历史以发现旧日期变更。北京时间日桶、主用量直接读取原版 total_tokens（含缓存），input_tokens、output_tokens、缓存读写单列。工具、模型按原版总量各保留每日用量前 8 项，服务端将未分类差额单列。补充采集（Oort 系、WorkBuddy 各版本、DevEco Code、Genspark Code）随后并入相同日桶，同样受前 8 项工具与模型、128 组工具—模型限制；金额估算仍只基于原版可识别的模型。
 
 历史按最多 400 天且小于 450 KiB 分批发送，无总历史天数截断；每批得到完整确认后才保存检查点。失败批次留待重试，429 按 Retry-After 等待，401 提示重新接入。超出当前计数协议范围会停止同步并提示，不裁剪源数据。原版升级后缺少必要字段时停止上报，不修改或自动升级原库。
 
@@ -140,14 +140,15 @@ token-watcher 1.8 首次迁移 Codex 去重键时，会在统计库里留下一�
 
 ## 全盘补充采集（0.2.21）
 
-原版 token-watcher 对 WorkBuddy 只扫 `~/.WorkBuddy/projects`，也不认识 DevEco Code。0.2.21 在同步器内增加 [`sync/extra.js`](sync/extra.js)：
+原版 token-watcher 对 WorkBuddy 只扫 `~/.WorkBuddy/projects`，也不认识 DevEco Code 与 Genspark Code。0.2.21 在同步器内增加 [`sync/extra.js`](sync/extra.js)：
 
 - **全部磁盘发现**：Windows 遍历 C–Z 盘符，macOS 遍历 `/Volumes/*`，Linux 遍历 `/`、`/mnt/*`、`/media/*`；每盘最多向下 5 层，跳过 `Windows`、`Program Files`、`node_modules`、缓存等系统目录，再补充检查 `APPDATA`、`LOCALAPPDATA`、`XDG_DATA_HOME`、`XDG_CONFIG_HOME` 和主目录。
 - **WorkBuddy**：识别 `.WorkBuddy`、`.workbuddy-ai`、`.workbuddy-cn`、`.workbuddy-intl`、`WorkBuddy AI` 等产品目录，只读取其中的 `*.jsonl` 转录。排除原版已覆盖的 `~/.WorkBuddy/projects` 和 `~/.tokenmeter/extra-roots.json` 登记的目录，避免重复计数；同一消息 ID 只计一次。
 - **DevEco Code**：读取 OpenCode 同构的 `deveco.db`，按 `message.data.tokens` 中的 input / output / cache.read / cache.write 汇总，reasoning 已包含在 output 内，不重复相加。
+- **Genspark Code（0.2.27）**：Genspark Super App 内编码终端（gencode）的库 `gencode/opencode.db` 与 OpenCode 同构，按同样口径汇总；只在名为 `gencode` 的目录里找库，散落的 `opencode.db` 属于独立安装的 opencode（原版已覆盖），不会抢。Super App 其余空间（网页 agents 聊天等）用量仍在 genspark.ai 云端，本地无数据。
 - **容错**：每个文件或数据库单独捕获异常，损坏项写入同步日志后跳过，不影响其他来源和正常上报。数据目录只读，不修改任何产品文件。
 
-`TOKENRANK_OORT_DISABLE=1` 可关闭全部补充采集，`TOKENRANK_EXTRA_DISABLE=1` 只关闭 WorkBuddy / DevEco 部分。
+`TOKENRANK_OORT_DISABLE=1` 可关闭全部补充采集，`TOKENRANK_EXTRA_DISABLE=1` 只关闭 WorkBuddy / DevEco / Genspark Code 部分。
 
 ## Trae 快照采集（0.2.22）
 
@@ -194,6 +195,22 @@ OortOffice 是 OnlyOffice 外壳 + 内置 ZCode 内核，HOME 被指到
 `zcode-home\.zcode\cli\db\db.sqlite` 的 `model_usage`，口径与 OortCodex Desktop 相同
 （展示名 `OortOffice`）。从没打开过 AI 面板的安装没有这个库，静默跳过；
 `zcode-home/.zcode/v2/tasks-index.sqlite` 只有任务元数据，没有 token 明细。
+
+## Genspark Code 采集（0.2.27）
+
+Genspark Super App 本体是薄壳 Electron 客户端（`%APPDATA%\gensparkaio`），排查确认壳内没有
+任何 token 明细；但其内的编码终端 **Genspark Code**（gencode，OpenCode 定制版，由 opencode
+服务端 + `gencode.exe` 驱动）把逐请求用量写在
+`~/.local/share/gencode/opencode.db`（XDG 数据目录下的 `gencode` 子目录），
+schema 与 OpenCode 完全同构：`message.data` 里的 `tokens.input / output / reasoning /
+cache.read / cache.write` 与 `time.created`（毫秒）、`modelID`。0.2.27 起
+[`sync/extra.js`](sync/extra.js) 用与 DevEco Code 相同的读取口径采集它，展示名
+`Genspark Code`，按北京时间分日，reasoning 已含在 output 内不重复相加。发现规则刻意收紧：
+只在名为 `gencode` 的目录（逐盘扫描 + `XDG_DATA_HOME` / `~/.local/share` 等已知位置）找
+`opencode.db`，散落在别处的 `opencode.db` 属于独立安装的 opencode（原版 token-watcher 已
+覆盖），不会被重复采集。Super App 其余空间（网页 agents / genmail 等聊天）的用量仍在
+genspark.ai 云端，本地无明细；credits 余额在云端账户页，客户端库里的 `cost` 字段是按
+Genspark 模型定价折算的积分值，仅入库 token 数、不参与金额估算。
 
 ## Windows 采集任务恢复（0.2.17）
 

@@ -3,9 +3,12 @@
  *   - WorkBuddy：上游只扫 ~/.WorkBuddy/projects，这里补齐国内/国际版和便携安装的
  *     `*.jsonl` 转录（~/.workbuddy-ai、~/.WorkBuddy AI、~/.workbuddy-cn 等）。
  *   - DevEco Code：OpenCode 同构的 deveco.db，上游不认识。
+ *   - Genspark Code：Genspark Super App 内的编码终端（gencode，OpenCode 定制版），
+ *     逐请求用量在 ~/.local/share/gencode/opencode.db，上游不认识；Super App 其余
+ *     空间（网页 agents 聊天等）用量仍在云端，无本地数据。
  *
  * 所有数据目录都在**全部磁盘**上发现，不只看系统盘（C:）：逐盘有界遍历，只看
- * 目录名和 deveco.db，跳过系统/缓存目录；已知环境变量位置再单独补一遍。
+ * 目录名和 deveco.db / gencode 目录，跳过系统/缓存目录；已知环境变量位置再单独补一遍。
  * 只读，单文件/单库损坏只跳过并告警，不会中断同步。
  *
  * 口径与 token-watcher 保持一致：
@@ -19,12 +22,14 @@ import { join, resolve, sep } from 'node:path';
 import { homedir } from 'node:os';
 import { DatabaseSync } from 'node:sqlite';
 
-export const TOOL_NAMES = { workbuddy: 'WorkBuddy', deveco: 'DevEco Code' };
+export const TOOL_NAMES = { workbuddy: 'WorkBuddy', deveco: 'DevEco Code', gencode: 'Genspark Code' };
 
 const MAX_DEPTH = 5;
 const MAX = { tokens: 1e13, requests: 1e7 };
 const WORKBUDDY_DIR = /^\.?workbuddy(?:[\s._-]?(?:ai|cn|intl|global))?$/i;
 const DEVECO_DIR = /^(?:\.?deveco(?:[\s._-]?code)?|deveco[\s._-]?studio|huawei[\s._-]?deveco.*)$/i;
+// gencode 的库只认 gencode 目录名；散落的 opencode.db 属于独立安装的 opencode（上游已覆盖），不能抢。
+const GENCODE_DIR = /^\.?gencode$/i;
 // 逐盘遍历时跳过的系统与缓存目录，避免把整盘扫成分钟级。
 const SKIP = new Set(['windows', 'program files', 'program files (x86)', 'programdata', '$recycle.bin',
   'system volume information', 'recovery', 'perflogs', 'node_modules', '.git', '.svn', '.hg',
@@ -73,9 +78,13 @@ function devecoDbIn(base) {
   }
   return null;
 }
+function gencodeDbIn(base) {
+  const candidate = join(base, 'opencode.db');
+  return isFile(candidate) ? candidate : null;
+}
 
-/** 逐盘有界遍历：只收集 WorkBuddy 数据目录和 deveco.db，不读文件内容。 */
-function scanDrives(drives, { workbuddy, deveco }) {
+/** 逐盘有界遍历：只收集 WorkBuddy 数据目录、deveco.db 和 gencode 目录，不读文件内容。 */
+function scanDrives(drives, { workbuddy, deveco, gencode }) {
   for (const root of drives) {
     const stack = [[root, 0]];
     while (stack.length) {
@@ -93,6 +102,10 @@ function scanDrives(drives, { workbuddy, deveco }) {
             const found = devecoDbIn(path);
             if (found) deveco.add(found);
           }
+          if (GENCODE_DIR.test(entry.name)) {
+            const found = gencodeDbIn(path);
+            if (found) gencode.add(found);
+          }
           if (depth < MAX_DEPTH && !SKIP.has(entry.name.toLowerCase())) stack.push([path, depth + 1]);
         } else if (entry.isFile() && entry.name.toLowerCase() === 'deveco.db') {
           deveco.add(path);
@@ -103,7 +116,7 @@ function scanDrives(drives, { workbuddy, deveco }) {
 }
 
 /** 环境变量里的已知位置（可能位于任何盘），作为逐盘遍历的补充。 */
-function scanKnownLocations({ home, env }, { workbuddy, deveco }) {
+function scanKnownLocations({ home, env }, { workbuddy, deveco, gencode }) {
   const bases = [home, env.APPDATA, env.LOCALAPPDATA, env.XDG_DATA_HOME, env.XDG_CONFIG_HOME,
     join(home, 'AppData', 'Roaming'), join(home, 'AppData', 'Local'), join(home, '.local', 'share')]
     .filter(Boolean);
@@ -117,6 +130,9 @@ function scanKnownLocations({ home, env }, { workbuddy, deveco }) {
       join(base, 'deveco-code', 'deveco.db'), join(base, '.deveco-code', 'deveco.db'),
       join(base, 'Huawei', 'DevEcoStudio', 'deveco.db'), join(base, 'DevEcoStudio', 'deveco.db')]) {
       if (isFile(candidate)) deveco.add(candidate);
+    }
+    for (const candidate of [join(base, 'gencode', 'opencode.db')]) {
+      if (isFile(candidate)) gencode.add(candidate);
     }
   }
 }
@@ -193,8 +209,8 @@ function collectWorkbuddy(root, seen, buckets, log) {
   walk(root);
 }
 
-/** DevEco Code：与 OpenCode 同构的 message.data.tokens。 */
-function collectDeveco(path, seen, buckets, log) {
+/** OpenCode 同构库（DevEco Code 的 deveco.db、Genspark Code 的 gencode/opencode.db）：message.data.tokens。 */
+function collectOpencodeDb(path, tool, seen, buckets, log) {
   let db;
   try {
     db = new DatabaseSync(path, { readOnly: true });
@@ -209,8 +225,6 @@ function collectDeveco(path, seen, buckets, log) {
       ${field('$.tokens.reasoning')} AS t_reasoning,
       ${field('$.tokens.cache.read')} AS t_cache_read, ${field('$.tokens.cache.write')} AS t_cache_write
       FROM message`).all();
-    const directories = new Map();
-    const directory = db.prepare('SELECT directory FROM session WHERE id = ?');
     for (const row of rows) {
       if (row.tokens_type !== 'object' || row.role !== 'assistant') continue;
       const input = Number(row.t_input) || 0;
@@ -218,24 +232,20 @@ function collectDeveco(path, seen, buckets, log) {
       const cacheWrite = Number(row.t_cache_write) || 0;
       const output = Number(row.t_output) || 0;
       if (input + output + cacheRead + cacheWrite <= 0) continue;
-      const key = 'deveco:' + row.id;
+      const key = tool + ':' + row.id;
       if (seen.has(key)) continue;
       seen.add(key);
       let ts = Number(row.created) || Number(row.time_created) || 0;
       if (ts > 0 && ts < 1e12) ts *= 1000;
       if (!ts) continue;
-      if (!directories.has(row.session_id)) {
-        try { directories.set(row.session_id, directory.get(row.session_id)?.directory || null); }
-        catch { directories.set(row.session_id, null); }
-      }
       const model = String(row.model || '').trim().slice(0, 60);
       const day = beijingDayOf(ts);
       let bucket = buckets.get(day);
       if (!bucket) { bucket = emptyBucket(day); buckets.set(day, bucket); }
-      addTo(bucket, { input, output, cacheRead, cacheWrite, requests: 1, tool: TOOL_NAMES.deveco, model });
+      addTo(bucket, { input, output, cacheRead, cacheWrite, requests: 1, tool: TOOL_NAMES[tool], model });
     }
   } catch (err) {
-    log(`deveco 数据库 ${path} 读取失败，已跳过：${err?.message || err}`);
+    log(`${tool} 数据库 ${path} 读取失败，已跳过：${err?.message || err}`);
   } finally {
     try { db?.close(); } catch { /* 已关闭 */ }
   }
@@ -244,19 +254,20 @@ function collectDeveco(path, seen, buckets, log) {
 const topEntries = (map, limit) => [...map.entries()].sort((a, b) => b[1] - a[1] || String(a[0]).localeCompare(String(b[0])))
   .slice(0, limit);
 
-/** 汇总所有磁盘上的 WorkBuddy 各版本与 DevEco Code，产出与上报协议同构的日行。 */
+/** 汇总所有磁盘上的 WorkBuddy 各版本、DevEco Code 与 Genspark Code，产出与上报协议同构的日行。 */
 export function collectExtraDays({ home = homedir(), env = process.env, platform = process.platform,
   drives = null, log = () => {} } = {}) {
-  const workbuddy = new Set(), deveco = new Set();
-  scanDrives(drives || discoverDrives({ platform }), { workbuddy, deveco });
-  scanKnownLocations({ home, env }, { workbuddy, deveco });
+  const workbuddy = new Set(), deveco = new Set(), gencode = new Set();
+  scanDrives(drives || discoverDrives({ platform }), { workbuddy, deveco, gencode });
+  scanKnownLocations({ home, env }, { workbuddy, deveco, gencode });
   const upstream = [...upstreamWorkbuddyRoots(home)];
   const buckets = new Map(), seen = new Set();
   for (const root of new Set([...workbuddy].map(canonical))) {
     if (upstream.some(base => root === base || root.startsWith(base + sep))) continue;
     collectWorkbuddy(root, seen, buckets, log);
   }
-  for (const path of new Set([...deveco].map(canonical))) collectDeveco(path, seen, buckets, log);
+  for (const path of new Set([...deveco].map(canonical))) collectOpencodeDb(path, 'deveco', seen, buckets, log);
+  for (const path of new Set([...gencode].map(canonical))) collectOpencodeDb(path, 'gencode', seen, buckets, log);
   return [...buckets.values()].sort((a, b) => a.day.localeCompare(b.day)).map((bucket) => ({
     day: bucket.day, tokens: bucket.tokens, input_tokens: bucket.input_tokens, output_tokens: bucket.output_tokens,
     cache_read: bucket.cache_read, cache_write: bucket.cache_write, requests: bucket.requests,

@@ -27,7 +27,7 @@ node node-service.mjs
 
 ## 支持采集的终端
 
-采集分两层：统计内核 [token-watcher](https://github.com/luwill/token-watcher)（1.9.x，13 种 AI 编程工具）+ 本仓库在同步器内的补充采集。补充采集包括 Oort 系（[`client/sync/oort.js`](client/sync/oort.js)，详见 [`docs/oort-collection.md`](docs/oort-collection.md)）、WorkBuddy 各版本与 DevEco Code（[`client/sync/extra.js`](client/sync/extra.js)），以及 Trae（[`client/sync/trae.js`](client/sync/trae.js)，详见 [`docs/trae-collection.md`](docs/trae-collection.md)）。0.2.21 起，WorkBuddy / DevEco Code 的数据目录在**全部本地磁盘**上发现，不只看系统盘；只读取目录名和统计库，跳过系统与缓存目录，并排除 token-watcher 已覆盖的位置，避免重复计数。0.2.22 起支持 Trae：由 Trae 本机扩展查询官方用量接口写出按天快照，同步器只读快照，不解密 Trae 的会话库。0.2.23 起 OortCloud AI Studio 内置助手（`oortcodex.oortcodex`）写在 `tasks/*/ui_messages.json` 的逐请求用量也会并入统计。一台电脑可同时安装任意多个，用量按天汇总、按工具分别展示。
+采集分两层：统计内核 [token-watcher](https://github.com/luwill/token-watcher)（1.9.x，13 种 AI 编程工具）+ 本仓库在同步器内的补充采集。补充采集包括 Oort 系（[`client/sync/oort.js`](client/sync/oort.js)，详见 [`docs/oort-collection.md`](docs/oort-collection.md)）、WorkBuddy 各版本、DevEco Code 与 Genspark Code（[`client/sync/extra.js`](client/sync/extra.js)），以及 Trae（[`client/sync/trae.js`](client/sync/trae.js)，详见 [`docs/trae-collection.md`](docs/trae-collection.md)）。0.2.21 起，WorkBuddy / DevEco Code / Genspark Code 的数据目录在**全部本地磁盘**上发现，不只看系统盘；只读取目录名和统计库，跳过系统与缓存目录，并排除 token-watcher 已覆盖的位置，避免重复计数。0.2.22 起支持 Trae：由 Trae 本机扩展查询官方用量接口写出按天快照，同步器只读快照，不解密 Trae 的会话库。0.2.23 起 OortCloud AI Studio 内置助手（`oortcodex.oortcodex`）写在 `tasks/*/ui_messages.json` 的逐请求用量也会并入统计。一台电脑可同时安装任意多个，用量按天汇总、按工具分别展示。
 
 **token-watcher 官方支持**
 
@@ -55,7 +55,7 @@ node node-service.mjs
 | DSH For OortCloud Work | 会话日志 `sessions/*/session.v*.jsonl.zst[d]` 的逐请求用量（精确到天、带模型）；日志不可读的会话退回 `session_projcache` 的会话累计值 | ✅ |
 | OortCodex Desktop | `%USERPROFILE%\OortCodexWork\cli\db\db.sqlite` 的 `model_usage`（ZCode 内核同构，逐请求） | ✅ |
 | OortOffice | 自带 ZCode 内核，用过后 `%LOCALAPPDATA%\OortOffice\zcode-home\.zcode\cli\db\db.sqlite` 的 `model_usage`；没打开过对话就没有这个库 | ✅ |
-| Genspark Super App | 本地无用量数据（薄壳客户端，用量在 genspark.ai 云端）；结论与可行路径见采集文档 | ❌ |
+| Genspark Code（Super App 内的编码终端） | `~/.local/share/gencode/opencode.db`（OpenCode 同构，逐请求 tokens；Super App 壳与网页 agents 等其余空间用量仍在 genspark.ai 云端，见采集文档） | ✅ 0.2.27 起 |
 
 **WorkBuddy 与 DevEco Code 补充采集（本仓库新增，0.2.21 起全盘只读扫描）**
 

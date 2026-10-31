@@ -32,6 +32,8 @@ function writeDeveco(path, messages) {
     .run(message.id, 'ses_1', message.ts, message.ts, JSON.stringify(message.data));
   db.close();
 }
+// Genspark Code（gencode）的库与 deveco.db 同构，测试夹具共用。
+const writeGencode = writeDeveco;
 
 test('补充采集在全部磁盘发现 WorkBuddy 各版本和 DevEco Code，上游目录不重复计数', (t) => {
   const { root, done } = makeDrives();
@@ -70,8 +72,7 @@ test('补充采集在全部磁盘发现 WorkBuddy 各版本和 DevEco Code，上
     [[TOOL_NAMES.deveco, 'claude-sonnet-4-6'], [TOOL_NAMES.workbuddy, 'glm-5.3-flash']].sort());
 });
 
-test('重复目录和重复消息只计一次；坏文件坏库只跳过；extra-roots 已登记的目录不再采集', (t) => {
-  const { root, done } = makeDrives();
+test('重复目录和重复消息只计一次；坏文件坏库只跳过；extra-roots 已登记的目录不再采集', (t) => {  const { root, done } = makeDrives();
   t.after(done);
   const drive = join(root, 'A'), home = join(drive, 'Users', 'me');
   mkdirSync(home, { recursive: true });
@@ -93,6 +94,46 @@ test('重复目录和重复消息只计一次；坏文件坏库只跳过；extra
   assert.equal(days.length, 1);
   assert.equal(days[0].tokens, 110);
   assert.deepEqual(days[0].tools, [[TOOL_NAMES.workbuddy, 110]]);
+});
+
+test('Genspark Code 从 gencode 目录的 OpenCode 同构库采集；独立安装的 opencode 与空目录不采', (t) => {
+  const { root, done } = makeDrives();
+  t.after(done);
+  const drive = join(root, 'A'), home = join(drive, 'Users', 'me');
+  mkdirSync(home, { recursive: true });
+  writeGencode(join(home, '.local', 'share', 'gencode', 'opencode.db'), [
+    { id: 'gen-1', ts: NOW, data: { role: 'assistant', modelID: 'claude-opus-5-5',
+      tokens: { input: 1000, output: 200, reasoning: 50, cache: { read: 5000, write: 0 } } } },
+    { id: 'gen-2', ts: NOW, data: { role: 'assistant', modelID: 'claude-haiku-5-5',
+      tokens: { input: 300, output: 100, reasoning: 0, cache: { read: 700, write: 20 } } } },
+    { id: 'gen-user', ts: NOW, data: { role: 'user', modelID: 'claude-opus-5-5' } },
+  ]);
+  writeGencode(join(drive, 'Tools', 'gencode', 'opencode.db'), [
+    { id: 'gen-3', ts: NOW - DAY_MS, data: { role: 'assistant', modelID: 'claude-opus-5-5',
+      tokens: { input: 10, output: 20, reasoning: 0, cache: { read: 30, write: 0 } } } },
+  ]);
+  // 独立安装的真实 opencode（上游 token-watcher 已覆盖）不能被 gencode 规则抢走
+  writeGencode(join(home, '.local', 'share', 'opencode', 'opencode.db'), [
+    { id: 'real-1', ts: NOW, data: { role: 'assistant', modelID: 'x', tokens: { input: 999999, output: 0 } } },
+  ]);
+  mkdirSync(join(drive, 'Empty', 'gencode'), { recursive: true });
+
+  const days = collectExtraDays({ home, env: {}, platform: 'win32', drives: [drive], log: () => {} });
+  assert.equal(days.length, 2);
+  const today = days.find((d) => d.day === beijing(NOW));
+  // 1000+200+5000 + 300+100+700+20 = 7320；opencode 目录的 999999 与 user 消息不计入
+  assert.equal(today.tokens, 7320);
+  assert.equal(today.input_tokens, 1300);
+  assert.equal(today.cache_read, 5700);
+  assert.equal(today.cache_write, 20);
+  assert.equal(today.requests, 2);
+  assert.deepEqual(today.tools, [[TOOL_NAMES.gencode, 7320]]);
+  assert.deepEqual(today.models.map(([m]) => m).sort(), ['claude-haiku-5-5', 'claude-opus-5-5']);
+  assert.deepEqual(today.tool_models.map(([tool, model]) => [tool, model]).sort(),
+    [[TOOL_NAMES.gencode, 'claude-haiku-5-5'], [TOOL_NAMES.gencode, 'claude-opus-5-5']].sort());
+  const prev = days.find((d) => d.day === beijing(NOW - DAY_MS));
+  assert.equal(prev.tokens, 60);
+  assert.deepEqual(prev.tools, [[TOOL_NAMES.gencode, 60]]);
 });
 
 test('合并补充日行时模型和工具内模型一起累加，超过协议上限按量截断', () => {
