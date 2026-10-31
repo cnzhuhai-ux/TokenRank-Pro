@@ -24,7 +24,33 @@ export function windowsScript({ node = process.execPath, script = entry } = {}) 
   const quote = s => '"' + s.replaceAll('"', '""') + '"';
   return `Dim result\r\nresult = CreateObject("WScript.Shell").Run(${quote(quote(node) + ' --no-warnings ' + quote(script) + ' watch')}, 0, True)\r\nWScript.Quit result\r\n`;
 }
-const stopWindows = () => `$script=${ps(entry)}; Get-CimInstance Win32_Process -Filter "Name = 'node.exe'" | Where-Object { $_.CommandLine -and $_.CommandLine.Contains('"' + $script + '"') -and $_.CommandLine -match '\\s+watch(?:\\s|$)' } | ForEach-Object { Stop-Process -Id $_.ProcessId }; `;
+const stopWindows = () => `$script=${ps(entry)}; Get-CimInstance Win32_Process -Filter "Name = 'node.exe'" | Where-Object { $_.CommandLine -and $_.CommandLine.Contains('"' + $script + '"') -and $_.CommandLine -match '\\s+watch(?:\\s|$)' } | ForEach-Object { try { Stop-Process -Id $_.ProcessId -Force -ErrorAction Stop } catch {} }; `;
+// 重装韧性：任务可能由提权上下文注册，注销/覆盖注册都可能被拒（0x80070005）。
+// vbs 路径每次安装固定不变且安装时重写内容——旧任务指向它就等于运行新代码，
+// 因此"删不掉但 action 匹配"时选择复用而不是让整个安装失败。
+const WIN_INSTALL = (vbs) => [
+  "$ErrorActionPreference='Stop'",
+  "try{ if(Get-ScheduledTask -TaskName 'TokenRankSync' -ErrorAction SilentlyContinue){ Stop-ScheduledTask -TaskName 'TokenRankSync' -ErrorAction SilentlyContinue } }catch{}",
+  stopWindows(),
+  "try{",
+  `$a=New-ScheduledTaskAction -Execute 'wscript.exe' -Argument ${ps('"' + vbs + '"')};`,
+  "$t=New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME; $retry=New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(5) -RepetitionInterval (New-TimeSpan -Minutes 5);",
+  "$s=New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero) -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1) -MultipleInstances IgnoreNew -StartWhenAvailable -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries;",
+  `Register-ScheduledTask -TaskName 'TokenRankSync' -Action $a -Trigger @($t,$retry) -Settings $s -User $env:USERNAME -RunLevel Limited -Force | Out-Null; Start-ScheduledTask -TaskName 'TokenRankSync'; Write-Output 'REGISTERED'`,
+  "}catch{",
+  "$t=Get-ScheduledTask -TaskName 'TokenRankSync' -ErrorAction SilentlyContinue;",
+  `if($t -and (($t.Actions | Out-String).Contains(${ps('"' + vbs + '"')}))){ Write-Output 'REUSED'; try{ Start-ScheduledTask -TaskName 'TokenRankSync' }catch{} }`,
+  "else{ Write-Output ('FAILED ' + $_.Exception.Message); exit 1 }",
+  "}",
+].join('; ');
+const WIN_UNINSTALL = [
+  "$ErrorActionPreference='Stop'",
+  "$deleted=$false",
+  "try{ if(Get-ScheduledTask -TaskName 'TokenRankSync' -ErrorAction SilentlyContinue){ Stop-ScheduledTask -TaskName 'TokenRankSync' -ErrorAction SilentlyContinue; Unregister-ScheduledTask -TaskName 'TokenRankSync' -Confirm:$false }; $deleted=$true }catch{}",
+  "if(-not $deleted){ try{ schtasks.exe /End /TN 'TokenRankSync' | Out-Null; schtasks.exe /Delete /TN 'TokenRankSync' /F | Out-Null; $deleted=$true }catch{} }",
+  "if($deleted){ Write-Output 'DELETED' } else { Write-Output 'DENIED' }",
+  stopWindows(),
+].join('; ');
 export function installAgent({ dryRun = false, platform = process.platform, home = homedir(), dir = SYNC_DIR, runner = run, log = console.log } = {}) {
   const vbs = join(dir, 'sync.vbs');
   const macPath = join(home, 'Library', 'LaunchAgents', LABEL + '.plist');
@@ -39,12 +65,13 @@ export function installAgent({ dryRun = false, platform = process.platform, home
   } else if (platform === 'win32') {
     writeFileSync(vbs, windowsScript());
     // AtLogOn starts a persistent read-only sync loop; only our dedicated task is touched.
-    const command = `$ErrorActionPreference='Stop'; if(Get-ScheduledTask -TaskName ${ps(TASK)} -ErrorAction SilentlyContinue){Stop-ScheduledTask -TaskName ${ps(TASK)}}; ` + stopWindows()
-      + `$a=New-ScheduledTaskAction -Execute 'wscript.exe' -Argument ${ps('"' + vbs + '"')}; `
-      + `$t=New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME; $retry=New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(5) -RepetitionInterval (New-TimeSpan -Minutes 5); `
-      + `$s=New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero) -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1) -MultipleInstances IgnoreNew -StartWhenAvailable -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries; `
-      + `Register-ScheduledTask -TaskName ${ps(TASK)} -Action $a -Trigger @($t,$retry) -Settings $s -User $env:USERNAME -RunLevel Limited -Force | Out-Null; Start-ScheduledTask -TaskName ${ps(TASK)}`;
-    runner('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', command]);
+    const out = String(runner('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', WIN_INSTALL(vbs)]) ?? '');
+    // 旧桩子/旧 runner 无 stdout 时视为成功；REUSED = 任务删不掉但指向本安装的 vbs，内容已更新
+    if (out.includes('REUSED')) log('已复用现有计划任务 TokenRankSync（内容已更新；如需重建请以管理员运行 schtasks /Delete /TN TokenRankSync /F）。');
+    else if (out.includes('FAILED')) {
+      const message = out.split('FAILED')[1]?.trim() || '未知原因';
+      throw new Error(`计划任务 TokenRankSync 注册失败：${message}。请以管理员身份运行 schtasks /Delete /TN TokenRankSync /F 后重试安装`);
+    }
   } else {
     const unitDir = join(home, '.config', 'systemd', 'user');
     mkdirSync(unitDir, { recursive: true });
@@ -55,13 +82,18 @@ export function installAgent({ dryRun = false, platform = process.platform, home
   }
   log('已启动独立同步服务；原版 token-watcher 的服务未改变。');
 }
-export function uninstallAgent({ platform = process.platform, home = homedir(), dir = SYNC_DIR, runner = run } = {}) {
+export function uninstallAgent({ platform = process.platform, home = homedir(), dir = SYNC_DIR, runner = run, log = console.warn } = {}) {
   if (platform === 'darwin') {
     try { runner('launchctl', ['bootout', `gui/${process.getuid()}/${LABEL}`]); } catch {}
     rmSync(join(home, 'Library', 'LaunchAgents', LABEL + '.plist'), { force: true });
   } else if (platform === 'win32') {
-    runner('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command',
-      `$ErrorActionPreference='Stop'; if(Get-ScheduledTask -TaskName ${ps(TASK)} -ErrorAction SilentlyContinue){Stop-ScheduledTask -TaskName ${ps(TASK)}; Unregister-ScheduledTask -TaskName ${ps(TASK)} -Confirm:$false}; ` + stopWindows()]);
+    // 重装场景下任务可能注册自提权上下文：注销被拒时退回 schtasks，再不行就给出
+    // 明确的操作指引而不是让整个安装流程失败（vbs 会在随后的安装里被重写）。
+    const out = String(runner('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', WIN_UNINSTALL]) ?? '');
+    if (out.includes('DENIED')) {
+      log('计划任务 TokenRankSync 删除需要管理员权限：请以管理员身份运行 schtasks /Delete /TN TokenRankSync /F。不影响本次安装（任务指向的脚本已更新）。');
+      return 'denied';
+    }
     rmSync(join(dir, 'sync.vbs'), { force: true });
   } else if (platform === 'linux') {
     try { runner('systemctl', ['--user', 'disable', '--now', 'tokenrank-sync.service']); } catch {}

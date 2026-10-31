@@ -55,6 +55,7 @@ node node-service.mjs
 | DSH For OortCloud Work | 会话日志 `sessions/*/session.v*.jsonl.zst[d]` 的逐请求用量（精确到天、带模型）；日志不可读的会话退回 `session_projcache` 的会话累计值 | ✅ |
 | OortCodex Desktop | `%USERPROFILE%\OortCodexWork\cli\db\db.sqlite` 的 `model_usage`（ZCode 内核同构，逐请求） | ✅ |
 | OortOffice | 自带 ZCode 内核，用过后 `%LOCALAPPDATA%\OortOffice\zcode-home\.zcode\cli\db\db.sqlite` 的 `model_usage`；没打开过对话就没有这个库 | ✅ |
+| Genspark Super App | 本地无用量数据（薄壳客户端，用量在 genspark.ai 云端）；结论与可行路径见采集文档 | ❌ |
 
 **WorkBuddy 与 DevEco Code 补充采集（本仓库新增，0.2.21 起全盘只读扫描）**
 

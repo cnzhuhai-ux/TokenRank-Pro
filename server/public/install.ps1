@@ -27,7 +27,11 @@ try {
   $expected = (Get-Content -LiteralPath (Join-Path $tmp 'app.sha256') -Raw).Trim().ToLower()
   $actual = (Get-FileHash -LiteralPath (Join-Path $tmp 'app.tar.gz') -Algorithm SHA256).Hash.ToLower()
   if (-not $expected -or $expected -ne $actual) { throw '安装包校验失败，已停止安装' }
-  tar -xzf (Join-Path $tmp 'app.tar.gz') -C $stage
+  # 装了 Git Bash 的机器 PATH 里 GNU tar 会把 "C:\..." 当远程主机（Cannot connect to C:），
+  # 显式用系统自带 tar。
+  $tar = Join-Path $env:SystemRoot 'System32\tar.exe'
+  if (-not (Test-Path $tar)) { $tar = 'tar' }
+  & $tar -xzf (Join-Path $tmp 'app.tar.gz') -C $stage
   if ($LASTEXITCODE -ne 0) { throw '解压失败，旧版本尚未替换' }
   $manifest = Get-Content (Join-Path $stage 'package.json') -Raw | ConvertFrom-Json
   if ($manifest.name -ne 'tokenrank-client' -or $manifest.version -ne $VERSION) { throw '下载内容不是预期的独立同步器' }
@@ -41,6 +45,8 @@ try {
   if (Test-Path (Join-Path $app 'sync\agent.js')) { Run-Node --no-warnings (Join-Path $app 'bin\tokenrank.js') uninstall-agent }
   if (Test-Path $app) { Move-Item -LiteralPath $app -Destination (Join-Path $root ('app-backup-' + [guid]::NewGuid().ToString('N'))) }
   Move-Item -LiteralPath $stage -Destination $app
+  # 旧目录里若还有未退出的 watch 进程（uninstall 被提权任务拦住时的残留），换目录后按备份路径结束它
+  Get-CimInstance Win32_Process -Filter "Name = 'node.exe'" | Where-Object { $_.CommandLine -like '*app-backup-*tokenrank.js* watch*' } | ForEach-Object { try { Stop-Process -Id $_.ProcessId -Force -ErrorAction Stop } catch {} }
   $entry = Join-Path $app 'bin\tokenrank.js'
   $binDir = Join-Path $root 'bin'
   New-Item -ItemType Directory -Force -Path $binDir | Out-Null

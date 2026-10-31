@@ -12,6 +12,7 @@ TokenRank 的采集内核 token-watcher 官方支持 13 种 AI 编程工具，�
 | DSH For OortCloud Work | `DSH For OortCloud Work` | ① `~/.dsh-oortcloud-work/sessions/<workspace>/<session>/session.v*.jsonl.zst[d]` 会话日志的逐请求用量（`assistant/message` 的 `data.usage`，或旧版 `assistant/chunk` 的 `chunk.usage`），带 `time` 与模型，按北京时间精确分日；② 日志解不开的会话退回 `~/.dsh-oortcloud-work/storages/session_projcache/sessions/*.json` 的 `tokenUsage.totals`（会话累计） | ✅ 已生效（0.2.26 起优先读日志） |
 | OortCodex Desktop（独立程序，ZCode 内核） | `OortCodex Desktop` | `%USERPROFILE%\OortCodexWork\cli\db\db.sqlite` 的 `model_usage` 表（逐请求 input/output/cache_read/cache_creation 与 `started_at` 毫秒时间戳，与 ZCode 内核同构）；开发/预览版目录 `OortCodexWork Dev` / `OortCodexWork Preview`，按记录 id 去重。`%APPDATA%\OortCodexWork` 只是 Electron 界面缓存，不读 | ✅ 已生效（0.2.25 起） |
 | OortOffice（OnlyOffice 外壳 + 内置 ZCode 内核） | `OortOffice` | `%LOCALAPPDATA%\OortOffice\zcode-home\.zcode\cli\db\db.sqlite` 的 `model_usage`（HOME 被指到 `zcode-home`，与 ZCode 内核同构）。没用过对话的安装没有该库，静默跳过 | ✅ 已生效（0.2.26 起） |
+| Genspark Super App | `Genspark Super App` | 无本地用量数据（见下节排查结论） | ❌ 需 Genspark 平台侧支持 |
 
 刻意不读基础版 `~/.dsh`：token-watcher 官方支持该目录，读了会重复计数；只读 `-oortcloud-work` 变体。
 ZCode（token-watcher 的 `zcode`，数据在 `~/.zcode`）与 OortCodex Desktop（`~/OortCodexWork/cli`）
@@ -67,3 +68,23 @@ node --test client/test-sync/oort.test.mjs   # 采集与合并的单元测试
 排障：同步日志中 `oort dsh 会话 … 解析失败，已跳过` / `oort <扩展目录> 任务 …` /
 `oort <产品> 数据库读取失败，已跳过` 为单文件（单库）容错提示，不影响其余数据。
 设置环境变量 `TOKENRANK_OORT_DISABLE=1` 可临时关闭补充采集（测试亦用此开关做隔离）。
+
+## Genspark Super App 排查结论（2026-10-31）
+
+结论：**薄壳 Electron 客户端，本地不存在任何 token 用量数据**，无法本地采集。
+
+排查过的位置（`%APPDATA%\gensparkaio`）：
+
+| 位置 | 结果 |
+|---|---|
+| `logs/app.log*.log` | 只有 HTTP 状态行（`/api/is_login`、升级检查），无任何请求体/用量 JSON |
+| `logs/native.log.*` | 仅麦克风等设备事件 |
+| `IndexedDB/`、`Local Storage/`、`WebStorage/` | 无 `tokensIn`、`total_tokens`、`used_credits`、`"usage":` 任何标记 |
+| `Partitions/genspark-browser/`（内嵌浏览器分区） | 仅 132KB，无用量缓存 |
+| `tracking-spool.json`、`user-config.json` | 空 / 配置项 |
+| token-watcher 1.9.x `src/collectors/` | 无 genspark 采集器 |
+
+原因：Genspark 的 agent 执行、token 计量与 credits 账目全部在 genspark.ai 云端；
+`session.enc` 为加密会话，不破解。可行路径（任一即可接入，与 OortOffice 同类）：
+① Genspark 官方提供用量/credits 导出或 API；② 客户端把 agent 用量写入本地文件；
+③ 云端账目按用户汇总后由运维批量导入。

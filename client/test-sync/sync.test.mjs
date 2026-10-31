@@ -147,6 +147,30 @@ test('install and uninstall use isolated service names; dry run makes no changes
   assert.ok(calls.every(c=>!JSON.stringify(c).includes('.tokenmeter')));
 });
 
+test('win32 重装韧性：任务删不掉时安装复用现有任务而非失败，卸载降级为指引',t=>{
+  const f=fixture(t),home=join(f.root,'home'),dir=f.dir,log=[];
+  // 注册被拒但任务 action 指向本安装的 vbs → REUSED，安装继续
+  const reused=installAgent({platform:'win32',home,dir,runner:()=>Buffer.from('REUSED'),log:(m)=>log.push(m)});
+  assert.ok(!reused);
+  assert.ok(log.some(m=>m.includes('复用')));
+  // 注册被拒且任务不属于我们 → 带管理员指引的明确报错
+  assert.throws(
+    ()=>installAgent({platform:'win32',home,dir,runner:()=>Buffer.from('FAILED Access is denied'),log(){}}),
+    /schtasks \/Delete \/TN TokenRankSync/
+  );
+  // 无标记输出（旧桩子/旧 runner）默认成功，向后兼容
+  assert.ok(!installAgent({platform:'win32',home,dir,runner:()=>undefined,log(){}}));
+  // 卸载被拒 → 返回 'denied'、不抛错、给出 schtasks 指引、保留 vbs（任务还指向它）
+  log.length=0;
+  const result=uninstallAgent({platform:'win32',home,dir,runner:()=>Buffer.from('DENIED'),log:(m)=>log.push(m)});
+  assert.equal(result,'denied');
+  assert.ok(log.some(m=>m.includes('schtasks /Delete /TN TokenRankSync')));
+  assert.ok(existsSync(join(dir,'sync.vbs')),'DENIED 时保留 vbs：任务仍指向它');
+  // 正常卸载 → vbs 移除
+  assert.ok(!uninstallAgent({platform:'win32',home,dir,runner:()=>Buffer.from('DELETED'),log(){}}));
+  assert.ok(!existsSync(join(dir,'sync.vbs')));
+});
+
 test('migration preserves original service; only verified old TokenRank service is backed up and retired',t=>{
   const f=fixture(t),home=join(f.root,'home'),appRoot=join(f.root,'old-app');
   mkdirSync(join(appRoot,'bin'),{recursive:true});writeFileSync(join(appRoot,'package.json'),JSON.stringify({name:'tokenrank-client',version:'0.1.0'}));
