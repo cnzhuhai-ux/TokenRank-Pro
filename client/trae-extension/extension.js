@@ -29,7 +29,7 @@ const MODELMAP = join(tmpdir(), 'trae-credits-poc-models.json');
 const SNAPSHOT = join(homedir(), '.trae-cn', 'credits-usage.json');
 const REFRESH_MS = 30 * 60 * 1000;
 const PAGE_SIZE = 50;
-const MAX_PAGES = 3;
+const MAX_PAGES = 100;   // 安全上限：5000 条足以覆盖任何重度用户；实际以内层 rows/total 条件提前退出
 const PAGE_GAP_MS = 2000;
 const WINDOW_DAYS = 30;
 
