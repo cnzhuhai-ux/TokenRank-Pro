@@ -227,7 +227,6 @@ export function leaderboardCard({ title, entries, members, updatedAt, nowMs, per
     elements.push(boardRow({ rank: i + 1, entry: e,
       nameHtml: mdEscape(String(e.nickname || '').slice(0, 14)), suffix: mine ? ' 我' : '',
       modelText: e.top_model || '', toolText: e.top_tool || '', valueText: formatTokens(e.tokens), bold: mine }));
-    elements.push(divider());
   });
   // 我的行：只有本人没出现在上面列表里（50 名外/未展示）才补一行灰底，避免与榜内行重复；
   // 纯 Credits 用户没有 token 数字，不在 Token 榜补 0 值行
@@ -239,8 +238,8 @@ export function leaderboardCard({ title, entries, members, updatedAt, nowMs, per
   // Credits 榜单（Qoder 等按 Credits 计费的工具），与 Token 榜并列；工具列显示积分最多的计费工具
   const creditsEntries = entries.filter((e) => (e.credits || 0) > 0).sort((a, b) => b.credits - a.credits || a.uid - b.uid);
   if (creditsEntries.length) {
+    elements.push(divider());
     elements.push(markdown(`### <font color='grey'>Credits 榜单</font>`));
-    elements.push(markdown(`<font color='grey'>Qoder 等按 Credits 计费的工具</font>`));
     elements.push(rowOf([
       col(W_RANK, [markdown(`<font color='grey'>#</font>`)]),
       col(W_AVATAR, [markdown(empty)]),
@@ -254,17 +253,18 @@ export function leaderboardCard({ title, entries, members, updatedAt, nowMs, per
       elements.push(boardRow({ rank: i + 1, entry: e,
         nameHtml: mdEscape(String(e.nickname || '').slice(0, 14)), suffix: mine ? ' 我' : '',
         modelText: '', toolText: e.top_tool || '', valueText: `${credits2(e.credits)} Credits`, bold: mine }));
-      elements.push(divider());
     });
     const meInCreditsBoard = meUid != null && creditsEntries.slice(0, BOARD_LIMIT).some((e) => e.uid === meUid);
     if (me && (me.credits || 0) > 0 && !meInCreditsBoard) {
       elements.push(boardRow({ rank: me.credits_rank ?? '-', entry: {}, nameHtml: mdEscape(me.nickname), suffix: ' 我',
         modelText: '', toolText: me.top_tool || '', valueText: `${credits2(me.credits)} Credits`, bold: true, grey: true }));
     }
-    if (creditsEntries.length > BOARD_LIMIT) elements.push(noteEl(`Credits 榜单仅展示前 ${BOARD_LIMIT} 名，共 ${creditsEntries.length} 人有 Credits 用量`));
   }
-  if (tokenEntries.length > BOARD_LIMIT) {
-    elements.push(noteEl(`Token 榜仅展示前 ${BOARD_LIMIT} 名，共 ${tokenEntries.length} 人有用量`));
+  if (tokenEntries.length > BOARD_LIMIT || (creditsEntries.length && creditsEntries.length > BOARD_LIMIT)) {
+    const notes = [];
+    if (tokenEntries.length > BOARD_LIMIT) notes.push(`Token 榜仅展示前 ${BOARD_LIMIT} 名（共 ${tokenEntries.length} 人有用量）`);
+    if (creditsEntries.length > BOARD_LIMIT) notes.push(`Credits 榜仅展示前 ${BOARD_LIMIT} 名（共 ${creditsEntries.length} 人有 Credits 用量）`);
+    elements.push(noteEl(notes.join(' · ')));
   }
   if (footer) elements.push(markdown(footer));
   if (appUrl) elements.push(markdown(`[打开网页版完整界面（工具 / 模型分布图）](${appUrl})`));
