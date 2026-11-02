@@ -14,7 +14,12 @@ VERSION=$(cat "$DL/version.txt")
 cp "$DL/tokenrank-client.tar.gz" "$DL/tokenrank-client-$VERSION.tar.gz"
 node -e 'const c=require("crypto"),f=require("fs");process.stdout.write(c.createHash("sha256").update(f.readFileSync(process.argv[1])).digest("hex")+"\n")' "$DL/tokenrank-client-$VERSION.tar.gz" > "$DL/tokenrank-client-$VERSION.tar.gz.sha256"
 mkdir -p "$ROOT/../server/public/releases/$VERSION"
-cp "$ROOT/../server/public/install.sh" "$ROOT/../server/public/install.ps1" "$ROOT/../server/public/update.sh" "$ROOT/../server/public/update.ps1" "$ROOT/../server/public/releases/$VERSION/"
+cp "$ROOT/../server/public/install.sh" "$ROOT/../server/public/install.ps1" "$ROOT/../server/public/update.sh" "$ROOT/../server/public/update.ps1" \
+   "$ROOT/../server/public/install-trae.sh" "$ROOT/../server/public/install-trae.ps1" \
+   "$ROOT/../server/public/releases/$VERSION/"
+# 同时打包 Trae 采集扩展 VSIX（纯 Node，无 npm 依赖）
+node "$ROOT/scripts/pack-vsix.mjs"
+
 # Mirror the official Windows zstd for dsh sessions; the client pins the same SHA-256 (sync/zstd-check.js).
 # Alpine 构建镜像里没有 curl/shasum/unzip，按可用工具回退；分发包已缓存时只做校验，不联网。
 check_sha256() { # <expected> <file>
