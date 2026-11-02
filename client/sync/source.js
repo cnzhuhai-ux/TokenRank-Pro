@@ -112,6 +112,13 @@ export function readDays(path, { now = Date.now(), fromDay = null, costing = nul
         ...(creditsMap?.has(daynum) ? { credits: creditsMap.get(daynum) } : {}) });
     }
     if (skipped.length) log?.(`警告：${skipped.length} 天的统计数字超出上报协议范围，已跳过不上传（原始数据未改动）：${skipped.join('；')}`);
+    // 网关口径诊断（每次同步最多一行）：Qoder 等网关只在 usage.credits 落真实消耗，token 四项恒 0
+    // 且 model 是网关别名（如 qfmodel/dfmodel）而非用户可见模型名——模型维度对这部分天数没有数据可归，
+    // 不是采集或上报链路故障；要按模型拆分需平台侧提供用量接口（同 docs/oort-collection.md 的 OortOffice 结论）。
+    const creditsOnly = days.filter(day => Number(day.credits?.total) > 0 && day.tokens === 0 && !day.models.length);
+    if (creditsOnly.length) {
+      log?.(`口径提示：${creditsOnly.length} 天只有 credits（tokens=0 且无模型明细，多为 Qoder 等网关不下发真实计数），模型维度对这部分无数据`);
+    }
     db.exec('COMMIT');
     return days;
   } finally { db.close(); }

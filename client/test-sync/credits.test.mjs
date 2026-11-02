@@ -45,6 +45,23 @@ test('credit_usage(积分源)聚合为 day.credits：北京日界、纯积分日
   assert.equal(f.db.prepare('SELECT COUNT(*) n FROM credit_usage').get().n, 3);
 });
 
+test('网关口径提示：纯 credits 日（tokens=0 且无模型明细）输出一行诊断，混合日与无积分库不提示', t => {
+  const f = fixture(t);
+  // 无 credit_usage 表：creditsMap 为 null，不提示
+  const none = [];
+  readDays(f.path, { log: m => none.push(m) });
+  assert.equal(none.filter(m => m.includes('口径提示')).length, 0);
+  f.db.exec(CREDIT_DDL);
+  const addCredit = (ts, tool, amount, key) => f.db.prepare('INSERT INTO credit_usage VALUES(?,?,?,?)').run(ts, tool, amount, key);
+  addCredit(Date.parse('2024-01-02T12:00Z'), 'qoder', 4.5, 'k1');  // 与 events 同日（tokens>0）→ 不计入纯积分日
+  addCredit(Date.parse('2024-01-03T12:00Z'), 'qoder', 1.25, 'k2'); // 纯 credits 日（2024-01-03 北京时间）
+  const logs = [];
+  readDays(f.path, { log: m => logs.push(m) });
+  const hints = logs.filter(m => m.includes('口径提示'));
+  assert.equal(hints.length, 1);
+  assert.match(hints[0], /1 天只有 credits/);
+});
+
 test('credits 随报文上报；服务端确认后指纹稳定不重传', async t => {
   const f = fixture(t);
   f.db.exec(CREDIT_DDL);

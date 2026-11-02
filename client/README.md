@@ -1,6 +1,6 @@
 # TokenRank 独立同步器
 
-v0.2.30 为独立只读适配器，接入原版 [luwill/token-watcher](https://github.com/luwill/token-watcher)。Node.js 22.13+，无第三方运行依赖。
+v0.2.31 为独立只读适配器，接入原版 [luwill/token-watcher](https://github.com/luwill/token-watcher)。Node.js 22.13+，无第三方运行依赖。
 
 更换服务器、接入码或统计库后，会重新全量上传本机保留的历史用量，包含注销后重新接入的情况。上传中断可分批续传；重复执行同一账号的接入命令不会重传未变化的日期。
 
@@ -159,6 +159,10 @@ token-watcher 1.8 首次迁移 Codex 去重键时，会在统计库里留下一�
 `TOKENRANK_OORT_DISABLE=1` 可关闭全部补充采集，`TOKENRANK_EXTRA_DISABLE=1` 只关闭 WorkBuddy / DevEco / Genspark Code / ToCodex / Cline / JoyCode / QoderWork / Kiro / TeleAgent / CodeArts 部分，`TOKENRANK_CODEBUDDY_DISABLE=1` 只关闭 CodeBuddy 部分。
 
 **排查后明确不采的终端**（0.2.30 逐一排查本机数据后确认，结论存档于 [`../docs/prompts/`](../docs/prompts/)）：OpenCode 本体由原版覆盖；Zed 的 `threads.db` token 字段实测为空（zed.dev 云端计费）；豆包 / 豆包工作的用量在云端，本地只有编码 agent 的文件改动审计；Kimi 桌面端聊天与用量都在服务端，CLI（Kimi For Coding）由原版覆盖；OortCodex XP Edition 的会话 JSON 无 token 字段（主产品库已由 Oort 系采集）；CodeArts Space 内核同为 OpenCode，本机会话目录已被清空，待其重建后再评估；Comfy 本地是扩散模型图像生成，无 token 口径，云端用量不落本地。
+
+## Qoder 网关口径提示（0.2.31）
+
+Qoder（含 QoderWork）的企业网关只在 `usage.credits` 落真实消耗，token 四项恒为 0，且 `message.model` 是网关别名（本机实测 2026-10-14～11-02 共 14,457 行全部如此，别名 `qfmodel`/`dfmodel`/`qmodel_38max`，无 `qoder-custom-*` 用户模型标记）——本地不存在自定义模型的真实使用率数据，模型维度对这部分天数无可归因，不是采集或上报链路故障。0.2.31 起，读到「tokens=0 且无模型明细的纯 credits 日」时同步日志输出一行口径提示（每次同步最多一条），便于用户问询时快速定位；credits 总量与工具维度照常上报，不受影响。
 
 ## Trae 快照采集（0.2.22）
 
