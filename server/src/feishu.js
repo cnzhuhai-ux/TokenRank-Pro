@@ -22,7 +22,7 @@ const OPENID_PREFIX = 'feishu:';
 const CHAT_HASH_PREFIX = 'feishu:chat:';
 const DEFAULT_GROUP_NAME = '本群 Token 排名';
 const EVENT_MAX_AGE_MS = 10 * 60 * 1000;
-const BOARD_LIMIT = 8;   // 飞书卡片 2.0 递归 element 上限 200；4 列布局 + 8 行 ≈ 170 elements
+const BOARD_LIMIT = 10;  // 榜单展示行数上限；实际行数受卡片 200 组件硬限制自适应裁剪（见 leaderboardCard 的 ELEMENT_BUDGET）
 const EVENT_LOG_TTL_MS = 7 * 86_400_000;
 
 export const PERIOD_LABELS = { day: '今日', week: '本周', month: '本月', all: '总榜' };
@@ -178,19 +178,15 @@ const avatarImg = (imgKey) => ({
 const PERIOD_TABS = [['day', '今日'], ['week', '本周'], ['month', '本月'], ['all', '总榜']];
 
 /**
- * 榜单：飞书卡片 2.0 递归 element 上限 200（不是顶层 50），所以用 4 列紧凑布局：
- *   col1 名次 / col2 头像+昵称 / col3 工具·模型 / col4 数值
- * Token 榜 + Credits 榜各 8 行 + 2 行 me 行 + 2 行 header ≈ 170 elements。
+ * 榜单：六列单行（序号/头像/成员/工具/模型/用量），头像独占一列与昵称同行。
+ * 硬约束：飞书卡片 JSON 2.0 整卡「元素+组件」总数 ≤ 200，超出报 300305 整卡发送失败；
+ * 6 列每行占 13 个（column_set+6 column+6 内容），行数满时按 ELEMENT_BUDGET 自适应裁剪，
+ * 行数未触顶的中小群与历史正常版本渲染一致。
  */
 export function leaderboardCard({ title, entries, members, updatedAt, nowMs, period = 'day', meUid, me, footer, appUrl }) {
-  const elements = [];
-  elements.push(markdown(`### ${mdEscape(title)}`));
-  elements.push(markdown(PERIOD_TABS.map(([k, label]) =>
-    k === period ? `**<font color='orange'>${label}</font>**` : `<font color='grey'>${label}</font>`).join('　')));
-  elements.push(divider());
   const credits2 = (n) => (Number(n) || 0).toFixed(2);
-  // 4 列权重合计 15；头像并入昵称列、工具·模型合并为一列
-  const W_RANK = 1, W_NAME = 7, W_INFO = 4, W_VALUE = 3;
+  // 六列权重合计 15：单行等高，头像垂直居中，各列左右对齐；工具名截 12 字防整行过挤
+  const W_RANK = 1, W_AVATAR = 1, W_NAME = 4, W_TOOL = 3, W_MODEL = 3, W_VALUE = 3;
   const empty = "<font color='grey'></font>";
   const shortName = (s, max = 14) => String(s || '').trim().slice(0, max);
   const shortTool = (name) => {
@@ -199,80 +195,103 @@ export function leaderboardCard({ title, entries, members, updatedAt, nowMs, per
     const compact = text.length > 12 ? (text.split(' ')[0] || text).slice(0, 12) : text;
     return compact;
   };
-  /** 头像 + 昵称 合并为一列——用单个 markdown 的 <img> 占位（飞书卡片 markdown 不支持 <img>，
-   *  所以头像还是独立 column_set 列，昵称紧跟其后，用换行视觉合并） */
+  // 头像不可与昵称放同一列：列内多个元素纵向堆叠，会把头像和昵称拆成两行（222c804 的回归根因）
   const boardRow = ({ rank, entry, nameHtml, suffix = '', modelText, toolText, valueText, bold, grey }) => {
-    const text = (content) => markdown(content);
-    // 头像 + 昵称 同列，头像用 img 组件（飞书 card 支持 img），昵称用 markdown
-    const nameColEls = [];
-    if (entry.img_key) nameColEls.push(avatarImg(entry.img_key));
-    nameColEls.push(text(`${bold ? `**${nameHtml}**` : nameHtml}${suffix}`));
-    const info = [shortTool(toolText), modelText].filter(Boolean).map(mdEscape).join(' · ');
     const columns = [
-      col(W_RANK, [text(String(rank))]),
-      col(W_NAME, nameColEls),
-      col(W_INFO, [text(info ? `<font color='grey'>${info}</font>` : empty)]),
-      col(W_VALUE, [text(`<font color='orange'>${bold ? '**' : ''}${valueText}${bold ? '**' : ''}</font>`)]),
+      col(W_RANK, [markdown(String(rank))]),
+      col(W_AVATAR, [entry.img_key ? avatarImg(entry.img_key) : markdown(empty)]),
+      col(W_NAME, [markdown(`${bold ? `**${nameHtml}**` : nameHtml}${suffix}`)]),
+      col(W_TOOL, [markdown(toolText ? `<font color='grey'>${mdEscape(shortTool(toolText))}</font>` : empty)]),
+      col(W_MODEL, [markdown(modelText ? `<font color='grey'>${mdEscape(modelText)}</font>` : empty)]),
+      col(W_VALUE, [markdown(`<font color='orange'>${bold ? '**' : ''}${valueText}${bold ? '**' : ''}</font>`)]),
     ];
     return grey
       ? { tag: 'column_set', flex_mode: 'none', background_style: 'grey', columns }
       : rowOf(columns);
   };
   const tokenEntries = entries.filter((e) => (e.tokens || 0) > 0);
-  elements.push(rowOf([
-    col(W_RANK, [markdown(`<font color='grey'>#</font>`)]),
-    col(W_NAME, [markdown(`<font color='grey'>成员 · ${members ?? tokenEntries.length} 人</font>`)]),
-    col(W_INFO, [markdown(`<font color='grey'>工具 · 模型</font>`)]),
-    col(W_VALUE, [markdown(`<font color='grey'>Token 用量</font>`)]),
-  ]));
-  if (!tokenEntries.length) {
-    elements.push(markdown('这个时间段还没有人上报 Token 用量。先单聊我「**绑定**」接入电脑，再回来发「**加入**」上榜。'));
-  }
-  tokenEntries.slice(0, BOARD_LIMIT).forEach((e, i) => {
-    const mine = meUid != null && e.uid === meUid;
-    elements.push(boardRow({ rank: i + 1, entry: e,
-      nameHtml: mdEscape(shortName(e.nickname)), suffix: mine ? ' 我' : '',
-      modelText: e.top_model || '', toolText: e.top_tool || '', valueText: formatTokens(e.tokens), bold: mine }));
-  });
-  const meInTokensBoard = meUid != null && tokenEntries.slice(0, BOARD_LIMIT).some((e) => e.uid === meUid);
-  if (me && (me.tokens || 0) > 0 && !meInTokensBoard) {
-    elements.push(boardRow({ rank: me.rank, entry: {}, nameHtml: mdEscape(me.nickname), suffix: ' 我',
-      modelText: me.top_model || '', toolText: me.top_tool || '', valueText: formatTokens(me.tokens), bold: true, grey: true }));
-  }
   const creditsEntries = entries.filter((e) => (e.credits || 0) > 0).sort((a, b) => b.credits - a.credits || a.uid - b.uid);
-  if (creditsEntries.length) {
+  // 递归元素计数：column_set/column/内容组件每个计 1（对应飞书 300305 的统计口径）
+  const countEl = (els) => (els ?? []).reduce((sum, el) => sum + 1 + countEl(el.columns ?? el.elements ?? []), 0);
+  // 行数不同会连带 me 行与截断提示的出现与否，因此按给定行数完整重建
+  const buildBoard = (nTok, nCre) => {
+    const elements = [];
+    elements.push(markdown(`### ${mdEscape(title)}`));
+    elements.push(markdown(PERIOD_TABS.map(([k, label]) =>
+      k === period ? `**<font color='orange'>${label}</font>**` : `<font color='grey'>${label}</font>`).join('　')));
     elements.push(divider());
-    elements.push(markdown(`### <font color='grey'>Credits 榜单</font>`));
     elements.push(rowOf([
       col(W_RANK, [markdown(`<font color='grey'>#</font>`)]),
-      col(W_NAME, [markdown(`<font color='grey'>成员 · ${creditsEntries.length} 人</font>`)]),
-      col(W_INFO, [markdown(`<font color='grey'>计费工具</font>`)]),
-      col(W_VALUE, [markdown(`<font color='grey'>Credits</font>`)]),
+      col(W_AVATAR, [markdown(empty)]),
+      col(W_NAME, [markdown(`<font color='grey'>成员 · ${members ?? tokenEntries.length} 人</font>`)]),
+      col(W_TOOL, [markdown(`<font color='grey'>工具</font>`)]),
+      col(W_MODEL, [markdown(`<font color='grey'>模型</font>`)]),
+      col(W_VALUE, [markdown(`<font color='grey'>Token 用量</font>`)]),
     ]));
-    creditsEntries.slice(0, BOARD_LIMIT).forEach((e, i) => {
+    if (!tokenEntries.length) {
+      elements.push(markdown('这个时间段还没有人上报 Token 用量。先单聊我「**绑定**」接入电脑，再回来发「**加入**」上榜。'));
+    }
+    tokenEntries.slice(0, nTok).forEach((e, i) => {
       const mine = meUid != null && e.uid === meUid;
       elements.push(boardRow({ rank: i + 1, entry: e,
         nameHtml: mdEscape(shortName(e.nickname)), suffix: mine ? ' 我' : '',
-        modelText: '', toolText: e.top_tool || '', valueText: `${credits2(e.credits)} Credits`, bold: mine }));
+        modelText: e.top_model || '', toolText: e.top_tool || '', valueText: formatTokens(e.tokens), bold: mine }));
     });
-    const meInCreditsBoard = meUid != null && creditsEntries.slice(0, BOARD_LIMIT).some((e) => e.uid === meUid);
-    if (me && (me.credits || 0) > 0 && !meInCreditsBoard) {
-      elements.push(boardRow({ rank: me.credits_rank ?? '-', entry: {}, nameHtml: mdEscape(me.nickname), suffix: ' 我',
-        modelText: '', toolText: me.top_tool || '', valueText: `${credits2(me.credits)} Credits`, bold: true, grey: true }));
+    const meInTokensBoard = meUid != null && tokenEntries.slice(0, nTok).some((e) => e.uid === meUid);
+    if (me && (me.tokens || 0) > 0 && !meInTokensBoard) {
+      elements.push(boardRow({ rank: me.rank, entry: {}, nameHtml: mdEscape(me.nickname), suffix: ' 我',
+        modelText: me.top_model || '', toolText: me.top_tool || '', valueText: formatTokens(me.tokens), bold: true, grey: true }));
     }
+    if (creditsEntries.length) {
+      elements.push(divider());
+      elements.push(markdown(`### <font color='grey'>Credits 榜单</font>`));
+      elements.push(rowOf([
+        col(W_RANK, [markdown(`<font color='grey'>#</font>`)]),
+        col(W_AVATAR, [markdown(empty)]),
+        col(W_NAME, [markdown(`<font color='grey'>成员 · ${creditsEntries.length} 人</font>`)]),
+        col(W_TOOL, [markdown(`<font color='grey'>计费工具</font>`)]),
+        col(W_MODEL, [markdown(empty)]),
+        col(W_VALUE, [markdown(`<font color='grey'>Credits</font>`)]),
+      ]));
+      creditsEntries.slice(0, nCre).forEach((e, i) => {
+        const mine = meUid != null && e.uid === meUid;
+        elements.push(boardRow({ rank: i + 1, entry: e,
+          nameHtml: mdEscape(shortName(e.nickname)), suffix: mine ? ' 我' : '',
+          modelText: '', toolText: e.top_tool || '', valueText: `${credits2(e.credits)} Credits`, bold: mine }));
+      });
+      const meInCreditsBoard = meUid != null && creditsEntries.slice(0, nCre).some((e) => e.uid === meUid);
+      if (me && (me.credits || 0) > 0 && !meInCreditsBoard) {
+        elements.push(boardRow({ rank: me.credits_rank ?? '-', entry: {}, nameHtml: mdEscape(me.nickname), suffix: ' 我',
+          modelText: '', toolText: me.top_tool || '', valueText: `${credits2(me.credits)} Credits`, bold: true, grey: true }));
+      }
+    }
+    if (tokenEntries.length > nTok || (creditsEntries.length && creditsEntries.length > nCre)) {
+      const notes = [];
+      if (tokenEntries.length > nTok) notes.push(`Token 榜仅展示前 ${nTok} 名（共 ${tokenEntries.length} 人有用量）`);
+      if (creditsEntries.length > nCre) notes.push(`Credits 榜仅展示前 ${nCre} 名（共 ${creditsEntries.length} 人有 Credits 用量）`);
+      elements.push(noteEl(notes.join(' · ')));
+    }
+    if (footer) elements.push(markdown(footer));
+    if (appUrl) elements.push(markdown(`[打开网页版完整界面（工具 / 模型分布图）](${appUrl})`));
+    const bits = [];
+    if (updatedAt && nowMs && nowMs > updatedAt) bits.push(`更新于 ${Math.max(1, Math.round((nowMs - updatedAt) / 60000))} 分钟前`);
+    bits.push('数据由用户电脑上报，仅供参考');
+    elements.push(noteEl(bits.join(' · ')));
+    return elements;
+  };
+  // 行数预算：整卡超 200 组件会发送失败，留 10 个做安全垫；优先裁行多的榜（先 Credits 保 Token 主榜），裁到 1 行为止
+  const ELEMENT_BUDGET = 190;
+  let nTok = Math.min(tokenEntries.length, BOARD_LIMIT);
+  let nCre = Math.min(creditsEntries.length, BOARD_LIMIT);
+  let elements = buildBoard(nTok, nCre);
+  const minTok = tokenEntries.length ? 1 : 0;
+  const minCre = creditsEntries.length ? 1 : 0;
+  while (countEl(elements) > ELEMENT_BUDGET && (nTok > minTok || nCre > minCre)) {
+    if (nCre >= nTok && nCre > minCre) nCre -= 1;
+    else if (nTok > minTok) nTok -= 1;
+    else nCre -= 1;
+    elements = buildBoard(nTok, nCre);
   }
-  if (tokenEntries.length > BOARD_LIMIT || (creditsEntries.length && creditsEntries.length > BOARD_LIMIT)) {
-    const notes = [];
-    if (tokenEntries.length > BOARD_LIMIT) notes.push(`Token 榜仅展示前 ${BOARD_LIMIT} 名（共 ${tokenEntries.length} 人有用量）`);
-    if (creditsEntries.length > BOARD_LIMIT) notes.push(`Credits 榜仅展示前 ${BOARD_LIMIT} 名（共 ${creditsEntries.length} 人有 Credits 用量）`);
-    elements.push(noteEl(notes.join(' · ')));
-  }
-  if (footer) elements.push(markdown(footer));
-  if (appUrl) elements.push(markdown(`[打开网页版完整界面（工具 / 模型分布图）](${appUrl})`));
-  const bits = [];
-  if (updatedAt && nowMs && nowMs > updatedAt) bits.push(`更新于 ${Math.max(1, Math.round((nowMs - updatedAt) / 60000))} 分钟前`);
-  bits.push('数据由用户电脑上报，仅供参考');
-  elements.push(noteEl(bits.join(' · ')));
   return cardBody(elements);
 }
 
@@ -775,7 +794,7 @@ export function createFeishuService({ fetcher = (...args) => fetch(...args), now
       const shown = board.entries.slice(0, BOARD_LIMIT);
       await Promise.all(shown.map(async (e) => { e.img_key = await ensureAvatarKey(env, e); }));
       const meEntry = mine && account ? board.entries.find((e) => e.uid === account.id) : null;
-      const me = mine ? { rank: mine.rank, tokens: mine.tokens, nickname: account.nickname, top_model: meEntry?.top_model ?? null, top_tool: meEntry?.top_tool ?? null } : null;
+      const me = mine ? { rank: mine.rank, tokens: mine.tokens, nickname: account.nickname, top_model: meEntry?.top_model ?? null, top_tool: meEntry?.top_tool ?? null, credits: mine.credits, credits_rank: mine.credits_rank } : null;
       return reply(leaderboardCard({
         title: `${mdEscape(found.name)} · Token 排行榜`,
         entries: board.entries, members: memberCount?.c ?? null, updatedAt: board.updatedAt, nowMs,
@@ -788,7 +807,7 @@ export function createFeishuService({ fetcher = (...args) => fetch(...args), now
     await Promise.all(shownAll.map(async (e) => { e.img_key = await ensureAvatarKey(env, e); }));
     const mine = account ? await globalStanding(env, account.id, from, to) : null;
     const meEntry = mine ? board.entries.find((e) => e.uid === account.id) : null;
-    const me = mine ? { rank: mine.rank, tokens: mine.tokens, nickname: account.nickname, top_model: meEntry?.top_model ?? null, top_tool: meEntry?.top_tool ?? null } : null;
+    const me = mine ? { rank: mine.rank, tokens: mine.tokens, nickname: account.nickname, top_model: meEntry?.top_model ?? null, top_tool: meEntry?.top_tool ?? null, credits: mine.credits, credits_rank: mine.credits_rank } : null;
     return reply(leaderboardCard({
       title: `广场 · Token 排行榜`,
       entries: board.entries, members: board.entries.length, updatedAt: board.updatedAt, nowMs,

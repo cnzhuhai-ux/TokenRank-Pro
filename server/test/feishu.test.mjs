@@ -5,7 +5,7 @@ import { readFileSync } from 'node:fs';
 import worker from '../src/worker.js';
 import { beijingDay, beijingDaysAgo } from '../src/lib.js';
 import {
-  createFeishuService, parseCommand, formatTokens, feishuChatHash, feishuSignature, PERIOD_LABELS,
+  createFeishuService, parseCommand, formatTokens, feishuChatHash, feishuSignature, PERIOD_LABELS, leaderboardCard,
 } from '../src/feishu.js';
 
 const NOW = Date.parse('2026-10-28T12:00:00.000Z'); // 北京时间 20:00
@@ -550,7 +550,7 @@ test('ensureAvatarKey 上传头像换 img_key 并按来源缓存，命中后不�
   assert.equal(await service._internals.ensureAvatarKey(env, { uid: 2, avatar_path: null, avatar_url: null }), null);
 });
 
-test('榜单卡片 4 列紧凑布局（飞书 element 上限 200）：头像+昵称合并、工具·模型合并', async (t) => {
+test('榜单卡片 6 列布局：头像独占列与昵称同行，工具/模型分列，组件总数不超 200', async (t) => {
   const { db, env } = fixture(t);
   await seedGroupBoard(db);
   const today = beijingDay(NOW);
@@ -564,23 +564,26 @@ test('榜单卡片 4 列紧凑布局（飞书 element 上限 200）：头像+昵
   const card = sentCards(log)[0];
   const rows = card.body.elements.filter((el) => el.tag === 'column_set');
   const cell = (row, index) => flat({ body: { elements: row.columns[index].elements } });
-  // 4 列：名次 / 头像+昵称 / 工具·模型 / 数值
+  // 6 列：名次/头像/成员/工具/模型/数值
   const header = rows[0];
-  assert.equal(header.columns.length, 4, '四列：名次/成员/工具·模型/用量');
-  assert.match(cell(header, 1), /成员/);
-  assert.equal(cell(header, 2), "<font color='grey'>工具 · 模型</font>");
-  // 张三行：昵称在 col1，工具·模型合并列里包含 codex 和 claude-sonnet
+  assert.equal(header.columns.length, 6, '六列：名次/头像/成员/工具/模型/用量');
+  assert.match(cell(header, 2), /成员/);
+  assert.equal(cell(header, 3), "<font color='grey'>工具</font>");
+  assert.equal(cell(header, 4), "<font color='grey'>模型</font>");
+  // 张三行：头像列只放头像一个元素（列内多元素会纵向堆叠拆成两行），昵称独占相邻列
   const first = rows[1];
-  assert.match(cell(first, 1), /张三/);
-  assert.match(cell(first, 2), /codex/);
-  assert.match(cell(first, 2), /claude-sonnet-4\.5/);
+  assert.equal(first.columns[1].elements.length, 1, '头像列只放头像/占位一个元素');
+  assert.match(cell(first, 2), /张三/);
+  assert.match(cell(first, 3), /codex/);
+  assert.match(cell(first, 4), /claude-sonnet-4\.5/);
+  assert.equal(/claude/.test(cell(first, 3)), false, '工具列不混入模型名');
   // 递归 elements 计数验证不超 200
   let cs = 0, col = 0, md = 0, img = 0, hr = 0;
   const walk = (arr) => { for (const el of arr) { if (!el || typeof el !== 'object') continue; if (el.tag === 'markdown') md++; if (el.tag === 'hr') hr++; if (el.tag === 'img') img++; if (el.tag === 'column_set') { cs++; walk(el.columns || []); } if (el.tag === 'column') { col++; walk(el.elements || []); } } };
   walk(card.body.elements);
   const total = cs + col + md + img + hr;
   assert.ok(total <= 200, `递归 element ${total} 应 <= 200`);
-  // Credits 榜
+  // Credits 榜：表头模型列为空占位，计费工具在工具列
   db.prepare('UPDATE daily_totals SET tokens=0, requests=0, tools_json=?, credits_json=? WHERE user_id=3 AND day=?').run('[]', JSON.stringify({ total: 12, tools: [['qoder', 12]] }), today);
   db.prepare("UPDATE rank_group_members SET hidden=0 WHERE user_id=3").run();
   const log2 = [];
@@ -588,10 +591,32 @@ test('榜单卡片 4 列紧凑布局（飞书 element 上限 200）：头像+昵
   await fire(service2, env, messageEvent({ openId: 'ou_2', eventId: 'evt-tool-col-2' }));
   const card2 = sentCards(log2)[0];
   const creditRows = card2.body.elements.filter((el) => el.tag === 'column_set');
-  const creditHeader = creditRows.find((r) => flat({ body: { elements: r.columns[3].elements } }).includes('Credits'));
+  const creditHeader = creditRows.find((r) => flat({ body: { elements: r.columns[5].elements } }).includes('Credits'));
   assert.ok(creditHeader, '存在 Credits 榜表头');
-  assert.equal(cell(creditHeader, 2), "<font color='grey'>计费工具</font>");
-  const wangwu = creditRows.find((r) => cell(r, 1).includes('王五'));
+  assert.equal(cell(creditHeader, 3), "<font color='grey'>计费工具</font>");
+  const wangwu = creditRows.find((r) => cell(r, 2).includes('王五'));
   assert.ok(wangwu, '王五出现在 Credits 榜');
-  assert.match(cell(wangwu, 2), /qoder/);
+  assert.match(cell(wangwu, 3), /qoder/);
+});
+
+test('榜单大名单自适应裁行：整卡组件不超 200，提示实际展示行数与榜外我行', () => {
+  const entries = Array.from({ length: 30 }, (_, i) => ({
+    uid: i + 1, nickname: `成员${i + 1}`, tokens: 900000 - i, credits: i < 20 ? 400 - i : 0,
+    top_tool: 'codex', top_model: 'glm-5.3-flash', img_key: 'img_v2_avatar',
+  }));
+  const me = { rank: 31, tokens: 5, nickname: '我自己', top_model: 'glm-5.3-flash', top_tool: 'codex', credits: 1, credits_rank: 21 };
+  const card = leaderboardCard({ title: '广场 · Token 排行榜', entries, members: 31, nowMs: NOW, meUid: 99, me, appUrl: 'https://rank.test/app' });
+  let total = 0;
+  const walk = (arr) => { for (const el of arr) { if (!el || typeof el !== 'object') continue; total += 1; if (el.tag === 'column_set') walk(el.columns || []); if (el.tag === 'column') walk(el.elements || []); } };
+  walk(card.body.elements);
+  assert.ok(total <= 200, `递归 element ${total} 应 <= 200`);
+  const text = flat(card);
+  assert.match(text, /Token 榜仅展示前 (\d+) 名（共 30 人有用量）/);
+  assert.match(text, /Credits 榜仅展示前 (\d+) 名（共 20 人有 Credits 用量）/);
+  // 裁行后我不在榜内 → Token 榜与 Credits 榜各保留灰底「我」行
+  const rows = card.body.elements.filter((el) => el.tag === 'column_set');
+  const mine = rows.filter((r) => r.background_style === 'grey');
+  assert.equal(mine.length, 2, 'Token 与 Credits 各保留一行灰底我行');
+  const meCells = mine.map((r) => flat({ body: { elements: r.columns[2].elements } }));
+  assert.ok(meCells.every((c) => c.includes('我自己')), '我行昵称正确');
 });
