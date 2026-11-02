@@ -61,7 +61,7 @@ spec:
         fsGroup: 10001
       initContainers:
         - name: init-db
-          image: hb.oortcloudsmart.com/ai/tokenrank:8ade7da-b11021133
+          image: hb.oortcloudsmart.com/ai/tokenrank:bd80d48-b11021202
           command: ["node", "/app/server/init-db.mjs"]
           envFrom:
             - configMapRef:
@@ -75,7 +75,7 @@ spec:
               drop: ["ALL"]
       containers:
         - name: tokenrank
-          image: hb.oortcloudsmart.com/ai/tokenrank:8ade7da-b11021133
+          image: hb.oortcloudsmart.com/ai/tokenrank:bd80d48-b11021202
           imagePullPolicy: IfNotPresent
           ports:
             - name: http
