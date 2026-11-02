@@ -4,6 +4,7 @@ import { readConfig, writeConfig, SYNC_DIR, normalizeUrl, normalizeToken, reject
 import { readCostedDays } from './costs.js';
 import { collectOortDays, mergeOortDays } from './oort.js';
 import { collectTraeDays } from './trae.js';
+import { collectCodebuddyDays } from './codebuddy.js';
 import { collectExtraDays } from './extra.js';
 import { inspectUpstream, collectorOutdated, MIN_REPORT_VERSION } from './upstream.js';
 const CLIENT_VERSION = JSON.parse(readFileSync(new URL('../package.json', import.meta.url),'utf8')).version;
@@ -77,6 +78,10 @@ export async function sync({ dir = SYNC_DIR, full = false, replace = false, dryR
     if (process.env.TOKENRANK_TRAE_DISABLE !== '1') {
       try { supplemental.push(...collectTraeDays({ log })); }
       catch (err) { log(`Trae 补充采集失败，已跳过：${err?.message || err}`); }
+    }
+    if (process.env.TOKENRANK_OORT_DISABLE !== '1' && process.env.TOKENRANK_CODEBUDDY_DISABLE !== '1') {
+      try { supplemental.push(...collectCodebuddyDays({ log })); }
+      catch (err) { log(`CodeBuddy 补充采集失败，已跳过：${err?.message || err}`); }
     }
     days = mergeOortDays(days, supplemental);
     const sourceDay=days.at(-1)?.day || null;

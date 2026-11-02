@@ -57,13 +57,14 @@ node node-service.mjs
 | OortOffice | 自带 ZCode 内核，用过后 `%LOCALAPPDATA%\OortOffice\zcode-home\.zcode\cli\db\db.sqlite` 的 `model_usage`；没打开过对话就没有这个库 | ✅ |
 | Genspark Code（Super App 内的编码终端） | `~/.local/share/gencode/opencode.db`（OpenCode 同构，逐请求 tokens；Super App 壳与网页 agents 等其余空间用量仍在 genspark.ai 云端，见采集文档） | ✅ 0.2.27 起 |
 
-**WorkBuddy、DevEco Code 与 ToCodex 补充采集（本仓库新增；0.2.21 起全盘只读扫描）**
+**WorkBuddy、DevEco Code、ToCodex 与 CodeBuddy 补充采集（本仓库新增；0.2.21 起全盘只读扫描）**
 
 | 终端 | 数据源 | 状态 |
 |---|---|---|
 | WorkBuddy（国内版、国际版、便携安装） | 各产品目录下的 `projects/*.jsonl` 转录；只采集 token-watcher 未覆盖的目录，按消息 ID 去重 | ✅ |
 | DevEco Code | OpenCode 同构的 `deveco.db`（`session` / `message.data.tokens`） | ✅ |
 | ToCodex（桌面端与 CLI，0.2.28 起） | 自带扩展 `tocodex.tocodex` 的任务记录 `tasks/*/ui_messages.json`（逐请求 tokensIn/tokensOut/cacheReads/cacheWrites，失败与重试中的请求无 token 字段、不重复计）。桌面端覆盖 `%APPDATA%\ToCodex Desktop` 标准安装与 `<安装目录>\data\user-data` 便携安装（含自定义盘的 Program Files），CLI 读 `~/.vscode-mock/global-storage`；逐请求不落模型名，只记工具维度用量 | ✅ |
+| CodeBuddy / CodeBuddy CN（0.2.29 起） | 扩展日志里的 `notifyStepEnd` 逐请求用量（输入 / 输出 / 缓存从输入中拆分），按北京时间分日，带工具、模型和工具—模型明细；模型取自同日志的初始化记录，缺失时标 `unknown`。只读日志，不上传对话内容；目前不含 CLI | ✅ |
 
 扫描范围是 Windows 的全部盘符、macOS 的 `/Volumes/*`、Linux 的 `/` 与 `/mnt/*`、`/media/*`；逐盘有界遍历并跳过系统、缓存和依赖目录，再补充检查 `APPDATA`、`LOCALAPPDATA`、`XDG_*` 和用户主目录等已知位置。单文件或单个统计库损坏只跳过该项并在同步日志中告警，不中断同步。
 
@@ -143,7 +144,7 @@ tokenrank rank push --full --dry-run
 
 | 目录 | 内容 |
 |---|---|
-| `client/sync` | 电脑端同步器（当前 0.2.28）：接入、只读同步、心跳、超时恢复、更新重算、备份清理；含 Oort 系工具补充采集（`client/sync/oort.js`，见 [`docs/oort-collection.md`](docs/oort-collection.md)）、WorkBuddy / DevEco Code / Genspark Code / ToCodex 全盘补充采集（`client/sync/extra.js`）与 Trae 快照采集（`client/sync/trae.js`，扩展源码在 `client/trae-extension`，见 [`docs/trae-collection.md`](docs/trae-collection.md)） |
+| `client/sync` | 电脑端同步器（当前 0.2.29）：接入、只读同步、心跳、超时恢复、更新重算、备份清理；含 Oort 系工具补充采集（`client/sync/oort.js`，见 [`docs/oort-collection.md`](docs/oort-collection.md)）、WorkBuddy / DevEco Code / Genspark Code / ToCodex 全盘补充采集（`client/sync/extra.js`）、CodeBuddy 扩展日志采集（`client/sync/codebuddy.js`）与 Trae 快照采集（`client/sync/trae.js`，扩展源码在 `client/trae-extension`，见 [`docs/trae-collection.md`](docs/trae-collection.md)） |
 | `client/bin/tokenrank.js` | 同步器命令行入口 |
 | `server` | Cloudflare Worker、D1 表结构与迁移、安装和更新脚本；含飞书机器人（`server/src/feishu.js`）与 Node 单进程部署入口（`server/node-service.mjs` + `server/src/d1-node.mjs`） |
 | `miniprogram` | 原生微信小程序 |

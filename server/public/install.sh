@@ -2,7 +2,7 @@
 # Reuse an existing original collector; bootstrap a missing dependency before sync.
 set -eu
 SERVER="${1:-}"; TOKEN="${2:-}"
-VERSION=0.2.28
+VERSION=0.2.29
 [ -n "$SERVER" ] && [ -n "$TOKEN" ] || { echo '缺少服务器地址或接入码'; exit 1; }
 command -v node >/dev/null 2>&1 || { echo '请先安装 Node.js 22.13+'; exit 1; }
 node -e 'const [a,b]=process.versions.node.split(".").map(Number); if(a<22||(a===22&&b<13))process.exit(1)' || { echo '需要 Node.js 22.13+'; exit 1; }

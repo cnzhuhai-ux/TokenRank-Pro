@@ -1,6 +1,6 @@
 # TokenRank 独立同步器
 
-v0.2.28 为独立只读适配器，接入原版 [luwill/token-watcher](https://github.com/luwill/token-watcher)。Node.js 22.13+，无第三方运行依赖。
+v0.2.29 为独立只读适配器，接入原版 [luwill/token-watcher](https://github.com/luwill/token-watcher)。Node.js 22.13+，无第三方运行依赖。
 
 更换服务器、接入码或统计库后，会重新全量上传本机保留的历史用量，包含注销后重新接入的情况。上传中断可分批续传；重复执行同一账号的接入命令不会重传未变化的日期。
 
@@ -147,9 +147,10 @@ token-watcher 1.8 首次迁移 Codex 去重键时，会在统计库里留下一�
 - **DevEco Code**：读取 OpenCode 同构的 `deveco.db`，按 `message.data.tokens` 中的 input / output / cache.read / cache.write 汇总，reasoning 已包含在 output 内，不重复相加。
 - **Genspark Code（0.2.27）**：Genspark Super App 内编码终端（gencode）的库 `gencode/opencode.db` 与 OpenCode 同构，按同样口径汇总；只在名为 `gencode` 的目录里找库，散落的 `opencode.db` 属于独立安装的 opencode（原版已覆盖），不会抢。Super App 其余空间（网页 agents 聊天等）用量仍在 genspark.ai 云端，本地无数据。
 - **ToCodex（0.2.28）**：桌面端（标准安装与便携安装，含自定义盘的 Program Files）与 CLI 的任务记录 `tasks/<任务>/ui_messages.json`，详见下文「ToCodex 采集（0.2.28）」。
+- **CodeBuddy（0.2.29）**：CodeBuddy / CodeBuddy CN 的扩展日志按 `notifyStepEnd` 逐请求分日，带工具、模型和工具—模型明细，详见下文「CodeBuddy 采集（0.2.29）」。
 - **容错**：每个文件或数据库单独捕获异常，损坏项写入同步日志后跳过，不影响其他来源和正常上报。数据目录只读，不修改任何产品文件。
 
-`TOKENRANK_OORT_DISABLE=1` 可关闭全部补充采集，`TOKENRANK_EXTRA_DISABLE=1` 只关闭 WorkBuddy / DevEco / Genspark Code / ToCodex 部分。
+`TOKENRANK_OORT_DISABLE=1` 可关闭全部补充采集，`TOKENRANK_EXTRA_DISABLE=1` 只关闭 WorkBuddy / DevEco / Genspark Code / ToCodex 部分，`TOKENRANK_CODEBUDDY_DISABLE=1` 只关闭 CodeBuddy 部分。
 
 ## Trae 快照采集（0.2.22）
 
@@ -246,3 +247,10 @@ Windows 上的原版采集计划任务 `TokenWatcherForTokenRank` 被手动或�
 ## Windows 自动准备 zstd（0.2.20）
 
 Windows 上存在 dsh 会话（`~/.dsh/sessions`）而找不到 `zstd` 时，接入和更新会从 TokenRank 服务器下载官方 zstd 1.5.7 Windows 版（facebook/zstd 发布的 `zstd-v1.5.7-win64.zip` 中的 `zstd.exe`，BSD 许可），按固定 SHA-256 校验后只放在 `~/.tokenrank/bin`：不需要管理员权限，不改系统 PATH，不调用 winget。原版的首次扫描、更新重算和 `TokenWatcherForTokenRank` 采集任务都把这个目录放在 PATH 最前；已接入用户的采集启动脚本会在下次接入或更新时改写并重启一次。下载失败或校验不符时不使用该文件，并给出手动安装命令。macOS 与 Linux 仍只提示 `brew install zstd` 或用包管理器安装。删除 `~/.tokenrank/bin/zstd.exe` 即可移除。
+
+
+## CodeBuddy 采集（0.2.29）
+
+同步器只读 CodeBuddy / CodeBuddy CN 的本机扩展日志，从 `notifyStepEnd` 提取逐请求用量，按北京时间日期上报工具、模型和工具—模型明细。缓存从输入 token 中拆分，重复日志与累计摘要不重复计数。支持系统标准用户数据目录，历史回填以尚未轮转删除的日志为限；不上传对话内容。
+
+模型使用同日志的初始化记录；缺少上下文或同类 agent 出现多个模型时标为 `unknown`，避免错误归属。目前针对 IDE 日志，不包含 CLI。`TOKENRANK_CODEBUDDY_DISABLE=1` 可关闭本项采集。更新同步器后，下次同步自动补报已保留日志，无需清空云端历史。

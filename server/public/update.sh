@@ -3,7 +3,7 @@
 set -eu
 SERVER="${1:-}"
 [ -n "$SERVER" ] || { echo '用法：curl -fsSL <服务器>/update.sh | sh -s <服务器>'; exit 1; }
-VERSION=0.2.28
+VERSION=0.2.29
 command -v node >/dev/null 2>&1 || { echo '请先安装 Node.js 22.13+'; exit 1; }
 node -e 'const [a,b]=process.versions.node.split(".").map(Number); if(a<22||(a===22&&b<13))process.exit(1)' || { echo '需要 Node.js 22.13+'; exit 1; }
 node -e 'const u=new URL(process.argv[1]); if(u.protocol!=="https:"&&!(["localhost","127.0.0.1","[::1]"].includes(u.hostname)&&u.protocol==="http:"))process.exit(1); if(u.username||u.password||u.search||u.hash)process.exit(1)' "$SERVER" || { echo '服务器地址无效：需使用 HTTPS'; exit 1; }
