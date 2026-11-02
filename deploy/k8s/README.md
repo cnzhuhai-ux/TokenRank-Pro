@@ -2,6 +2,8 @@
 
 代码来自独立拉取的 GitLab 副本（本目录即该副本），提交 `2d2ab97`。
 
+> 新协作者从 [DEPLOY-HANDOVER.md](DEPLOY-HANDOVER.md) 开始：地址、kubeconfig/RBAC、标准发布流程与验证清单。
+
 ## 1. 架构
 
 ```
