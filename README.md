@@ -27,7 +27,7 @@ node node-service.mjs
 
 ## 支持采集的终端
 
-采集分两层：统计内核 [token-watcher](https://github.com/luwill/token-watcher)（1.9.x，13 种 AI 编程工具）+ 本仓库在同步器内的补充采集。补充采集包括 Oort 系（[`client/sync/oort.js`](client/sync/oort.js)，详见 [`docs/oort-collection.md`](docs/oort-collection.md)）、WorkBuddy 各版本、DevEco Code、Genspark Code 与 ToCodex（[`client/sync/extra.js`](client/sync/extra.js)），以及 Trae（[`client/sync/trae.js`](client/sync/trae.js)，详见 [`docs/trae-collection.md`](docs/trae-collection.md)）。0.2.21 起，WorkBuddy / DevEco Code / Genspark Code 的数据目录在**全部本地磁盘**上发现，不只看系统盘；只读取目录名和统计库，跳过系统与缓存目录，并排除 token-watcher 已覆盖的位置，避免重复计数。0.2.22 起支持 Trae：由 Trae 本机扩展查询官方用量接口写出按天快照，同步器只读快照，不解密 Trae 的会话库。0.2.23 起 OortCloud AI Studio 内置助手（`oortcodex.oortcodex`）写在 `tasks/*/ui_messages.json` 的逐请求用量也会并入统计。一台电脑可同时安装任意多个，用量按天汇总、按工具分别展示。
+采集分两层：统计内核 [token-watcher](https://github.com/luwill/token-watcher)（1.9.x，13 种 AI 编程工具）+ 本仓库在同步器内的补充采集。补充采集包括 Oort 系（[`client/sync/oort.js`](client/sync/oort.js)，详见 [`docs/oort-collection.md`](docs/oort-collection.md)）、WorkBuddy 各版本、DevEco Code、Genspark Code、ToCodex、独立 Cline / Roo Code、JoyCode、QoderWork、Kiro（点数）、TeleAgent 与 CodeArts Agent（[`client/sync/extra.js`](client/sync/extra.js)）、CodeBuddy 扩展日志（[`client/sync/codebuddy.js`](client/sync/codebuddy.js)），以及 Trae（[`client/sync/trae.js`](client/sync/trae.js)，详见 [`docs/trae-collection.md`](docs/trae-collection.md)）。0.2.21 起，WorkBuddy / DevEco Code / Genspark Code 的数据目录在**全部本地磁盘**上发现，不只看系统盘；只读取目录名和统计库，跳过系统与缓存目录，并排除 token-watcher 已覆盖的位置，避免重复计数。0.2.22 起支持 Trae：由 Trae 本机扩展查询官方用量接口写出按天快照，同步器只读快照，不解密 Trae 的会话库。0.2.23 起 OortCloud AI Studio 内置助手（`oortcodex.oortcodex`）写在 `tasks/*/ui_messages.json` 的逐请求用量也会并入统计。一台电脑可同时安装任意多个，用量按天汇总、按工具分别展示。
 
 **token-watcher 官方支持**
 
@@ -57,7 +57,7 @@ node node-service.mjs
 | OortOffice | 自带 ZCode 内核，用过后 `%LOCALAPPDATA%\OortOffice\zcode-home\.zcode\cli\db\db.sqlite` 的 `model_usage`；没打开过对话就没有这个库 | ✅ |
 | Genspark Code（Super App 内的编码终端） | `~/.local/share/gencode/opencode.db`（OpenCode 同构，逐请求 tokens；Super App 壳与网页 agents 等其余空间用量仍在 genspark.ai 云端，见采集文档） | ✅ 0.2.27 起 |
 
-**WorkBuddy、DevEco Code、ToCodex 与 CodeBuddy 补充采集（本仓库新增；0.2.21 起全盘只读扫描）**
+**WorkBuddy、DevEco Code、ToCodex、CodeBuddy 及更多终端补充采集（本仓库新增；0.2.21 起全盘只读扫描）**
 
 | 终端 | 数据源 | 状态 |
 |---|---|---|
@@ -65,6 +65,14 @@ node node-service.mjs
 | DevEco Code | OpenCode 同构的 `deveco.db`（`session` / `message.data.tokens`） | ✅ |
 | ToCodex（桌面端与 CLI，0.2.28 起） | 自带扩展 `tocodex.tocodex` 的任务记录 `tasks/*/ui_messages.json`（逐请求 tokensIn/tokensOut/cacheReads/cacheWrites，失败与重试中的请求无 token 字段、不重复计）。桌面端覆盖 `%APPDATA%\ToCodex Desktop` 标准安装与 `<安装目录>\data\user-data` 便携安装（含自定义盘的 Program Files），CLI 读 `~/.vscode-mock/global-storage`；逐请求不落模型名，只记工具维度用量 | ✅ |
 | CodeBuddy / CodeBuddy CN（0.2.29 起） | 扩展日志里的 `notifyStepEnd` 逐请求用量（输入 / 输出 / 缓存从输入中拆分），按北京时间分日，带工具、模型和工具—模型明细；模型取自同日志的初始化记录，缺失时标 `unknown`。只读日志，不上传对话内容；目前不含 CLI | ✅ |
+| 独立 Cline / Roo Code（0.2.30 起） | VS Code 系变体（Code、Code - Insiders、Cursor、Windsurf、VSCodium）`globalStorage` 里 claude-dev / roo-cline 扩展的任务记录 `tasks/*/ui_messages.json`，口径与 ToCodex 相同；装在 OortCloud AI Studio 里的归 Oort 系采集，不重复计 | ✅ |
+| JoyCode（0.2.30 起） | `globalStorage/joycode.joycoder-editor/tasks` 的 Cline 系任务记录，逐请求不落模型名 | ✅ |
+| QoderWork（0.2.30 起） | `~/.qoderwork/projects` 的 Claude Code 风格转录（`message.usage` 四分量，带模型名）。Qoder 网关不下发真实 token 时全为零值，自动不计；Qoder（非 Work）由上游覆盖 | ✅ |
+| Kiro（0.2.30 起） | AWS Kiro 本地只有点数：`~/.kiro/sessions` 逐会话 `messages.jsonl` 的 `usage_summary`（credit 单位），并入日行 credits（{total, tools}），不占 token | ✅ |
+| TeleAgent（0.2.30 起） | OpenCode 分支（super-agent-code），`~/.local/share/TeleAgent/teleagent.db` 同构解析（data 列 BLOB 兼容）；未使用过的安装表为空 | ✅ |
+| CodeArts Agent（0.2.30 起） | 华为 OpenCode 分支，`~/.codeartsdoer` 各实例的 `opencode.db` 同构解析，带模型名；cost 恒为 0 仅入库 token | ✅ |
+
+**本机排查后明确不采的终端**（用量不在本地或结构不符，详见 `docs/prompts/` 排查存档）：OpenCode 本体（上游已覆盖）、Zed（`threads.db` 的 token 字段实测为空，zed.dev 云端计费）、豆包 / 豆包工作（用量在云端，本地仅文件改动审计）、Kimi 桌面端（服务端计费；CLI 由上游覆盖）、OortCodex XP Edition（会话 JSON 无 token；主产品库已由 Oort 系采集）、CodeArts Space（内核同 OpenCode，本机会话目录已被清空，待重建后评估）、Comfy（本地扩散模型推理无 token，云端用量不落本地）。
 
 扫描范围是 Windows 的全部盘符、macOS 的 `/Volumes/*`、Linux 的 `/` 与 `/mnt/*`、`/media/*`；逐盘有界遍历并跳过系统、缓存和依赖目录，再补充检查 `APPDATA`、`LOCALAPPDATA`、`XDG_*` 和用户主目录等已知位置。单文件或单个统计库损坏只跳过该项并在同步日志中告警，不中断同步。
 
@@ -144,7 +152,7 @@ tokenrank rank push --full --dry-run
 
 | 目录 | 内容 |
 |---|---|
-| `client/sync` | 电脑端同步器（当前 0.2.29）：接入、只读同步、心跳、超时恢复、更新重算、备份清理；含 Oort 系工具补充采集（`client/sync/oort.js`，见 [`docs/oort-collection.md`](docs/oort-collection.md)）、WorkBuddy / DevEco Code / Genspark Code / ToCodex 全盘补充采集（`client/sync/extra.js`）、CodeBuddy 扩展日志采集（`client/sync/codebuddy.js`）与 Trae 快照采集（`client/sync/trae.js`，扩展源码在 `client/trae-extension`，见 [`docs/trae-collection.md`](docs/trae-collection.md)） |
+| `client/sync` | 电脑端同步器（当前 0.2.30）：接入、只读同步、心跳、超时恢复、更新重算、备份清理；含 Oort 系工具补充采集（`client/sync/oort.js`，见 [`docs/oort-collection.md`](docs/oort-collection.md)）、WorkBuddy / DevEco Code / Genspark Code / ToCodex / 独立 Cline / JoyCode / QoderWork / Kiro / TeleAgent / CodeArts Agent 全盘补充采集（`client/sync/extra.js`）、CodeBuddy 扩展日志采集（`client/sync/codebuddy.js`）与 Trae 快照采集（`client/sync/trae.js`，扩展源码在 `client/trae-extension`，见 [`docs/trae-collection.md`](docs/trae-collection.md)） |
 | `client/bin/tokenrank.js` | 同步器命令行入口 |
 | `server` | Cloudflare Worker、D1 表结构与迁移、安装和更新脚本；含飞书机器人（`server/src/feishu.js`）与 Node 单进程部署入口（`server/node-service.mjs` + `server/src/d1-node.mjs`） |
 | `miniprogram` | 原生微信小程序 |

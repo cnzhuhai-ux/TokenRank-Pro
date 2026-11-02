@@ -1,6 +1,6 @@
 # TokenRank 独立同步器
 
-v0.2.29 为独立只读适配器，接入原版 [luwill/token-watcher](https://github.com/luwill/token-watcher)。Node.js 22.13+，无第三方运行依赖。
+v0.2.30 为独立只读适配器，接入原版 [luwill/token-watcher](https://github.com/luwill/token-watcher)。Node.js 22.13+，无第三方运行依赖。
 
 更换服务器、接入码或统计库后，会重新全量上传本机保留的历史用量，包含注销后重新接入的情况。上传中断可分批续传；重复执行同一账号的接入命令不会重传未变化的日期。
 
@@ -87,7 +87,7 @@ v0.2.10 增加独立心跳：启动、检查完成及每 5 分钟报告状态。
 
 心跳缓存单独写入 `~/.tokenrank/health/config.json`，不与同步子进程争写检查点。`rank status` 输出最近一次确认的心跳；这是历史状态，不保证当前正在运行。`rank off` 先在本机断开，再尽力发送关闭通知；网络不可用时服务器只能显示失联。`uninstall-agent` 和 `uninstall` 同样发送明确停止事件。小程序会分别显示最后联系、检查和上传时间，旧版无心跳时标为未知。
 
-默认每 5 分钟读取同一个 SQLite 快照，包含已提交的 WAL 记录；扫描全部已保留历史以发现旧日期变更。北京时间日桶、主用量直接读取原版 total_tokens（含缓存），input_tokens、output_tokens、缓存读写单列。工具、模型按原版总量各保留每日用量前 8 项，服务端将未分类差额单列。补充采集（Oort 系、WorkBuddy 各版本、DevEco Code、Genspark Code、ToCodex）随后并入相同日桶，同样受前 8 项工具与模型、128 组工具—模型限制；金额估算仍只基于原版可识别的模型。
+默认每 5 分钟读取同一个 SQLite 快照，包含已提交的 WAL 记录；扫描全部已保留历史以发现旧日期变更。北京时间日桶、主用量直接读取原版 total_tokens（含缓存），input_tokens、output_tokens、缓存读写单列。工具、模型按原版总量各保留每日用量前 8 项，服务端将未分类差额单列。补充采集（Oort 系、WorkBuddy 各版本、DevEco Code、Genspark Code、ToCodex、独立 Cline、JoyCode、QoderWork、Kiro 点数、TeleAgent、CodeArts Agent）随后并入相同日桶，同样受前 8 项工具与模型、128 组工具—模型限制；金额估算仍只基于原版可识别的模型。
 
 历史按最多 400 天且小于 450 KiB 分批发送，无总历史天数截断；每批得到完整确认后才保存检查点。失败批次留待重试，429 按 Retry-After 等待，401 提示重新接入。超出当前计数协议范围会停止同步并提示，不裁剪源数据。原版升级后缺少必要字段时停止上报，不修改或自动升级原库。
 
@@ -148,9 +148,17 @@ token-watcher 1.8 首次迁移 Codex 去重键时，会在统计库里留下一�
 - **Genspark Code（0.2.27）**：Genspark Super App 内编码终端（gencode）的库 `gencode/opencode.db` 与 OpenCode 同构，按同样口径汇总；只在名为 `gencode` 的目录里找库，散落的 `opencode.db` 属于独立安装的 opencode（原版已覆盖），不会抢。Super App 其余空间（网页 agents 聊天等）用量仍在 genspark.ai 云端，本地无数据。
 - **ToCodex（0.2.28）**：桌面端（标准安装与便携安装，含自定义盘的 Program Files）与 CLI 的任务记录 `tasks/<任务>/ui_messages.json`，详见下文「ToCodex 采集（0.2.28）」。
 - **CodeBuddy（0.2.29）**：CodeBuddy / CodeBuddy CN 的扩展日志按 `notifyStepEnd` 逐请求分日，带工具、模型和工具—模型明细，详见下文「CodeBuddy 采集（0.2.29）」。
+- **独立 Cline / Roo Code（0.2.30）**：VS Code 系变体（Code、Code - Insiders、Code - OSS、Cursor、Windsurf、VSCodium）`globalStorage` 里 claude-dev / roo-cline 扩展的任务记录，口径与 ToCodex 相同；装在 OortCloud AI Studio 里的归 Oort 系采集（`sync/oort.js`），这里不扫该产品目录，不会重复计。
+- **JoyCode（0.2.30）**：京东的 VS Code 分支，`globalStorage/joycode.joycoder-editor/tasks` 的 Cline 系任务记录；逐请求不落模型名，只记工具维度。
+- **QoderWork（0.2.30）**：`~/.qoderwork/projects` 的 Claude Code 风格转录，`message.usage` 为 Anthropic 四分量（input_tokens 不含缓存），带模型名，按消息 uuid 去重。Qoder 网关不下发真实 token 的安装全为零值，自动不计；Qoder（非 Work）由原版覆盖。
+- **Kiro（0.2.30）**：AWS Kiro 本地只有点数没有 token——`~/.kiro/sessions` 逐会话 `messages.jsonl` 的 `usage_summary.promptTurnSummaries`（credit 单位）并入日行 credits（`{total, tools}`），不占 token 四分量。
+- **TeleAgent（0.2.30）**：OpenCode 分支（super-agent-code），`~/.local/share/TeleAgent/teleagent.db` 按 OpenCode 同构口径解析（data 列声明为 BLOB，读取时 CAST 成 TEXT）；未使用过的安装表为空，静默无数据。
+- **CodeArts Agent（0.2.30）**：华为的 OpenCode 分支，`~/.codeartsdoer` 各实例子目录的 `opencode.db` 同构解析，带模型名；cost 恒为 0（内部 MaaS 不计价），仅入库 token。
 - **容错**：每个文件或数据库单独捕获异常，损坏项写入同步日志后跳过，不影响其他来源和正常上报。数据目录只读，不修改任何产品文件。
 
-`TOKENRANK_OORT_DISABLE=1` 可关闭全部补充采集，`TOKENRANK_EXTRA_DISABLE=1` 只关闭 WorkBuddy / DevEco / Genspark Code / ToCodex 部分，`TOKENRANK_CODEBUDDY_DISABLE=1` 只关闭 CodeBuddy 部分。
+`TOKENRANK_OORT_DISABLE=1` 可关闭全部补充采集，`TOKENRANK_EXTRA_DISABLE=1` 只关闭 WorkBuddy / DevEco / Genspark Code / ToCodex / Cline / JoyCode / QoderWork / Kiro / TeleAgent / CodeArts 部分，`TOKENRANK_CODEBUDDY_DISABLE=1` 只关闭 CodeBuddy 部分。
+
+**排查后明确不采的终端**（0.2.30 逐一排查本机数据后确认，结论存档于 [`../docs/prompts/`](../docs/prompts/)）：OpenCode 本体由原版覆盖；Zed 的 `threads.db` token 字段实测为空（zed.dev 云端计费）；豆包 / 豆包工作的用量在云端，本地只有编码 agent 的文件改动审计；Kimi 桌面端聊天与用量都在服务端，CLI（Kimi For Coding）由原版覆盖；OortCodex XP Edition 的会话 JSON 无 token 字段（主产品库已由 Oort 系采集）；CodeArts Space 内核同为 OpenCode，本机会话目录已被清空，待其重建后再评估；Comfy 本地是扩散模型图像生成，无 token 口径，云端用量不落本地。
 
 ## Trae 快照采集（0.2.22）
 

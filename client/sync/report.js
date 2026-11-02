@@ -63,7 +63,8 @@ export async function sync({ dir = SYNC_DIR, full = false, replace = false, dryR
     // Read every retained day so upstream corrections to old history are detected.
     onProgress({stage:'source',source_day:null});
     let days = await readCostedDays(dbPath, { entry: config.upstream_entry, now, log });
-    // 补充采集：Oort 系产品，以及 token-watcher 不认识的 WorkBuddy 各版本、DevEco Code、Genspark Code 与 ToCodex。
+    // 补充采集：Oort 系产品，以及 token-watcher 不认识的 WorkBuddy 各版本、DevEco Code、Genspark Code、
+    // ToCodex、独立 Cline/Roo Code、JoyCode、QoderWork、Kiro（点数）、TeleAgent 与 CodeArts Agent。
     // 数据目录在所有磁盘上发现，只读、逐文件容错，任何补充源失败都不阻断同步。
     // TOKENRANK_OORT_DISABLE=1 / TOKENRANK_EXTRA_DISABLE=1 / TOKENRANK_TRAE_DISABLE=1 用于测试或按需关闭。
     const supplemental = [];
@@ -73,7 +74,7 @@ export async function sync({ dir = SYNC_DIR, full = false, replace = false, dryR
     }
     if (process.env.TOKENRANK_OORT_DISABLE !== '1' && process.env.TOKENRANK_EXTRA_DISABLE !== '1') {
       try { supplemental.push(...collectExtraDays({ log })); }
-      catch (err) { log(`WorkBuddy/DevEco/Genspark/ToCodex 补充采集失败，已跳过：${err?.message || err}`); }
+      catch (err) { log(`补充采集（WorkBuddy/DevEco/Genspark/ToCodex/Cline/JoyCode/QoderWork/Kiro/TeleAgent/CodeArts）失败，已跳过：${err?.message || err}`); }
     }
     if (process.env.TOKENRANK_TRAE_DISABLE !== '1') {
       try { supplemental.push(...collectTraeDays({ log })); }

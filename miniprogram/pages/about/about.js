@@ -1,14 +1,14 @@
 const flow = require('../../utils/flow');
 const upstream = require('../../utils/upstream');
 const updatePrompt = require('../../utils/update-prompt');
-const AUDIT_PROMPT = `请审计这台电脑的 TokenRank 独立同步器 v0.2.29，并给出代码和文件证据：
+const AUDIT_PROMPT = `请审计这台电脑的 TokenRank 独立同步器 v0.2.30，并给出代码和文件证据：
 1. 入口为 tokenrank，运行文件仅 bin/tokenrank.js 与 sync/。日常同步不调用旧 fork Store 或扫描器；安装阶段可以检测、安装原版并调用原版 scan / 自启。
 2. 默认以 SQLite readOnly + query_only 读取 ~/.tokenmeter/tokenmeter.db，配置和同步进度写 ~/.tokenrank。确认原库及其 settings 未被改写。
 3. 上报只包含 北京时间日期、原版总量、输入和输出计数、缓存计数、请求数、工具和模型名、按模型估算的 USD 金额、未计价标记、按工具和当天的 Credits、随机设备 ID；金额计算复用原版函数，价格文件仅在临时目录中离线读取，不上传价格文件；用 rank push --full --dry-run 核对。接入码不要写入审计结果。
 4. macOS 自启为 com.tokenrank.sync，Windows 为 TokenRankSync，Linux 为 tokenrank-sync.service。安装与更新命令都检查官方最新稳定版（最低 1.8.3），有更新时沿用原安装位置升级重算并回传，不降级，已是最新版的接入用户跳过重算；低于 1.8.2 时暂停上传；缺失时在用户目录安装官方最新稳定版，macOS 调用原版自启，Windows 使用 TokenWatcherForTokenRank，Linux 使用 token-watcher-for-tokenrank.service。旧版服务迁移须先验证入口归属。
 5. 卸载只移除独立自启和配置，不删除 ~/.tokenmeter、原版安装、原版服务或服务器历史。
 6. 检查源数据库是否兼容，确认数据库改变后能够同步。当前榜单采用较新的来源快照，支持历史修正；多台独立电脑不相加，采用最近完成完整接入的电脑。
-7. 补充采集只读不写：Oort 系、WorkBuddy / DevEco、Genspark Code、ToCodex 与 CodeBuddy 只读各自本机状态目录或扩展日志；Trae 只读 \`~/.trae-cn/credits-usage.json\` 按天快照（由 Trae 内的采集扩展调官方接口写出），确认没有解密 Trae 会话库、没有读取 \`~/.trae-cn/trae-jwt-token\`。用 \`TOKENRANK_TRAE_DISABLE=1\` 关闭后 dry-run 对比，Trae 行应完全消失。
+7. 补充采集只读不写：Oort 系、WorkBuddy / DevEco、Genspark Code、ToCodex、CodeBuddy、独立 Cline / Roo Code、JoyCode、QoderWork、Kiro（点数）、TeleAgent 与 CodeArts Agent 只读各自本机状态目录或扩展日志；Trae 只读 \`~/.trae-cn/credits-usage.json\` 按天快照（由 Trae 内的采集扩展调官方接口写出），确认没有解密 Trae 会话库、没有读取 \`~/.trae-cn/trae-jwt-token\`。用 \`TOKENRANK_TRAE_DISABLE=1\` 关闭后 dry-run 对比，Trae 行应完全消失。
 如实际与清单有出入，请指出，不要直接修改原版数据或服务。`;
 
 Page({

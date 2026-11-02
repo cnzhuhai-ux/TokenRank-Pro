@@ -209,6 +209,112 @@ test('ToCodex：同一数据经多条路径发现只计一次（目录与消息�
   assert.deepEqual(days[0].tools, [[TOOL_NAMES.tocodex, 660]]);
 });
 
+// OpenCode 同构库夹具：schema 与 deveco.db 相同；blob=true 时 data 以 BLOB 落库（TeleAgent 声明类型）。
+function writeOpencodeLike(path, messages, blob = false) {
+  mkdirSync(join(path, '..'), { recursive: true });
+  const db = new DatabaseSync(path);
+  db.exec('CREATE TABLE session (id TEXT PRIMARY KEY, directory TEXT); CREATE TABLE message (id TEXT PRIMARY KEY, session_id TEXT, time_created INTEGER, time_updated INTEGER, data TEXT)');
+  db.prepare('INSERT INTO session VALUES (?,?)').run('ses_1', 'F:/work/demo');
+  for (const message of messages) db.prepare('INSERT INTO message VALUES (?,?,?,?,?)')
+    .run(message.id, 'ses_1', message.ts, message.ts, blob ? Buffer.from(JSON.stringify(message.data), 'utf8') : JSON.stringify(message.data));
+  db.close();
+}
+
+test('独立 Cline / Roo Code / JoyCode 从 VS Code 变体的 globalStorage 采集；AI Studio 目录不抢（归 oort.js）', (t) => {
+  const { root, done } = makeDrives();
+  t.after(done);
+  const drive = join(root, 'A'), home = join(drive, 'Users', 'me');
+  mkdirSync(home, { recursive: true });
+  const roaming = join(drive, 'Users', 'me', 'AppData', 'Roaming');
+  writeTocodexTasks(join(roaming, 'Code', 'User', 'globalStorage', 'saoudrizwan.claude-dev', 'tasks'), 'task-1', [
+    tocodexStarted(NOW, 13099, 72, 18304, 0),
+    tocodexStarted(NOW + 1, null),            // 失败请求无 token 字段
+    tocodexStarted(NOW + 2, 0, 0, 0, 0),      // 全零不计
+  ]);
+  writeTocodexTasks(join(roaming, 'Cursor', 'User', 'globalStorage', 'rooveterinaryinc.roo-cline', 'tasks'), 'task-2',
+    [tocodexStarted(NOW, 500, 50, 0, 0)]);
+  writeTocodexTasks(join(roaming, 'JoyCode', 'User', 'globalStorage', 'joycode.joycoder-editor', 'tasks'), 'task-3',
+    [tocodexStarted(NOW - DAY_MS, 1000, 200, 500, 20)]);
+  // AI Studio 里的 Cline 归 oort.js 采集，这里绝不能重复计
+  writeTocodexTasks(join(roaming, 'OortCloud AI Studio', 'User', 'globalStorage', 'saoudrizwan.claude-dev', 'tasks'), 'task-4',
+    [tocodexStarted(NOW, 999999, 0, 0, 0)]);
+
+  const days = collectExtraDays({ home, env: { APPDATA: roaming }, platform: 'win32', drives: [drive], log: () => {} });
+  const today = days.find((d) => d.day === beijing(NOW));
+  assert.equal(today.tokens, 13099 + 72 + 18304 + 500 + 50);
+  assert.equal(today.requests, 2);
+  assert.deepEqual(today.tools.map(([name]) => name).sort(), [TOOL_NAMES.cline, TOOL_NAMES.roo].sort());
+  const prev = days.find((d) => d.day === beijing(NOW - DAY_MS));
+  assert.deepEqual(prev.tools, [[TOOL_NAMES.joycode, 1720]]);
+});
+
+test('QoderWork 从 ~/.qoderwork/projects 转录采集（Anthropic 四分量+模型名），Kiro 的点数并入 credits', (t) => {
+  const { root, done } = makeDrives();
+  t.after(done);
+  const drive = join(root, 'A'), home = join(drive, 'Users', 'me');
+  mkdirSync(home, { recursive: true });
+  const qwDir = join(home, '.qoderwork', 'projects', 'proj-a');
+  mkdirSync(qwDir, { recursive: true });
+  const qwRecord = (uuid, ts, usage, model = 'qmodel_38max') => JSON.stringify({
+    type: 'assistant', uuid, timestamp: ts, parentUuid: null, isSidechain: false,
+    message: { id: 'chatcmpl-' + uuid, role: 'assistant', model, usage } });
+  writeFileSync(join(qwDir, 'a.jsonl'), [
+    qwRecord('qw-1', '2026-11-01T10:00:00.000Z', { input_tokens: 1000, output_tokens: 200, cache_read_input_tokens: 500, cache_creation_input_tokens: 20 }),
+    // 零值（网关不下发真实 token 的安装）与 user 消息、非 assistant 记录都不计
+    qwRecord('qw-2', '2026-11-01T10:01:00.000Z', { input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 }),
+    JSON.stringify({ type: 'user', uuid: 'qw-3', timestamp: '2026-11-01T10:02:00.000Z', message: { role: 'user', usage: { input_tokens: 5 } } }),
+  ].join('\n'));
+  // Kiro：点数（credits）按 usage_summary 逐条聚合，不产生 token
+  const kiroDir = join(home, '.kiro', 'sessions', 'ws1', 'sess_1');
+  mkdirSync(kiroDir, { recursive: true });
+  const kiroRecord = (id, ts, usage) => JSON.stringify({
+    id, timestamp: ts, payload: { type: 'usage_summary', promptTurnSummaries: [{ unit: 'credit', usage }], status: 'success' } });
+  writeFileSync(join(kiroDir, 'messages.jsonl'), [
+    kiroRecord('t1-usage', '2026-11-01T11:00:00.000Z', 0.13332872394693202),
+    kiroRecord('t2-usage', '2026-11-02T11:00:00.000Z', 0.25),
+    kiroRecord('t3-usage', '2026-11-02T11:01:00.000Z', 0),   // 零点数不计
+    JSON.stringify({ id: 't4', timestamp: '2026-11-02T11:02:00.000Z', payload: { type: 'usage_summary', promptTurnSummaries: [] } }),
+  ].join('\n'));
+
+  const days = collectExtraDays({ home, env: {}, platform: 'win32', drives: [drive], log: () => {} });
+  const day1 = days.find((d) => d.day === '2026-11-01');
+  assert.equal(day1.tokens, 1720);
+  assert.deepEqual(day1.models, [['qmodel_38max', 1720]]);
+  assert.deepEqual(day1.tools, [[TOOL_NAMES.qoderwork, 1720]]);
+  assert.deepEqual(day1.credits, { total: 0.133329, tools: [[TOOL_NAMES.kiro, 0.133329]] });
+  const day2 = days.find((d) => d.day === '2026-11-02');
+  assert.equal(day2.tokens, 0);
+  assert.deepEqual(day2.credits, { total: 0.25, tools: [[TOOL_NAMES.kiro, 0.25]] });
+  // credits 随补充日行走 mergeOortDays 合并进主日行
+  const merged = mergeOortDays([{ day: '2026-11-02', tokens: 10, input_tokens: 10, output_tokens: 0, cache_read: 0,
+    cache_write: 0, requests: 1, models: [], tools: [], tool_models: [] }], days.filter((d) => d.day === '2026-11-02'));
+  assert.deepEqual(merged[0].credits, { total: 0.25, tools: [[TOOL_NAMES.kiro, 0.25]] });
+});
+
+test('TeleAgent 与 CodeArts Agent 从 OpenCode 同构库采集；data 为 BLOB 时也能解析', (t) => {
+  const { root, done } = makeDrives();
+  t.after(done);
+  const drive = join(root, 'A'), home = join(drive, 'Users', 'me');
+  mkdirSync(home, { recursive: true });
+  const opencodeData = (id, ts, tokens, model) => ({
+    id, ts, data: { role: 'assistant', modelID: model,
+      tokens: { input: tokens, output: 37, reasoning: 5, cache: { read: 0, write: 0 } } } });
+  // TeleAgent：~/.local/share/TeleAgent/teleagent.db，data 列为 BLOB
+  writeOpencodeLike(join(home, '.local', 'share', 'TeleAgent', 'teleagent.db'),
+    [opencodeData('msg-t1', NOW, 1000, 'chat-pro')], true);
+  // CodeArts Agent：~/.codeartsdoer/cli-data/opencode.db
+  writeOpencodeLike(join(home, '.codeartsdoer', 'cli-data', 'opencode.db'),
+    [opencodeData('msg-c1', NOW, 14189, 'deepseek-v3.2')]);
+
+  const days = collectExtraDays({ home, env: {}, platform: 'win32', drives: [drive], log: () => {} });
+  assert.equal(days.length, 1);
+  // OpenCode 口径：total = input + output + cache（reasoning 已含在 output 内）
+  assert.equal(days[0].tokens, (1000 + 37) + (14189 + 37));
+  assert.equal(days[0].requests, 2);
+  assert.deepEqual(days[0].tools.map(([name]) => name).sort(), [TOOL_NAMES.teleagent, TOOL_NAMES.codeartsAgent].sort());
+  assert.deepEqual(days[0].models.map(([m]) => m).sort(), ['chat-pro', 'deepseek-v3.2']);
+});
+
 test('合并补充日行时模型和工具内模型一起累加，超过协议上限按量截断', () => {
   const base = [{ day: '2026-10-28', tokens: 100, input_tokens: 100, output_tokens: 0, cache_read: 0, cache_write: 0,
     requests: 1, models: [['glm-5.3', 100]], tools: [['zcode', 100]], tool_models: [['zcode', 'glm-5.3', 100]] }];

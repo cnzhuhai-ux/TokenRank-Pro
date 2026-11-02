@@ -1,6 +1,6 @@
 param([Parameter(Mandatory=$true)][string]$Server, [Parameter(Mandatory=$true)][string]$Token)
 $ErrorActionPreference = 'Stop'
-$VERSION = '0.2.29'
+$VERSION = '0.2.30'
 $node = (Get-Command node -ErrorAction Stop).Source
 function Run-Node { & $node @args; if ($LASTEXITCODE -ne 0) { throw '同步器检查或操作失败，请按提示处理后重试' } }
 $nodeVersion = & $node --version
