@@ -16,6 +16,10 @@
  *   - 独立 Cline / Roo Code：装在 VS Code 系变体（Code、Code - Insiders、Cursor、
  *     Windsurf、VSCodium）里的 claude-dev / roo-cline 扩展，格式与 ToCodex 相同；
  *     装在 OortCloud AI Studio 里的由 oort.js 采集，这里不扫该产品目录，不重复计。
+ *   - Cline 桌面端 / CLI（%LOCALAPPDATA%\Cline 安装，数据在 ~/.cline）：逐会话
+ *     messages.json 的 assistant 消息带 metrics {inputTokens, outputTokens,
+ *     cacheReadTokens, cacheWriteTokens}（分离式，inputTokens 不含缓存）与
+ *     modelInfo.id，按消息时间戳分日；与扩展记录分属不同文件，同展示名 Cline。
  *   - JoyCode：京东的 VS Code 分支，任务记录同样是 Cline 系格式
  *     （globalStorage/joycode.joycoder-editor/tasks），逐请求无模型名。
  *   - QoderWork：Claude Code 风格转录 ~/.qoderwork/projects 下的 jsonl，assistant
@@ -486,6 +490,43 @@ function collectKiroCredits(root, seen, buckets, log) {
   }
 }
 
+/** Cline 桌面端 / CLI 的会话记录（~/.cline/data/sessions）：assistant 消息 metrics 四分量 + modelInfo.id。 */
+function collectClineDesktop(root, seen, buckets, log) {
+  if (!isDirectory(root)) return;
+  let sessions;
+  try { sessions = readdirSync(root, { withFileTypes: true }); } catch { return; }
+  for (const entry of sessions) {
+    if (!entry.isDirectory()) continue;
+    const file = join(root, entry.name, entry.name + '.messages.json');
+    if (!isFile(file)) continue;
+    try {
+      const data = JSON.parse(readFileSync(file, 'utf8'));
+      const messages = Array.isArray(data?.messages) ? data.messages : [];
+      for (const message of messages) {
+        const metrics = message?.metrics;
+        if (!metrics || typeof metrics !== 'object') continue;
+        const input = Number(metrics.inputTokens) || 0;
+        const output = Number(metrics.outputTokens) || 0;
+        const cacheRead = Number(metrics.cacheReadTokens) || 0;
+        const cacheWrite = Number(metrics.cacheWriteTokens) || 0;
+        if (input + output + cacheRead + cacheWrite <= 0) continue;
+        const ts = Number(message.ts);
+        if (!Number.isFinite(ts) || ts <= 0) continue;
+        const key = `cd:${entry.name}:${typeof message.id === 'string' && message.id ? message.id : ts}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        const model = String(message.modelInfo?.id || '').trim().slice(0, 60);
+        const day = beijingDayOf(ts);
+        let bucket = buckets.get(day);
+        if (!bucket) { bucket = emptyBucket(day); buckets.set(day, bucket); }
+        addTo(bucket, { input, output, cacheRead, cacheWrite, requests: 1, tool: TOOL_NAMES.cline, model });
+      }
+    } catch (err) {
+      log(`cline 桌面会话 ${entry.name} 解析失败，已跳过：${err?.message || err}`);
+    }
+  }
+}
+
 // credits 上报口径：总额 round6，分项按量取前 8，分项之和钳回 ≤ 总额（与服务端 1e-6 容差对齐）。
 const round6 = (v) => Math.round(v * 1e6) / 1e6;
 function clampCredits(credits) {
@@ -530,6 +571,7 @@ export function collectExtraDays({ home = homedir(), env = process.env, platform
   collectClineTasks([...new Set([...cline].map(canonical))], 'cline', seen, buckets, log);
   collectClineTasks([...new Set([...roo].map(canonical))], 'roo', seen, buckets, log);
   collectClineTasks([...new Set([...joycode].map(canonical))], 'joycode', seen, buckets, log);
+  collectClineDesktop(join(home, '.cline', 'data', 'sessions'), seen, buckets, log);
   for (const root of [join(home, '.qoderwork', 'projects'), join(home, '.qoderwork-cn', 'projects')]) {
     collectQoderwork(root, seen, buckets, log);
   }

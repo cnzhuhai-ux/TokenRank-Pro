@@ -315,6 +315,41 @@ test('TeleAgent 与 CodeArts Agent 从 OpenCode 同构库采集；data 为 BLOB 
   assert.deepEqual(days[0].models.map(([m]) => m).sort(), ['chat-pro', 'deepseek-v3.2']);
 });
 
+test('Cline 桌面端从 ~/.cline/data/sessions 采集（metrics 四分量+模型名），坏文件只跳过', (t) => {
+  const { root, done } = makeDrives();
+  t.after(done);
+  const drive = join(root, 'A'), home = join(drive, 'Users', 'me');
+  const sessionDir = join(home, '.cline', 'data', 'sessions', '1783859167747_RxB_X');
+  mkdirSync(sessionDir, { recursive: true });
+  const message = (id, ts, metrics, model = 'hy3-free') => ({ role: 'assistant', id, ts, modelInfo: { id: model, provider: 'opencode' }, metrics });
+  writeFileSync(join(sessionDir, '1783859167747_RxB_X.messages.json'), JSON.stringify({
+    version: 1, sessionId: '1783859167747_RxB_X', agent: 'lead',
+    messages: [
+      { role: 'user', id: 'u1', ts: NOW, content: '你好' },
+      message('a1', NOW, { inputTokens: 2562, outputTokens: 2166, cacheReadTokens: 53632, cacheWriteTokens: 0 }),
+      message('a2', NOW - DAY_MS, { inputTokens: 14361, outputTokens: 501, cacheReadTokens: 37696, cacheWriteTokens: 0 }, 'big-pickle'),
+      message('a3', NOW + 1, { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 }),  // 全零不计
+      { role: 'assistant', id: 'a4', ts: NOW + 2 },  // 无 metrics 不计
+    ] }));
+  // 另一个会话目录但没有 messages 文件（只有元数据）——静默跳过
+  mkdirSync(join(home, '.cline', 'data', 'sessions', 'meta-only'), { recursive: true });
+  // 坏文件只跳过该会话
+  const badDir = join(home, '.cline', 'data', 'sessions', 'broken');
+  mkdirSync(badDir, { recursive: true });
+  writeFileSync(join(badDir, 'broken.messages.json'), '{"broken":');
+
+  const days = collectExtraDays({ home, env: {}, platform: 'win32', drives: [drive], log: () => {} });
+  const today = days.find((d) => d.day === beijing(NOW));
+  assert.equal(today.tokens, 2562 + 2166 + 53632);
+  assert.equal(today.requests, 1);
+  assert.deepEqual(today.tools, [[TOOL_NAMES.cline, 2562 + 2166 + 53632]]);
+  assert.deepEqual(today.models, [['hy3-free', 2562 + 2166 + 53632]]);
+  assert.deepEqual(today.tool_models, [[TOOL_NAMES.cline, 'hy3-free', 2562 + 2166 + 53632]]);
+  const prev = days.find((d) => d.day === beijing(NOW - DAY_MS));
+  assert.equal(prev.tokens, 14361 + 501 + 37696);
+  assert.deepEqual(prev.models, [['big-pickle', 14361 + 501 + 37696]]);
+});
+
 test('合并补充日行时模型和工具内模型一起累加，超过协议上限按量截断', () => {
   const base = [{ day: '2026-10-28', tokens: 100, input_tokens: 100, output_tokens: 0, cache_read: 0, cache_write: 0,
     requests: 1, models: [['glm-5.3', 100]], tools: [['zcode', 100]], tool_models: [['zcode', 'glm-5.3', 100]] }];

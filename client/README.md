@@ -148,7 +148,7 @@ token-watcher 1.8 首次迁移 Codex 去重键时，会在统计库里留下一�
 - **Genspark Code（0.2.27）**：Genspark Super App 内编码终端（gencode）的库 `gencode/opencode.db` 与 OpenCode 同构，按同样口径汇总；只在名为 `gencode` 的目录里找库，散落的 `opencode.db` 属于独立安装的 opencode（原版已覆盖），不会抢。Super App 其余空间（网页 agents 聊天等）用量仍在 genspark.ai 云端，本地无数据。
 - **ToCodex（0.2.28）**：桌面端（标准安装与便携安装，含自定义盘的 Program Files）与 CLI 的任务记录 `tasks/<任务>/ui_messages.json`，详见下文「ToCodex 采集（0.2.28）」。
 - **CodeBuddy（0.2.29）**：CodeBuddy / CodeBuddy CN 的扩展日志按 `notifyStepEnd` 逐请求分日，带工具、模型和工具—模型明细，详见下文「CodeBuddy 采集（0.2.29）」。
-- **独立 Cline / Roo Code（0.2.30）**：VS Code 系变体（Code、Code - Insiders、Code - OSS、Cursor、Windsurf、VSCodium）`globalStorage` 里 claude-dev / roo-cline 扩展的任务记录，口径与 ToCodex 相同；装在 OortCloud AI Studio 里的归 Oort 系采集（`sync/oort.js`），这里不扫该产品目录，不会重复计。
+- **独立 Cline / Roo Code（0.2.30）**：VS Code 系变体（Code、Code - Insiders、Code - OSS、Cursor、Windsurf、VSCodium）`globalStorage` 里 claude-dev / roo-cline 扩展的任务记录，口径与 ToCodex 相同；装在 OortCloud AI Studio 里的归 Oort 系采集（`sync/oort.js`），这里不扫该产品目录，不会重复计。Cline 桌面端 / CLI（独立安装，数据主目录 `~/.cline`）读 `data/sessions` 逐会话 `<会话 id>.messages.json`：assistant 消息的 `metrics` 为分离式四分量（`inputTokens` 不含缓存，`cacheReadTokens` 单列），带 `modelInfo.id` 模型名，按消息 `id` 去重；与扩展的任务记录分属不同文件，同为展示名 `Cline`。
 - **JoyCode（0.2.30）**：京东的 VS Code 分支，`globalStorage/joycode.joycoder-editor/tasks` 的 Cline 系任务记录；逐请求不落模型名，只记工具维度。
 - **QoderWork（0.2.30）**：`~/.qoderwork/projects` 的 Claude Code 风格转录，`message.usage` 为 Anthropic 四分量（input_tokens 不含缓存），带模型名，按消息 uuid 去重。Qoder 网关不下发真实 token 的安装全为零值，自动不计；Qoder（非 Work）由原版覆盖。
 - **Kiro（0.2.30）**：AWS Kiro 本地只有点数没有 token——`~/.kiro/sessions` 逐会话 `messages.jsonl` 的 `usage_summary.promptTurnSummaries`（credit 单位）并入日行 credits（`{total, tools}`），不占 token 四分量。

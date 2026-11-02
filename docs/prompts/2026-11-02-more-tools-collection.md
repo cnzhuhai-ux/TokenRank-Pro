@@ -12,7 +12,7 @@
 
 | 终端 | 展示名 | 数据源与口径 | 真机对账 |
 |---|---|---|---|
-| 独立 Cline | Cline | VS Code 变体（Code / Code - Insiders / Code - OSS / Cursor / Windsurf / VSCodium）`globalStorage/saoudrizwan.claude-dev/tasks` 的 Cline 系 `ui_messages.json`；装在 OortCloud AI Studio 里的归 oort.js，不重复计 | 本机独立变体无数据（Cline 装在 AI Studio，已被 Oort 系采集） |
+| 独立 Cline | Cline | VS Code 变体（Code / Code - Insiders / Code - OSS / Cursor / Windsurf / VSCodium）`globalStorage/saoudrizwan.claude-dev/tasks` 的 Cline 系 `ui_messages.json`；装在 OortCloud AI Studio 里的归 oort.js，不重复计。**补充（同日）**：Cline 桌面端 / CLI 独立安装（`%LOCALAPPDATA%\Cline`，数据在 `~/.cline`），读 `data/sessions/<id>/<id>.messages.json` 的 assistant 消息 `metrics` 分离式四分量（inputTokens 不含缓存，时序验证：首轮后 input 降、cacheRead 升、两者之和平滑）与 `modelInfo.id` 模型名，按消息 id 去重，同为展示名 Cline | 扩展路径本机无独立数据（Cline 装在 AI Studio）；桌面端 ✅ 13 天数据与手工累加逐位一致（09-22 单日 122,686,585 / 253 次） |
 | Roo Code | Roo Code | 同上，`rooveterinaryinc.roo-cline` | 本机空壳无数据 |
 | JoyCode | JoyCode | `%APPDATA%\JoyCode\...\globalStorage/joycode.joycoder-editor/tasks`，Cline 系格式，无模型名 | ✅ 47,254 = task_history 的 46,871+383 |
 | QoderWork | QoderWork | `~/.qoderwork/projects` Claude Code 风格转录，`message.usage` Anthropic 四分量 + 模型名，按 uuid 去重 | 本机 token 全零（Qoder 网关不下发真实计数），零值自动跳过 |

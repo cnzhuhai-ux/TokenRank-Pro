@@ -65,7 +65,7 @@ node node-service.mjs
 | DevEco Code | OpenCode 同构的 `deveco.db`（`session` / `message.data.tokens`） | ✅ |
 | ToCodex（桌面端与 CLI，0.2.28 起） | 自带扩展 `tocodex.tocodex` 的任务记录 `tasks/*/ui_messages.json`（逐请求 tokensIn/tokensOut/cacheReads/cacheWrites，失败与重试中的请求无 token 字段、不重复计）。桌面端覆盖 `%APPDATA%\ToCodex Desktop` 标准安装与 `<安装目录>\data\user-data` 便携安装（含自定义盘的 Program Files），CLI 读 `~/.vscode-mock/global-storage`；逐请求不落模型名，只记工具维度用量 | ✅ |
 | CodeBuddy / CodeBuddy CN（0.2.29 起） | 扩展日志里的 `notifyStepEnd` 逐请求用量（输入 / 输出 / 缓存从输入中拆分），按北京时间分日，带工具、模型和工具—模型明细；模型取自同日志的初始化记录，缺失时标 `unknown`。只读日志，不上传对话内容；目前不含 CLI | ✅ |
-| 独立 Cline / Roo Code（0.2.30 起） | VS Code 系变体（Code、Code - Insiders、Cursor、Windsurf、VSCodium）`globalStorage` 里 claude-dev / roo-cline 扩展的任务记录 `tasks/*/ui_messages.json`，口径与 ToCodex 相同；装在 OortCloud AI Studio 里的归 Oort 系采集，不重复计 | ✅ |
+| 独立 Cline / Roo Code（0.2.30 起） | VS Code 系变体（Code、Code - Insiders、Cursor、Windsurf、VSCodium）`globalStorage` 里 claude-dev / roo-cline 扩展的任务记录 `tasks/*/ui_messages.json`，口径与 ToCodex 相同；装在 OortCloud AI Studio 里的归 Oort 系采集，不重复计。Cline 桌面端 / CLI（独立安装，数据在 `~/.cline`）读 `data/sessions` 逐会话 `*.messages.json` 的 assistant 消息 `metrics` 四分量（inputTokens 不含缓存）与 `modelInfo.id` 模型名，同为展示名 Cline | ✅ |
 | JoyCode（0.2.30 起） | `globalStorage/joycode.joycoder-editor/tasks` 的 Cline 系任务记录，逐请求不落模型名 | ✅ |
 | QoderWork（0.2.30 起） | `~/.qoderwork/projects` 的 Claude Code 风格转录（`message.usage` 四分量，带模型名）。Qoder 网关不下发真实 token 时全为零值，自动不计；Qoder（非 Work）由上游覆盖 | ✅ |
 | Kiro（0.2.30 起） | AWS Kiro 本地只有点数：`~/.kiro/sessions` 逐会话 `messages.jsonl` 的 `usage_summary`（credit 单位），并入日行 credits（{total, tools}），不占 token | ✅ |
