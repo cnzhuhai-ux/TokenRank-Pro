@@ -35,6 +35,18 @@ function writeDeveco(path, messages) {
 // Genspark Code（gencode）的库与 deveco.db 同构，测试夹具共用。
 const writeGencode = writeDeveco;
 
+// ToCodex（Cline 系）任务记录：say=api_req_started 的 text 是 JSON，失败请求没有 token 字段。
+function writeTocodexTasks(tasksDir, task, messages) {
+  const dir = join(tasksDir, task);
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, 'ui_messages.json'), JSON.stringify(messages));
+}
+function tocodexStarted(ts, tokensIn, tokensOut, cacheReads = 0, cacheWrites = 0) {
+  return { ts, say: 'api_req_started', text: JSON.stringify(tokensIn === null
+    ? { apiProtocol: 'openai', streamState: 'waiting_for_first_chunk' }
+    : { apiProtocol: 'openai', streamState: 'complete', tokensIn, tokensOut, cacheReads, cacheWrites, cost: 0 }) };
+}
+
 test('补充采集在全部磁盘发现 WorkBuddy 各版本和 DevEco Code，上游目录不重复计数', (t) => {
   const { root, done } = makeDrives();
   t.after(done);
@@ -134,6 +146,67 @@ test('Genspark Code 从 gencode 目录的 OpenCode 同构库采集；独立安�
   const prev = days.find((d) => d.day === beijing(NOW - DAY_MS));
   assert.equal(prev.tokens, 60);
   assert.deepEqual(prev.tools, [[TOOL_NAMES.gencode, 60]]);
+});
+
+test('ToCodex：桌面端便携安装按产品目录发现，CLI 读 .vscode-mock，失败请求与坏文件不计', (t) => {
+  const { root, done } = makeDrives();
+  t.after(done);
+  const drive = join(root, 'A'), home = join(drive, 'Users', 'me');
+  mkdirSync(home, { recursive: true });
+  // 便携安装：data/user-data 在安装目录内（Program Files 被全盘遍历跳过，由已知位置补查）
+  const portable = join(drive, 'Program Files', 'ToCodex', 'data', 'user-data', 'User', 'globalStorage', 'tocodex.tocodex', 'tasks');
+  writeTocodexTasks(portable, 'task-1', [
+    { ts: NOW, say: 'text', text: '你好' },
+    tocodexStarted(NOW, 13099, 72, 18304, 0),
+    // 失败与重试中的请求没有 token 字段，不能计数
+    tocodexStarted(NOW + 1, null),
+    { ts: NOW + 2, say: 'api_req_started', text: '{broken' },
+    // 全零用量不计
+    tocodexStarted(NOW + 3, 0, 0, 0, 0),
+  ]);
+  // 桌面端标准布局：%APPDATA%\ToCodex Desktop\User\globalStorage
+  const standard = join(home, 'AppData', 'Roaming', 'ToCodex Desktop', 'User', 'globalStorage', 'tocodex.tocodex', 'tasks');
+  writeTocodexTasks(standard, 'task-2', [tocodexStarted(NOW - DAY_MS, 20165, 139)]);
+  // CLI：shim 的 globalStorage 无扩展 id 子目录
+  writeTocodexTasks(join(home, '.vscode-mock', 'global-storage', 'tasks'), 'task-3',
+    [tocodexStarted(NOW, 1000, 200, 500, 20)]);
+  // 逐盘遍历发现 Tools/ToCodex 下的便携安装；坏文件只跳过该任务
+  const toolsDir = join(drive, 'Tools', 'ToCodex', 'data', 'user-data', 'User', 'globalStorage', 'tocodex.tocodex', 'tasks');
+  mkdirSync(join(toolsDir, 'task-bad'), { recursive: true });
+  writeFileSync(join(toolsDir, 'task-bad', 'ui_messages.json'), '{"broken":');
+
+  const days = collectExtraDays({ home, env: {}, platform: 'win32', drives: [drive], log: () => {} });
+  assert.equal(days.length, 2);
+  const today = days.find((d) => d.day === beijing(NOW));
+  // 便携 13099+72+18304 + CLI 1000+200+500+20 = 33195
+  assert.equal(today.tokens, 33195);
+  assert.equal(today.input_tokens, 14099);
+  assert.equal(today.output_tokens, 272);
+  assert.equal(today.cache_read, 18804);
+  assert.equal(today.cache_write, 20);
+  assert.equal(today.requests, 2);
+  assert.deepEqual(today.tools, [[TOOL_NAMES.tocodex, 33195]]);
+  const prev = days.find((d) => d.day === beijing(NOW - DAY_MS));
+  assert.equal(prev.tokens, 20304);
+  assert.deepEqual(prev.tools, [[TOOL_NAMES.tocodex, 20304]]);
+});
+
+test('ToCodex：同一数据经多条路径发现只计一次（目录与消息双重去重）', (t) => {
+  const { root, done } = makeDrives();
+  t.after(done);
+  const drive = join(root, 'A'), home = join(drive, 'Users', 'me');
+  mkdirSync(home, { recursive: true });
+  // APPDATA 已知位置与逐盘遍历（Roaming 下的产品目录名匹配）会指向同一个 tasks 目录
+  const appData = join(drive, 'Users', 'me', 'AppData', 'Roaming');
+  const tasks = join(appData, 'ToCodex Desktop', 'User', 'globalStorage', 'tocodex.tocodex', 'tasks');
+  writeTocodexTasks(tasks, 'task-1', [tocodexStarted(NOW, 500, 50, 0, 0)]);
+  writeTocodexTasks(tasks, 'task-2', [tocodexStarted(NOW, 100, 10, 0, 0)]);
+
+  const days = collectExtraDays({ home, env: { APPDATA: appData }, platform: 'win32', drives: [drive], log: () => {} });
+  assert.equal(days.length, 1);
+  assert.equal(days[0].tokens, 660);
+  assert.equal(days[0].requests, 2);
+  assert.deepEqual(days[0].tools, [[TOOL_NAMES.tocodex, 660]]);
 });
 
 test('合并补充日行时模型和工具内模型一起累加，超过协议上限按量截断', () => {

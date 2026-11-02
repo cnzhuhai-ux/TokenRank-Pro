@@ -1,6 +1,6 @@
 # TokenRank 独立同步器
 
-v0.2.27 为独立只读适配器，接入原版 [luwill/token-watcher](https://github.com/luwill/token-watcher)。Node.js 22.13+，无第三方运行依赖。
+v0.2.28 为独立只读适配器，接入原版 [luwill/token-watcher](https://github.com/luwill/token-watcher)。Node.js 22.13+，无第三方运行依赖。
 
 更换服务器、接入码或统计库后，会重新全量上传本机保留的历史用量，包含注销后重新接入的情况。上传中断可分批续传；重复执行同一账号的接入命令不会重传未变化的日期。
 
@@ -87,7 +87,7 @@ v0.2.10 增加独立心跳：启动、检查完成及每 5 分钟报告状态。
 
 心跳缓存单独写入 `~/.tokenrank/health/config.json`，不与同步子进程争写检查点。`rank status` 输出最近一次确认的心跳；这是历史状态，不保证当前正在运行。`rank off` 先在本机断开，再尽力发送关闭通知；网络不可用时服务器只能显示失联。`uninstall-agent` 和 `uninstall` 同样发送明确停止事件。小程序会分别显示最后联系、检查和上传时间，旧版无心跳时标为未知。
 
-默认每 5 分钟读取同一个 SQLite 快照，包含已提交的 WAL 记录；扫描全部已保留历史以发现旧日期变更。北京时间日桶、主用量直接读取原版 total_tokens（含缓存），input_tokens、output_tokens、缓存读写单列。工具、模型按原版总量各保留每日用量前 8 项，服务端将未分类差额单列。补充采集（Oort 系、WorkBuddy 各版本、DevEco Code、Genspark Code）随后并入相同日桶，同样受前 8 项工具与模型、128 组工具—模型限制；金额估算仍只基于原版可识别的模型。
+默认每 5 分钟读取同一个 SQLite 快照，包含已提交的 WAL 记录；扫描全部已保留历史以发现旧日期变更。北京时间日桶、主用量直接读取原版 total_tokens（含缓存），input_tokens、output_tokens、缓存读写单列。工具、模型按原版总量各保留每日用量前 8 项，服务端将未分类差额单列。补充采集（Oort 系、WorkBuddy 各版本、DevEco Code、Genspark Code、ToCodex）随后并入相同日桶，同样受前 8 项工具与模型、128 组工具—模型限制；金额估算仍只基于原版可识别的模型。
 
 历史按最多 400 天且小于 450 KiB 分批发送，无总历史天数截断；每批得到完整确认后才保存检查点。失败批次留待重试，429 按 Retry-After 等待，401 提示重新接入。超出当前计数协议范围会停止同步并提示，不裁剪源数据。原版升级后缺少必要字段时停止上报，不修改或自动升级原库。
 
@@ -146,9 +146,10 @@ token-watcher 1.8 首次迁移 Codex 去重键时，会在统计库里留下一�
 - **WorkBuddy**：识别 `.WorkBuddy`、`.workbuddy-ai`、`.workbuddy-cn`、`.workbuddy-intl`、`WorkBuddy AI` 等产品目录，只读取其中的 `*.jsonl` 转录。排除原版已覆盖的 `~/.WorkBuddy/projects` 和 `~/.tokenmeter/extra-roots.json` 登记的目录，避免重复计数；同一消息 ID 只计一次。
 - **DevEco Code**：读取 OpenCode 同构的 `deveco.db`，按 `message.data.tokens` 中的 input / output / cache.read / cache.write 汇总，reasoning 已包含在 output 内，不重复相加。
 - **Genspark Code（0.2.27）**：Genspark Super App 内编码终端（gencode）的库 `gencode/opencode.db` 与 OpenCode 同构，按同样口径汇总；只在名为 `gencode` 的目录里找库，散落的 `opencode.db` 属于独立安装的 opencode（原版已覆盖），不会抢。Super App 其余空间（网页 agents 聊天等）用量仍在 genspark.ai 云端，本地无数据。
+- **ToCodex（0.2.28）**：桌面端（标准安装与便携安装，含自定义盘的 Program Files）与 CLI 的任务记录 `tasks/<任务>/ui_messages.json`，详见下文「ToCodex 采集（0.2.28）」。
 - **容错**：每个文件或数据库单独捕获异常，损坏项写入同步日志后跳过，不影响其他来源和正常上报。数据目录只读，不修改任何产品文件。
 
-`TOKENRANK_OORT_DISABLE=1` 可关闭全部补充采集，`TOKENRANK_EXTRA_DISABLE=1` 只关闭 WorkBuddy / DevEco / Genspark Code 部分。
+`TOKENRANK_OORT_DISABLE=1` 可关闭全部补充采集，`TOKENRANK_EXTRA_DISABLE=1` 只关闭 WorkBuddy / DevEco / Genspark Code / ToCodex 部分。
 
 ## Trae 快照采集（0.2.22）
 
@@ -211,6 +212,24 @@ cache.read / cache.write` 与 `time.created`（毫秒）、`modelID`。0.2.27 �
 覆盖），不会被重复采集。Super App 其余空间（网页 agents / genmail 等聊天）的用量仍在
 genspark.ai 云端，本地无明细；credits 余额在云端账户页，客户端库里的 `cost` 字段是按
 Genspark 模型定价折算的积分值，仅入库 token 数、不参与金额估算。
+
+## ToCodex 采集（0.2.28）
+
+ToCodex 是 VS Code 系的 AI 编程助手（桌面端 + CLI），上游 token-watcher 不认识它。其任务
+用量由自带扩展（扩展 id `tocodex.tocodex`）按 Cline 系格式写在任务目录的
+`ui_messages.json`：数组中 `say` 为 `api_req_started` 的消息，`text` 反序列化后带
+`tokensIn / tokensOut / cacheReads / cacheWrites` 与毫秒时间戳；失败与重试中的请求只有
+`streamState`、没有 token 字段，天然不重复计。0.2.28 起 [`sync/extra.js`](sync/extra.js)
+按北京时间逐请求分日，展示名 `ToCodex`。发现规则：
+
+- **桌面端标准安装**：`%APPDATA%\ToCodex Desktop\User\globalStorage\tocodex.tocodex\tasks`（逐盘扫描按产品目录名 `ToCodex` / `ToCodex Desktop` 定位 + 已知位置补查）；
+- **桌面端便携安装**：VS Code 便携模式把数据放在 `<安装目录>\data\user-data`，含自定义盘的 `Program Files`（全盘遍历跳过该目录，单独按盘补查）；
+- **CLI**：shim 把 globalStorage 指到 `~/.vscode-mock/global-storage`，`tasks` 直接在其下（无扩展 id 子目录）。
+
+逐请求不落模型名（`ui_messages.json` 与 `history_item.json` 都没有），所以只记工具维度用量。
+同一数据经多条路径发现时按目录规范化 + 消息键双重去重；单任务文件损坏只跳过并告警。
+`TOKENRANK_EXTRA_DISABLE=1` 可关闭该来源。真机对账：两台安装（桌面端便携 + CLI）的数据
+与逐条手工统计一致。
 
 ## Windows 采集任务恢复（0.2.17）
 

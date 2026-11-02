@@ -6,10 +6,18 @@
  *   - Genspark Code：Genspark Super App 内的编码终端（gencode，OpenCode 定制版），
  *     逐请求用量在 ~/.local/share/gencode/opencode.db，上游不认识；Super App 其余
  *     空间（网页 agents 聊天等）用量仍在云端，无本地数据。
+ *   - ToCodex：VS Code 系桌面端与 CLI，任务用量由自带扩展（扩展 id tocodex.tocodex）
+ *     写在 Cline 系的各任务目录 ui_messages.json，say=api_req_started 的消息尾带
+ *     {tokensIn, tokensOut, cacheReads, cacheWrites}；失败与重试中的请求没有 token
+ *     字段，不会重复计。桌面端标准安装读 %APPDATA%\ToCodex Desktop，便携安装读
+ *     <安装目录>\data\user-data（含自定义盘的 Program Files）；CLI 的 shim 把
+ *     globalStorage 指到 ~/.vscode-mock/global-storage（无扩展 id 子目录）。逐请求
+ *     不落模型名，只记工具维度用量。
  *
  * 所有数据目录都在**全部磁盘**上发现，不只看系统盘（C:）：逐盘有界遍历，只看
- * 目录名和 deveco.db / gencode 目录，跳过系统/缓存目录；已知环境变量位置再单独补一遍。
- * 只读，单文件/单库损坏只跳过并告警，不会中断同步。
+ * 目录名和 deveco.db / gencode 目录，跳过系统/缓存目录（Program Files 由已知位置
+ * 单独补查）；已知环境变量位置再单独补一遍。只读，单文件/单库损坏只跳过并告警，
+ * 不会中断同步。
  *
  * 口径与 token-watcher 保持一致：
  *   - WorkBuddy 的 input_tokens 已含 cache_read，展示时拆成 input + cache_read，
@@ -22,7 +30,7 @@ import { join, resolve, sep } from 'node:path';
 import { homedir } from 'node:os';
 import { DatabaseSync } from 'node:sqlite';
 
-export const TOOL_NAMES = { workbuddy: 'WorkBuddy', deveco: 'DevEco Code', gencode: 'Genspark Code' };
+export const TOOL_NAMES = { workbuddy: 'WorkBuddy', deveco: 'DevEco Code', gencode: 'Genspark Code', tocodex: 'ToCodex' };
 
 const MAX_DEPTH = 5;
 const MAX = { tokens: 1e13, requests: 1e7 };
@@ -30,6 +38,9 @@ const WORKBUDDY_DIR = /^\.?workbuddy(?:[\s._-]?(?:ai|cn|intl|global))?$/i;
 const DEVECO_DIR = /^(?:\.?deveco(?:[\s._-]?code)?|deveco[\s._-]?studio|huawei[\s._-]?deveco.*)$/i;
 // gencode 的库只认 gencode 目录名；散落的 opencode.db 属于独立安装的 opencode（上游已覆盖），不能抢。
 const GENCODE_DIR = /^\.?gencode$/i;
+// ToCodex 的任务数据在扩展目录 tocodex.tocodex/tasks 下；产品目录名（ToCodex / ToCodex Desktop）用于定位安装位置。
+const TOCODEX_EXT = 'tocodex.tocodex';
+const TOCODEX_DIR = /^\.?tocodex(?:[\s._-]?desktop)?$/i;
 // 逐盘遍历时跳过的系统与缓存目录，避免把整盘扫成分钟级。
 const SKIP = new Set(['windows', 'program files', 'program files (x86)', 'programdata', '$recycle.bin',
   'system volume information', 'recovery', 'perflogs', 'node_modules', '.git', '.svn', '.hg',
@@ -82,9 +93,17 @@ function gencodeDbIn(base) {
   const candidate = join(base, 'opencode.db');
   return isFile(candidate) ? candidate : null;
 }
+/** ToCodex 的 tasks 目录：桌面端标准布局与 VS Code 便携模式（data/user-data 在安装目录内）。 */
+function tocodexTasksIn(base) {
+  for (const candidate of [join(base, 'User', 'globalStorage', TOCODEX_EXT, 'tasks'),
+    join(base, 'data', 'user-data', 'User', 'globalStorage', TOCODEX_EXT, 'tasks')]) {
+    if (isDirectory(candidate)) return candidate;
+  }
+  return null;
+}
 
-/** 逐盘有界遍历：只收集 WorkBuddy 数据目录、deveco.db 和 gencode 目录，不读文件内容。 */
-function scanDrives(drives, { workbuddy, deveco, gencode }) {
+/** 逐盘有界遍历：只收集 WorkBuddy 数据目录、deveco.db、gencode 与 ToCodex tasks 目录，不读文件内容。 */
+function scanDrives(drives, { workbuddy, deveco, gencode, tocodex }) {
   for (const root of drives) {
     const stack = [[root, 0]];
     while (stack.length) {
@@ -106,6 +125,10 @@ function scanDrives(drives, { workbuddy, deveco, gencode }) {
             const found = gencodeDbIn(path);
             if (found) gencode.add(found);
           }
+          if (TOCODEX_DIR.test(entry.name)) {
+            const found = tocodexTasksIn(path);
+            if (found) tocodex.add(found);
+          }
           if (depth < MAX_DEPTH && !SKIP.has(entry.name.toLowerCase())) stack.push([path, depth + 1]);
         } else if (entry.isFile() && entry.name.toLowerCase() === 'deveco.db') {
           deveco.add(path);
@@ -116,7 +139,7 @@ function scanDrives(drives, { workbuddy, deveco, gencode }) {
 }
 
 /** 环境变量里的已知位置（可能位于任何盘），作为逐盘遍历的补充。 */
-function scanKnownLocations({ home, env }, { workbuddy, deveco, gencode }) {
+function scanKnownLocations({ home, env }, { workbuddy, deveco, gencode, tocodex }) {
   const bases = [home, env.APPDATA, env.LOCALAPPDATA, env.XDG_DATA_HOME, env.XDG_CONFIG_HOME,
     join(home, 'AppData', 'Roaming'), join(home, 'AppData', 'Local'), join(home, '.local', 'share')]
     .filter(Boolean);
@@ -134,6 +157,16 @@ function scanKnownLocations({ home, env }, { workbuddy, deveco, gencode }) {
     for (const candidate of [join(base, 'gencode', 'opencode.db')]) {
       if (isFile(candidate)) gencode.add(candidate);
     }
+    for (const candidate of [join(base, 'ToCodex Desktop'), join(base, 'ToCodex'),
+      join(base, 'Programs', 'ToCodex Desktop'), join(base, 'Programs', 'ToCodex')]) {
+      const found = tocodexTasksIn(candidate);
+      if (found) tocodex.add(found);
+    }
+  }
+  // ToCodex CLI：shim 的 globalStorage 在 ~/.vscode-mock/global-storage，tasks 直接在其下（无扩展 id 子目录）。
+  for (const candidate of [join(home, '.vscode-mock', 'global-storage', 'tasks'),
+    join(home, '.vscode-mock', 'global-storage', TOCODEX_EXT, 'tasks')]) {
+    if (isDirectory(candidate)) tocodex.add(candidate);
   }
 }
 
@@ -254,12 +287,71 @@ function collectOpencodeDb(path, tool, seen, buckets, log) {
 const topEntries = (map, limit) => [...map.entries()].sort((a, b) => b[1] - a[1] || String(a[0]).localeCompare(String(b[0])))
   .slice(0, limit);
 
-/** 汇总所有磁盘上的 WorkBuddy 各版本、DevEco Code 与 Genspark Code，产出与上报协议同构的日行。 */
+/** 从 Cline 系 api_req_started 文本中提取一次请求的 token 用量；没有 token 字段（失败/重试中）返回 null。 */
+function parseClineUsage(text) {
+  if (typeof text !== 'string' || !text.includes('tokensIn')) return null;
+  let parsed = null;
+  try { parsed = JSON.parse(text); } catch { /* 文本可能被截断，走正则兜底 */ }
+  const pick = (key) => {
+    const v = parsed?.[key];
+    if (Number.isFinite(v)) return v;
+    const m = new RegExp(`"${key}":(\\d+)`).exec(text);
+    return m ? Number(m[1]) : 0;
+  };
+  return { input: pick('tokensIn'), output: pick('tokensOut'), cacheRead: pick('cacheReads'), cacheWrite: pick('cacheWrites') };
+}
+
+/** ToCodex（桌面端与 CLI）的任务记录：逐请求用量，按消息时间戳聚合。 */
+function collectTocodex(tasksDirs, seen, buckets, log) {
+  for (const dir of tasksDirs) {
+    let tasks;
+    try { tasks = readdirSync(dir, { withFileTypes: true }); } catch { continue; }
+    for (const entry of tasks) {
+      if (!entry.isDirectory()) continue;
+      const file = join(dir, entry.name, 'ui_messages.json');
+      if (!isFile(file)) continue;
+      try {
+        const messages = JSON.parse(readFileSync(file, 'utf8'));
+        if (!Array.isArray(messages)) continue;
+        for (const message of messages) {
+          if (message?.say !== 'api_req_started') continue;
+          const usage = parseClineUsage(message.text);
+          if (!usage || usage.input + usage.output + usage.cacheRead + usage.cacheWrite <= 0) continue;
+          const ts = Number(message.ts);
+          if (!Number.isFinite(ts) || ts <= 0) continue;
+          const key = `tc:${dir}:${entry.name}:${ts}`;
+          if (seen.has(key)) continue;
+          seen.add(key);
+          const day = beijingDayOf(ts);
+          let bucket = buckets.get(day);
+          if (!bucket) { bucket = emptyBucket(day); buckets.set(day, bucket); }
+          addTo(bucket, { ...usage, requests: 1, tool: TOOL_NAMES.tocodex });
+        }
+      } catch (err) {
+        log(`tocodex 任务 ${entry.name} 解析失败，已跳过：${err?.message || err}`);
+      }
+    }
+  }
+}
+
+/** Program Files 在逐盘遍历里被跳过，ToCodex 的便携安装（data/user-data）在这里按盘补查。 */
+function scanProgramFiles(drives, tocodex) {
+  for (const root of drives) {
+    for (const candidate of [join(root, 'Program Files', 'ToCodex'), join(root, 'Program Files (x86)', 'ToCodex')]) {
+      const found = tocodexTasksIn(candidate);
+      if (found) tocodex.add(found);
+    }
+  }
+}
+
+/** 汇总所有磁盘上的 WorkBuddy 各版本、DevEco Code、Genspark Code 与 ToCodex，产出与上报协议同构的日行。 */
 export function collectExtraDays({ home = homedir(), env = process.env, platform = process.platform,
   drives = null, log = () => {} } = {}) {
-  const workbuddy = new Set(), deveco = new Set(), gencode = new Set();
-  scanDrives(drives || discoverDrives({ platform }), { workbuddy, deveco, gencode });
-  scanKnownLocations({ home, env }, { workbuddy, deveco, gencode });
+  const workbuddy = new Set(), deveco = new Set(), gencode = new Set(), tocodex = new Set();
+  const found = drives || discoverDrives({ platform });
+  scanDrives(found, { workbuddy, deveco, gencode, tocodex });
+  scanKnownLocations({ home, env }, { workbuddy, deveco, gencode, tocodex });
+  if (platform === 'win32') scanProgramFiles(found, tocodex);
   const upstream = [...upstreamWorkbuddyRoots(home)];
   const buckets = new Map(), seen = new Set();
   for (const root of new Set([...workbuddy].map(canonical))) {
@@ -268,6 +360,7 @@ export function collectExtraDays({ home = homedir(), env = process.env, platform
   }
   for (const path of new Set([...deveco].map(canonical))) collectOpencodeDb(path, 'deveco', seen, buckets, log);
   for (const path of new Set([...gencode].map(canonical))) collectOpencodeDb(path, 'gencode', seen, buckets, log);
+  collectTocodex([...new Set([...tocodex].map(canonical))], seen, buckets, log);
   return [...buckets.values()].sort((a, b) => a.day.localeCompare(b.day)).map((bucket) => ({
     day: bucket.day, tokens: bucket.tokens, input_tokens: bucket.input_tokens, output_tokens: bucket.output_tokens,
     cache_read: bucket.cache_read, cache_write: bucket.cache_write, requests: bucket.requests,
