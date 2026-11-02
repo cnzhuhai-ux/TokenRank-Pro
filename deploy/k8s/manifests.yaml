@@ -1,4 +1,4 @@
-# TokenRank 服务端 · Kubernetes 部署清单（命名空间 ai-pj）
+﻿# TokenRank 服务端 · Kubernetes 部署清单（命名空间 ai-pj）
 # 形态：Ingress（cert-manager 签发证书 + TLS 终止）→ Service(ClusterIP) → Node 单进程（自带静态分发）
 # 部署：kubectl --kubeconfig=<kubeconfig> apply -f deploy/k8s/manifests.yaml
 apiVersion: v1
@@ -61,7 +61,7 @@ spec:
         fsGroup: 10001
       initContainers:
         - name: init-db
-          image: hb.oortcloudsmart.com/ai/tokenrank:d7abcf6-b1
+          image: hb.oortcloudsmart.com/ai/tokenrank:8ade7da-b11021133
           command: ["node", "/app/server/init-db.mjs"]
           envFrom:
             - configMapRef:
@@ -75,7 +75,7 @@ spec:
               drop: ["ALL"]
       containers:
         - name: tokenrank
-          image: hb.oortcloudsmart.com/ai/tokenrank:d7abcf6-b1
+          image: hb.oortcloudsmart.com/ai/tokenrank:8ade7da-b11021133
           imagePullPolicy: IfNotPresent
           ports:
             - name: http
