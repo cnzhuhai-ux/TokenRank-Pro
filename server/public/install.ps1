@@ -59,4 +59,15 @@ try {
   if ($LASTEXITCODE -ne 0) { throw ('统计内核检查或升级未完成。按上面的提示处理后重新运行：& ([scriptblock]::Create((irm ''' + $Server.TrimEnd('/') + '/update.ps1''))) ''' + $Server.TrimEnd('/') + '''') }
   Write-Host "独立同步服务已安装。可把 $binDir 加入 PATH。"
   Write-Host '原版负责采集，TokenRank 负责只读同步；已检查统计内核最新稳定版。'
+
+  # 自动安装 Trae 采集扩展（补充采集组件，失败不阻断同步器）
+  try {
+    Write-Host ''
+    Write-Host '--- 检查 Trae 采集扩展 ---'
+    $traeScript = Invoke-WebRequest -Uri ($base + '/install-trae.ps1') -UseBasicParsing -ErrorAction Stop
+    & ([scriptblock]::Create($traeScript.Content)) $Server
+    if ($LASTEXITCODE -ne 0) { Write-Warning "Trae 扩展安装脚本退出码 $LASTEXITCODE，可手动重跑：& (irm '$($base + '/install-trae.ps1')') '$Server'" }
+  } catch {
+    Write-Warning "Trae 扩展安装跳过：$($_.Exception.Message)。手动安装命令：& (irm '$($base + '/install-trae.ps1')') '$Server'"
+  }
 } finally { Remove-Item -LiteralPath $tmp -Recurse -Force }

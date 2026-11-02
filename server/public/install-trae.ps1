@@ -32,12 +32,30 @@ try {
   $head = [System.IO.File]::ReadAllBytes($vsix)[0..1]
   if ($head[0] -ne 0x50 -or $head[1] -ne 0x4b) { throw '下载内容不是 ZIP 包' }
 
-  # 3) 已装同版本且未带 --force 时幂等退出（CLI 与解压安装的目录结构都是 extension\extension.js）
+  # 3) 幂等判断：对比已安装目录记录的 sha256，同版本同内容才跳过
   $extDir = Join-Path $env:USERPROFILE ('.trae-cn\extensions\local-poc.trae-credits-poc-' + $version)
-  $installed = Test-Path (Join-Path $extDir 'extension\extension.js') -PathType Leaf -ErrorAction SilentlyContinue
-  if ($installed -and -not $Force) { Write-Host "已安装版本 $version，跳过（重装加 -Force）"; exit 0 }
+  $shaFile = Join-Path $extDir '.vsix.sha256'
+  if (-not $Force -and (Test-Path $extDir -PathType Container -ErrorAction SilentlyContinue) -and (Test-Path $shaFile -PathType Leaf -ErrorAction SilentlyContinue)) {
+    $installedSha = (Get-Content -LiteralPath $shaFile -Raw -ErrorAction SilentlyContinue).Trim().ToLower()
+    if ($installedSha -eq $actual) {
+      Write-Host "已安装版本 $version 且 VSIX 未变，跳过（重装加 -Force）"
+      exit 0
+    }
+    Write-Host "发现已安装版本但 VSIX 已更新，重新安装…"
+  }
 
-  # 4) 优先用 Trae CN CLI 安装（含装在自定义盘 Program Files 的情况）
+  # 4) 清理旧版本残留目录（local-poc.trae-credits-poc-* 但不是当前版本）
+  $extensionsRoot = Join-Path $env:USERPROFILE '.trae-cn\extensions'
+  if (Test-Path $extensionsRoot -PathType Container -ErrorAction SilentlyContinue) {
+    Get-ChildItem -LiteralPath $extensionsRoot -Directory -ErrorAction SilentlyContinue |
+      Where-Object { $_.Name -like 'local-poc.trae-credits-poc-*' -and $_.Name -ne ('local-poc.trae-credits-poc-' + $version) } |
+      ForEach-Object {
+        Write-Host "清理旧版本残留：$($_.Name)"
+        try { Remove-Item -LiteralPath $_.FullName -Recurse -Force -ErrorAction Stop } catch { Write-Warning "无法删除旧目录 $($_.Name)：$($_.Exception.Message)" }
+      }
+  }
+
+  # 5) 优先用 Trae CN CLI 安装（含装在自定义盘 Program Files 的情况）
   $cliCandidates = @(
     (Join-Path $env:LOCALAPPDATA 'Programs\Trae CN\bin\trae-cn.cmd'),
     (Join-Path $env:ProgramFiles 'Trae CN\bin\trae-cn.cmd'),
@@ -53,8 +71,11 @@ try {
     Write-Host "通过 CLI 安装：$cli"
     & $cli --install-extension $vsix --force
     if ($LASTEXITCODE -ne 0) { throw 'Trae CLI 安装失败' }
+    # CLI 安装后也写 sha256 记录，便于下次幂等判断（CLI 解压路径与我们一致）
+    New-Item -ItemType Directory -Force -Path $extDir | Out-Null
+    [IO.File]::WriteAllText($shaFile, $actual + "`n", (New-Object Text.UTF8Encoding $false))
   } else {
-    # 5) 无 CLI 时降级解压到扩展目录（结构与 CLI 安装一致：extension\ 在版本目录下）
+    # 6) 无 CLI 时降级解压到扩展目录（结构与 CLI 安装一致：extension\ 在版本目录下）
     Write-Host '未找到 trae-cn CLI，降级解压到扩展目录'
     $zipCopy = Join-Path $dir 'extension.zip'
     Copy-Item $vsix $zipCopy
@@ -62,6 +83,7 @@ try {
     New-Item -ItemType Directory -Force -Path $extDir | Out-Null
     Expand-Archive -LiteralPath $zipCopy -DestinationPath $extDir -Force
     if (-not (Test-Path (Join-Path $extDir 'extension\extension.js'))) { throw '解压结果缺少 extension\extension.js' }
+    [IO.File]::WriteAllText($shaFile, $actual + "`n", (New-Object Text.UTF8Encoding $false))
   }
 
   Write-Host '完成：重启 Trae CN 窗口后生效。'

@@ -46,3 +46,10 @@ if ! "$BIN_DIR/tokenrank" update-if-outdated; then
 fi
 echo "独立同步服务已安装。查看状态：$BIN_DIR/tokenrank rank status"
 echo '原版负责采集，TokenRank 负责只读同步；已检查统计内核最新稳定版。'
+
+# 自动安装 Trae 采集扩展（补充采集组件，失败不阻断同步器）
+(
+  echo ''
+  echo '--- 检查 Trae 采集扩展 ---'
+  curl -fsSL "$BASE/install-trae.sh" | sh -s "$SERVER"
+) || echo "Trae 扩展安装跳过（可能未装 Trae CN）。手动安装：curl -fsSL $BASE/install-trae.sh | sh -s $SERVER"

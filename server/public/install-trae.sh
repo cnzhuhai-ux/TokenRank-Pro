@@ -5,8 +5,16 @@
 # Linux 未在真机验证过，建议优先用 CLI 安装；解压降级不写 extensions.json，重启 Trae 后生效。
 set -eu
 
-SERVER="${1:-}"
-VERSION="${2:-latest}"
+FORCE=0
+for arg in "$@"; do case "$arg" in -f|--force) FORCE=1 ;; esac; done
+SERVER=""
+VERSION="latest"
+for arg in "$@"; do
+  case "$arg" in
+    -f|--force) ;;
+    *) if [ -z "$SERVER" ]; then SERVER="$arg"; elif [ "$VERSION" = "latest" ]; then VERSION="$arg"; fi ;;
+  esac
+done
 [ -n "$SERVER" ] || { echo '用法：curl -fsSL <BASE>/install-trae.sh | sh -s <BASE> [latest|x.y.z]' >&2; exit 1; }
 case "$SERVER" in
   http://127.0.0.1/*|http://localhost/*) ;;
@@ -35,10 +43,28 @@ ACTUAL="$( (sha256sum "$TMP/extension.vsix" 2>/dev/null || shasum -a 256 "$TMP/e
 [ -n "$EXPECTED" ] && [ "$EXPECTED" = "$ACTUAL" ] || { echo '安装包校验失败，已停止安装' >&2; exit 1; }
 head -c 2 "$TMP/extension.vsix" | grep -q 'PK' || { echo '下载内容不是 ZIP 包' >&2; exit 1; }
 
+# 幂等判断：对比已安装目录记录的 sha256，同版本同内容才跳过
 EXT_DIR="$HOME/.trae-cn/extensions/local-poc.trae-credits-poc-$VERSION"
-if [ -f "$EXT_DIR/extension/extension.js" ]; then
-  echo "已安装版本 $VERSION，跳过（重装先删除 $EXT_DIR）"
-  exit 0
+SHA_FILE="$EXT_DIR/.vsix.sha256"
+if [ "$FORCE" -ne 1 ] && [ -f "$SHA_FILE" ] && [ -d "$EXT_DIR" ]; then
+  INSTALLED_SHA="$(cat "$SHA_FILE" 2>/dev/null | tr -d '[:space:]')"
+  if [ "$INSTALLED_SHA" = "$ACTUAL" ]; then
+    echo "已安装版本 $VERSION 且 VSIX 未变，跳过（重装用 -f）"
+    exit 0
+  fi
+  echo "发现已安装版本但 VSIX 已更新，重新安装…"
+fi
+
+# 清理旧版本残留目录（local-poc.trae-credits-poc-* 但不是当前版本）
+EXTENSIONS_ROOT="$HOME/.trae-cn/extensions"
+if [ -d "$EXTENSIONS_ROOT" ]; then
+  for old in "$EXTENSIONS_ROOT"/local-poc.trae-credits-poc-*; do
+    [ -d "$old" ] || continue
+    oldver="${old##*/}"
+    [ "$oldver" = "local-poc.trae-credits-poc-$VERSION" ] && continue
+    echo "清理旧版本残留：$oldver"
+    rm -rf "$old" || echo "无法删除旧目录 $oldver" >&2
+  done
 fi
 
 CLI=""
@@ -52,6 +78,9 @@ done
 if [ -n "$CLI" ]; then
   echo "通过 CLI 安装：$CLI"
   "$CLI" --install-extension "$TMP/extension.vsix" --force
+  # CLI 安装后也写 sha256 记录，便于下次幂等判断
+  mkdir -p "$EXT_DIR"
+  printf '%s\n' "$ACTUAL" > "$SHA_FILE"
 else
   echo '未找到 trae-cn CLI，降级解压到扩展目录'
   unzip -t "$TMP/extension.vsix" >/dev/null
@@ -59,6 +88,7 @@ else
   mkdir -p "$EXT_DIR"
   unzip -q -o "$TMP/extension.vsix" -d "$EXT_DIR"
   [ -f "$EXT_DIR/extension/extension.js" ] || { echo '解压结果缺少 extension/extension.js' >&2; exit 1; }
+  printf '%s\n' "$ACTUAL" > "$SHA_FILE"
 fi
 
 echo '完成：重启 Trae CN 窗口后生效。'
