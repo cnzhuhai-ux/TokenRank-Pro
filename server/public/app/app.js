@@ -214,7 +214,7 @@
         <div class="section"><span class="t">${label}</span><span class="more">完整分析</span></div>
         <div class="caption">${sum.users || 0} 位公开用户 · ${details.length} 种${dimension === 'tools' ? '工具' : '模型'}${creditsByScope && sum.credits > 0 ? ` · ${esc(creditsText(sum.credits))} Credits` : ''}</div>
         <div class="donut-row">${tokensPie}${creditsPie}</div>
-        ${details.slice(0, 10).map((x) => `
+        ${details.map((x) => `
           <div class="dist">
             <div class="head"><span class="name">${esc(x.name)}</span><span class="pct num">${(x.percent || 0).toFixed(1)}%</span></div>
             <div class="bar"><i style="width:${Math.min(100, x.percent || 0)}%"></i></div>
