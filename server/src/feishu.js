@@ -239,7 +239,7 @@ export function leaderboardCard({ title, entries, members, updatedAt, nowMs, per
     });
     const meInTokensBoard = meUid != null && tokenEntries.slice(0, nTok).some((e) => e.uid === meUid);
     if (me && (me.tokens || 0) > 0 && !meInTokensBoard) {
-      elements.push(boardRow({ rank: me.rank, entry: {}, nameHtml: mdEscape(me.nickname), suffix: ' 我',
+      elements.push(boardRow({ rank: me.rank, entry: me.img_key ? { img_key: me.img_key } : {}, nameHtml: mdEscape(me.nickname), suffix: ' 我',
         modelText: me.top_model || '', toolText: me.top_tool || '', valueText: formatTokens(me.tokens), bold: true, grey: true }));
     }
     if (creditsEntries.length) {
@@ -261,7 +261,7 @@ export function leaderboardCard({ title, entries, members, updatedAt, nowMs, per
       });
       const meInCreditsBoard = meUid != null && creditsEntries.slice(0, nCre).some((e) => e.uid === meUid);
       if (me && (me.credits || 0) > 0 && !meInCreditsBoard) {
-        elements.push(boardRow({ rank: me.credits_rank ?? '-', entry: {}, nameHtml: mdEscape(me.nickname), suffix: ' 我',
+        elements.push(boardRow({ rank: me.credits_rank ?? '-', entry: me.img_key ? { img_key: me.img_key } : {}, nameHtml: mdEscape(me.nickname), suffix: ' 我',
           modelText: '', toolText: me.top_tool || '', valueText: `${credits2(me.credits)} Credits`, bold: true, grey: true }));
       }
     }
@@ -446,6 +446,18 @@ export function createFeishuService({ fetcher = (...args) => fetch(...args), now
     } catch {
       return null;
     }
+  }
+
+  // 头像 key 需覆盖两张榜展示行的并集：Token 榜按 tokens 序、Credits 榜按 credits 序，
+  // 只取 Token 前 N 会漏掉纯 Credits 用户（曾力/吴镇江头像消失的根因），不是 element 数量问题
+  const avatarTargets = (entries, meEntry) => {
+    const creditsTop = entries.filter((e) => (e.credits || 0) > 0)
+      .sort((a, b) => b.credits - a.credits || a.uid - b.uid).slice(0, BOARD_LIMIT);
+    return [...new Set([...entries.slice(0, BOARD_LIMIT), ...creditsTop, meEntry].filter(Boolean))];
+  };
+  async function fillAvatarKeys(env, targets) {
+    await Promise.all(targets.filter((e) => !e.img_key)
+      .map(async (e) => { e.img_key = await ensureAvatarKey(env, e); }));
   }
 
   // ── 账号与接入码（语义与 worker.js 的微信流程一致） ──
@@ -790,11 +802,9 @@ export function createFeishuService({ fetcher = (...args) => fetch(...args), now
       const footerBits = [];
       if (mine) footerBits.push(`你排第 **${mine.rank}** 名 · ${formatTokens(mine.tokens)} tokens`);
       if (account && !(await membership(env, found.id, account.id))) footerBits.push('你还未上榜，发「**加入**」加入');
-      // 头像换 img_key（仅前 10 行；失败退化无头像列）
-      const shown = board.entries.slice(0, BOARD_LIMIT);
-      await Promise.all(shown.map(async (e) => { e.img_key = await ensureAvatarKey(env, e); }));
       const meEntry = mine && account ? board.entries.find((e) => e.uid === account.id) : null;
-      const me = mine ? { rank: mine.rank, tokens: mine.tokens, nickname: account.nickname, top_model: meEntry?.top_model ?? null, top_tool: meEntry?.top_tool ?? null, credits: mine.credits, credits_rank: mine.credits_rank } : null;
+      await fillAvatarKeys(env, avatarTargets(board.entries, meEntry));
+      const me = mine ? { rank: mine.rank, tokens: mine.tokens, nickname: account.nickname, top_model: meEntry?.top_model ?? null, top_tool: meEntry?.top_tool ?? null, credits: mine.credits, credits_rank: mine.credits_rank, img_key: meEntry?.img_key ?? null } : null;
       return reply(leaderboardCard({
         title: `${mdEscape(found.name)} · Token 排行榜`,
         entries: board.entries, members: memberCount?.c ?? null, updatedAt: board.updatedAt, nowMs,
@@ -803,11 +813,10 @@ export function createFeishuService({ fetcher = (...args) => fetch(...args), now
       }));
     }
     const board = await boardRows(env, { from, to });
-    const shownAll = board.entries.slice(0, BOARD_LIMIT);
-    await Promise.all(shownAll.map(async (e) => { e.img_key = await ensureAvatarKey(env, e); }));
     const mine = account ? await globalStanding(env, account.id, from, to) : null;
     const meEntry = mine ? board.entries.find((e) => e.uid === account.id) : null;
-    const me = mine ? { rank: mine.rank, tokens: mine.tokens, nickname: account.nickname, top_model: meEntry?.top_model ?? null, top_tool: meEntry?.top_tool ?? null, credits: mine.credits, credits_rank: mine.credits_rank } : null;
+    await fillAvatarKeys(env, avatarTargets(board.entries, meEntry));
+    const me = mine ? { rank: mine.rank, tokens: mine.tokens, nickname: account.nickname, top_model: meEntry?.top_model ?? null, top_tool: meEntry?.top_tool ?? null, credits: mine.credits, credits_rank: mine.credits_rank, img_key: meEntry?.img_key ?? null } : null;
     return reply(leaderboardCard({
       title: `广场 · Token 排行榜`,
       entries: board.entries, members: board.entries.length, updatedAt: board.updatedAt, nowMs,

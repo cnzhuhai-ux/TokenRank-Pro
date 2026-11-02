@@ -68,6 +68,12 @@ function fakeFeishuApi(log) {
     if (String(url).includes('/auth/v3/tenant_access_token/internal')) {
       return Response.json({ code: 0, tenant_access_token: 't-token', expire: 7200 });
     }
+    if (String(url).startsWith('https://img.example/')) {
+      return new Response(new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10]), { headers: { 'content-type': 'image/png' } });
+    }
+    if (String(url).includes('/im/v1/images')) {
+      return Response.json({ code: 0, data: { image_key: 'img_v2_avatar' } });
+    }
     if (String(url).includes('/im/v1/chats/')) {
       return Response.json({ code: 0, data: { name: '飞书测试群' } });
     }
@@ -570,9 +576,10 @@ test('榜单卡片 6 列布局：头像独占列与昵称同行，工具/模型�
   assert.match(cell(header, 2), /成员/);
   assert.equal(cell(header, 3), "<font color='grey'>工具</font>");
   assert.equal(cell(header, 4), "<font color='grey'>模型</font>");
-  // 张三行：头像列只放头像一个元素（列内多元素会纵向堆叠拆成两行），昵称独占相邻列
+  // 张三行：头像列是已上传的 img 元素（与昵称同行），昵称独占相邻列
   const first = rows[1];
   assert.equal(first.columns[1].elements.length, 1, '头像列只放头像/占位一个元素');
+  assert.equal(first.columns[1].elements[0].tag, 'img', 'Token 榜行头像已上传');
   assert.match(cell(first, 2), /张三/);
   assert.match(cell(first, 3), /codex/);
   assert.match(cell(first, 4), /claude-sonnet-4\.5/);
@@ -597,6 +604,8 @@ test('榜单卡片 6 列布局：头像独占列与昵称同行，工具/模型�
   const wangwu = creditRows.find((r) => cell(r, 2).includes('王五'));
   assert.ok(wangwu, '王五出现在 Credits 榜');
   assert.match(cell(wangwu, 3), /qoder/);
+  // 王五 tokens=0 不在 Token 榜 Top-10 内，Credits 榜头像也必须上传展示（纯积分用户头像不消失）
+  assert.equal(cell(wangwu, 1), '[头像]', 'Credits 榜纯积分用户有头像');
 });
 
 test('榜单大名单自适应裁行：整卡组件不超 200，提示实际展示行数与榜外我行', () => {
@@ -604,7 +613,7 @@ test('榜单大名单自适应裁行：整卡组件不超 200，提示实际展�
     uid: i + 1, nickname: `成员${i + 1}`, tokens: 900000 - i, credits: i < 20 ? 400 - i : 0,
     top_tool: 'codex', top_model: 'glm-5.3-flash', img_key: 'img_v2_avatar',
   }));
-  const me = { rank: 31, tokens: 5, nickname: '我自己', top_model: 'glm-5.3-flash', top_tool: 'codex', credits: 1, credits_rank: 21 };
+  const me = { rank: 31, tokens: 5, nickname: '我自己', top_model: 'glm-5.3-flash', top_tool: 'codex', credits: 1, credits_rank: 21, img_key: 'img_v2_me' };
   const card = leaderboardCard({ title: '广场 · Token 排行榜', entries, members: 31, nowMs: NOW, meUid: 99, me, appUrl: 'https://rank.test/app' });
   let total = 0;
   const walk = (arr) => { for (const el of arr) { if (!el || typeof el !== 'object') continue; total += 1; if (el.tag === 'column_set') walk(el.columns || []); if (el.tag === 'column') walk(el.elements || []); } };
@@ -613,10 +622,11 @@ test('榜单大名单自适应裁行：整卡组件不超 200，提示实际展�
   const text = flat(card);
   assert.match(text, /Token 榜仅展示前 (\d+) 名（共 30 人有用量）/);
   assert.match(text, /Credits 榜仅展示前 (\d+) 名（共 20 人有 Credits 用量）/);
-  // 裁行后我不在榜内 → Token 榜与 Credits 榜各保留灰底「我」行
+  // 裁行后我不在榜内 → Token 榜与 Credits 榜各保留灰底「我」行，且我行带头像
   const rows = card.body.elements.filter((el) => el.tag === 'column_set');
   const mine = rows.filter((r) => r.background_style === 'grey');
   assert.equal(mine.length, 2, 'Token 与 Credits 各保留一行灰底我行');
   const meCells = mine.map((r) => flat({ body: { elements: r.columns[2].elements } }));
   assert.ok(meCells.every((c) => c.includes('我自己')), '我行昵称正确');
+  assert.ok(mine.every((r) => r.columns[1].elements[0].tag === 'img'), '灰底我行头像已展示');
 });
