@@ -152,7 +152,7 @@ tokenrank rank push --full --dry-run
 
 | 目录 | 内容 |
 |---|---|
-| `client/sync` | 电脑端同步器（当前 0.2.31）：接入、只读同步、心跳、超时恢复、更新重算、备份清理；含 Oort 系工具补充采集（`client/sync/oort.js`，见 [`docs/oort-collection.md`](docs/oort-collection.md)）、WorkBuddy / DevEco Code / Genspark Code / ToCodex / 独立 Cline / JoyCode / QoderWork / Kiro / TeleAgent / CodeArts Agent 全盘补充采集（`client/sync/extra.js`）、CodeBuddy 扩展日志采集（`client/sync/codebuddy.js`）与 Trae 快照采集（`client/sync/trae.js`，扩展源码在 `client/trae-extension`，见 [`docs/trae-collection.md`](docs/trae-collection.md)） |
+| `client/sync` | 电脑端同步器（当前 0.2.32）：接入、只读同步、心跳、超时恢复、更新重算、备份清理；含 Oort 系工具补充采集（`client/sync/oort.js`，见 [`docs/oort-collection.md`](docs/oort-collection.md)）、WorkBuddy / DevEco Code / Genspark Code / ToCodex / 独立 Cline / JoyCode / QoderWork / Kiro / TeleAgent / CodeArts Agent 全盘补充采集（`client/sync/extra.js`）、CodeBuddy 扩展日志采集（`client/sync/codebuddy.js`）与 Trae 快照采集（`client/sync/trae.js`，扩展源码在 `client/trae-extension`，见 [`docs/trae-collection.md`](docs/trae-collection.md)） |
 | `client/bin/tokenrank.js` | 同步器命令行入口 |
 | `server` | Cloudflare Worker、D1 表结构与迁移、安装和更新脚本；含飞书机器人（`server/src/feishu.js`）与 Node 单进程部署入口（`server/node-service.mjs` + `server/src/d1-node.mjs`） |
 | `miniprogram` | 原生微信小程序 |

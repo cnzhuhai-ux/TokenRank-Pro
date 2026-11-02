@@ -18,11 +18,17 @@ export async function readCostedDays(path, { entry, now = Date.now(), log = () =
       const source = join(dirname(path), name);
       if (existsSync(source)) copyFileSync(source, join(cache, name));
     }
-    const { stdout } = await exec(process.execPath,
+    const { stdout, stderr } = await exec(process.execPath,
       ['--no-warnings', join(import.meta.dirname, 'cost-worker.js'), original.root, path, String(now)], {
         env: { ...process.env, HOME: home, USERPROFILE: home, TOKENMETER_OFFLINE: '1', TOKENRANK_OFFLINE: '1', TZ: 'Asia/Shanghai' },
         timeout: 60000, maxBuffer: 32 * 1024 * 1024,
       });
+    // 子进程把 readDays 的口径/告警日志写到 stderr（stdout 只承载 JSON 结果），这里中继给调用方，
+    // 否则 Qoder 网关口径提示与「超出上报协议范围」警告永远不会被用户看到
+    for (const line of String(stderr).split('\n')) {
+      const message = line.trim();
+      if (message) log(message.startsWith('[tokenrank] ') ? message.slice('[tokenrank] '.length) : message);
+    }
     const days = JSON.parse(stdout);
     if (!Array.isArray(days)) throw new Error('invalid costs');
     return days;

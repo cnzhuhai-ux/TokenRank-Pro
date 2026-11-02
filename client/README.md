@@ -1,6 +1,6 @@
 # TokenRank 独立同步器
 
-v0.2.31 为独立只读适配器，接入原版 [luwill/token-watcher](https://github.com/luwill/token-watcher)。Node.js 22.13+，无第三方运行依赖。
+v0.2.32 为独立只读适配器，接入原版 [luwill/token-watcher](https://github.com/luwill/token-watcher)。Node.js 22.13+，无第三方运行依赖。
 
 更换服务器、接入码或统计库后，会重新全量上传本机保留的历史用量，包含注销后重新接入的情况。上传中断可分批续传；重复执行同一账号的接入命令不会重传未变化的日期。
 
@@ -163,6 +163,10 @@ token-watcher 1.8 首次迁移 Codex 去重键时，会在统计库里留下一�
 ## Qoder 网关口径提示（0.2.31）
 
 Qoder（含 QoderWork）的企业网关只在 `usage.credits` 落真实消耗，token 四项恒为 0，且 `message.model` 是网关别名（本机实测 2026-10-14～11-02 共 14,457 行全部如此，别名 `qfmodel`/`dfmodel`/`qmodel_38max`，无 `qoder-custom-*` 用户模型标记）——本地不存在自定义模型的真实使用率数据，模型维度对这部分天数无可归因，不是采集或上报链路故障。0.2.31 起，读到「tokens=0 且无模型明细的纯 credits 日」时同步日志输出一行口径提示（每次同步最多一条），便于用户问询时快速定位；credits 总量与工具维度照常上报，不受影响。
+
+## 子进程日志中继（0.2.32）
+
+金额估算在子进程（cost-worker）里完成，stdout 只承载日桶 JSON；`readDays` 的口径提示与「超出上报协议范围」警告写在子进程 stderr，此前被父进程丢弃，用户永远看不到。0.2.32 起父进程把子进程 stderr 逐行中继给同步日志（`[tokenrank] ` 前缀剥除），诊断信息在 `rank push --dry-run` 与日常同步中均可见。
 
 ## Trae 快照采集（0.2.22）
 
