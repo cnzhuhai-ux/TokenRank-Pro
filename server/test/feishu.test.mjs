@@ -550,37 +550,37 @@ test('ensureAvatarKey 上传头像换 img_key 并按来源缓存，命中后不�
   assert.equal(await service._internals.ensureAvatarKey(env, { uid: 2, avatar_path: null, avatar_url: null }), null);
 });
 
-test('榜单卡片新增「工具」列：位于成员与模型之间，展示使用率最高的工具', async (t) => {
+test('榜单卡片 4 列紧凑布局（飞书 element 上限 200）：头像+昵称合并、工具·模型合并', async (t) => {
   const { db, env } = fixture(t);
   await seedGroupBoard(db);
-  // 张三：codex 用量高于 claude-code → 工具列取 codex；李四只有 claude-code
   const today = beijingDay(NOW);
   db.prepare('UPDATE daily_totals SET tools_json=? WHERE user_id=1 AND day=?')
     .run(JSON.stringify([['codex', 2_000_000], ['claude-code', 1_000_000]]), today);
-  console.error('DEBUG-TOOLS', JSON.stringify(db.prepare('SELECT day, tools_json FROM daily_totals WHERE user_id=1').all()));
-  console.error('DEBUG-VIEW', JSON.stringify(db.prepare('SELECT day, tools_json FROM public_usage WHERE user_id=1').all()));
   db.prepare('UPDATE daily_totals SET tools_json=? WHERE user_id=2 AND day=?')
     .run(JSON.stringify([['claude-code', 1_200_000]]), today);
   const log = [];
   const service = createFeishuService({ fetcher: fakeFeishuApi(log), now: () => NOW });
   await fire(service, env, messageEvent({ openId: 'ou_2', eventId: 'evt-tool-col' }));
   const card = sentCards(log)[0];
-  console.error('DEBUG-BOARD', JSON.stringify(await service._internals.boardRows(env, { groupId: 'g1', from: today, to: today })));
   const rows = card.body.elements.filter((el) => el.tag === 'column_set');
   const cell = (row, index) => flat({ body: { elements: row.columns[index].elements } });
-  console.error('DEBUG-CELLS', JSON.stringify(rows.map((r) => r.columns.map((_, i) => cell(r, i)))));
-  // 表头：# / 成员 / 工具 / 模型 / Token 用量（头像列为空占位）；单元格文本带 grey font 标记
+  // 4 列：名次 / 头像+昵称 / 工具·模型 / 数值
   const header = rows[0];
-  assert.equal(header.columns.length, 6, '六列：序号/头像/成员/工具/模型/用量');
-  assert.match(cell(header, 2), /成员/);
-  assert.equal(cell(header, 3), "<font color='grey'>工具</font>");
-  assert.equal(cell(header, 4), "<font color='grey'>模型</font>");
-  // 第一名（张三）行：工具列 = 使用率最高的 codex，模型列仍是主力模型（列序：名次/头像/成员/工具/模型/用量）
+  assert.equal(header.columns.length, 4, '四列：名次/成员/工具·模型/用量');
+  assert.match(cell(header, 1), /成员/);
+  assert.equal(cell(header, 2), "<font color='grey'>工具 · 模型</font>");
+  // 张三行：昵称在 col1，工具·模型合并列里包含 codex 和 claude-sonnet
   const first = rows[1];
-  assert.equal(cell(first, 2), '张三');
-  assert.match(cell(first, 3), /codex/);
-  assert.match(cell(first, 4), /claude-sonnet-4\.5/);
-  // Credits 榜（纯积分用户）同样带工具列：取积分口径的计费工具
+  assert.match(cell(first, 1), /张三/);
+  assert.match(cell(first, 2), /codex/);
+  assert.match(cell(first, 2), /claude-sonnet-4\.5/);
+  // 递归 elements 计数验证不超 200
+  let cs = 0, col = 0, md = 0, img = 0, hr = 0;
+  const walk = (arr) => { for (const el of arr) { if (!el || typeof el !== 'object') continue; if (el.tag === 'markdown') md++; if (el.tag === 'hr') hr++; if (el.tag === 'img') img++; if (el.tag === 'column_set') { cs++; walk(el.columns || []); } if (el.tag === 'column') { col++; walk(el.elements || []); } } };
+  walk(card.body.elements);
+  const total = cs + col + md + img + hr;
+  assert.ok(total <= 200, `递归 element ${total} 应 <= 200`);
+  // Credits 榜
   db.prepare('UPDATE daily_totals SET tokens=0, requests=0, tools_json=?, credits_json=? WHERE user_id=3 AND day=?').run('[]', JSON.stringify({ total: 12, tools: [['qoder', 12]] }), today);
   db.prepare("UPDATE rank_group_members SET hidden=0 WHERE user_id=3").run();
   const log2 = [];
@@ -588,10 +588,10 @@ test('榜单卡片新增「工具」列：位于成员与模型之间，展示�
   await fire(service2, env, messageEvent({ openId: 'ou_2', eventId: 'evt-tool-col-2' }));
   const card2 = sentCards(log2)[0];
   const creditRows = card2.body.elements.filter((el) => el.tag === 'column_set');
-  const creditHeader = creditRows.find((r) => cell(r, 5) === "<font color='grey'>Credits</font>");
+  const creditHeader = creditRows.find((r) => flat({ body: { elements: r.columns[3].elements } }).includes('Credits'));
   assert.ok(creditHeader, '存在 Credits 榜表头');
-  assert.equal(cell(creditHeader, 3), "<font color='grey'>工具</font>");
-  const wangwu = creditRows.find((r) => cell(r, 2) === '王五');
+  assert.equal(cell(creditHeader, 2), "<font color='grey'>计费工具</font>");
+  const wangwu = creditRows.find((r) => cell(r, 1).includes('王五'));
   assert.ok(wangwu, '王五出现在 Credits 榜');
-  assert.match(cell(wangwu, 3), /qoder/);
+  assert.match(cell(wangwu, 2), /qoder/);
 });

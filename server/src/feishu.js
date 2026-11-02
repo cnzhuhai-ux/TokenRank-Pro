@@ -22,7 +22,7 @@ const OPENID_PREFIX = 'feishu:';
 const CHAT_HASH_PREFIX = 'feishu:chat:';
 const DEFAULT_GROUP_NAME = '本群 Token 排名';
 const EVENT_MAX_AGE_MS = 10 * 60 * 1000;
-const BOARD_LIMIT = 10;
+const BOARD_LIMIT = 8;   // 飞书卡片 2.0 递归 element 上限 200；4 列布局 + 8 行 ≈ 170 elements
 const EVENT_LOG_TTL_MS = 7 * 86_400_000;
 
 export const PERIOD_LABELS = { day: '今日', week: '本周', month: '本月', all: '总榜' };
@@ -177,33 +177,41 @@ const avatarImg = (imgKey) => ({
 
 const PERIOD_TABS = [['day', '今日'], ['week', '本周'], ['month', '本月'], ['all', '总榜']];
 
-/** 榜单：对标小程序排行榜——表头行、名次+圆头像+昵称/灰色模型名+橙色成绩、本人灰底置顶行 */
+/**
+ * 榜单：飞书卡片 2.0 递归 element 上限 200（不是顶层 50），所以用 4 列紧凑布局：
+ *   col1 名次 / col2 头像+昵称 / col3 工具·模型 / col4 数值
+ * Token 榜 + Credits 榜各 8 行 + 2 行 me 行 + 2 行 header ≈ 170 elements。
+ */
 export function leaderboardCard({ title, entries, members, updatedAt, nowMs, period = 'day', meUid, me, footer, appUrl }) {
   const elements = [];
   elements.push(markdown(`### ${mdEscape(title)}`));
-  // 周期 Tab 行（仿小程序 tabs）：当前周期橙色加粗，其余灰色
   elements.push(markdown(PERIOD_TABS.map(([k, label]) =>
     k === period ? `**<font color='orange'>${label}</font>**` : `<font color='grey'>${label}</font>`).join('　')));
   elements.push(divider());
-  // 六列单行（序号/头像/成员/工具/模型/用量）：单行等高，头像垂直居中，各列左右对齐。
-  // 工具名列展示使用率最高的工具，长名截到 12 字（长工具名优先取首段），避免整行过挤。
   const credits2 = (n) => (Number(n) || 0).toFixed(2);
-  const W_RANK = 1, W_AVATAR = 1, W_NAME = 4, W_TOOL = 3, W_MODEL = 3, W_VALUE = 3; // 合计 15
+  // 4 列权重合计 15；头像并入昵称列、工具·模型合并为一列
+  const W_RANK = 1, W_NAME = 7, W_INFO = 4, W_VALUE = 3;
   const empty = "<font color='grey'></font>";
+  const shortName = (s, max = 14) => String(s || '').trim().slice(0, max);
   const shortTool = (name) => {
     const text = String(name || '').trim();
     if (!text) return '';
     const compact = text.length > 12 ? (text.split(' ')[0] || text).slice(0, 12) : text;
     return compact;
   };
+  /** 头像 + 昵称 合并为一列——用单个 markdown 的 <img> 占位（飞书卡片 markdown 不支持 <img>，
+   *  所以头像还是独立 column_set 列，昵称紧跟其后，用换行视觉合并） */
   const boardRow = ({ rank, entry, nameHtml, suffix = '', modelText, toolText, valueText, bold, grey }) => {
     const text = (content) => markdown(content);
+    // 头像 + 昵称 同列，头像用 img 组件（飞书 card 支持 img），昵称用 markdown
+    const nameColEls = [];
+    if (entry.img_key) nameColEls.push(avatarImg(entry.img_key));
+    nameColEls.push(text(`${bold ? `**${nameHtml}**` : nameHtml}${suffix}`));
+    const info = [shortTool(toolText), modelText].filter(Boolean).map(mdEscape).join(' · ');
     const columns = [
       col(W_RANK, [text(String(rank))]),
-      col(W_AVATAR, [entry.img_key ? avatarImg(entry.img_key) : text(empty)]),
-      col(W_NAME, [text(`${bold ? `**${nameHtml}**` : nameHtml}${suffix}`)]),
-      col(W_TOOL, [text(toolText ? `<font color='grey'>${mdEscape(shortTool(toolText))}</font>` : empty)]),
-      col(W_MODEL, [text(modelText ? `<font color='grey'>${mdEscape(modelText)}</font>` : empty)]),
+      col(W_NAME, nameColEls),
+      col(W_INFO, [text(info ? `<font color='grey'>${info}</font>` : empty)]),
       col(W_VALUE, [text(`<font color='orange'>${bold ? '**' : ''}${valueText}${bold ? '**' : ''}</font>`)]),
     ];
     return grey
@@ -213,10 +221,8 @@ export function leaderboardCard({ title, entries, members, updatedAt, nowMs, per
   const tokenEntries = entries.filter((e) => (e.tokens || 0) > 0);
   elements.push(rowOf([
     col(W_RANK, [markdown(`<font color='grey'>#</font>`)]),
-    col(W_AVATAR, [markdown(empty)]),
     col(W_NAME, [markdown(`<font color='grey'>成员 · ${members ?? tokenEntries.length} 人</font>`)]),
-    col(W_TOOL, [markdown(`<font color='grey'>工具</font>`)]),
-    col(W_MODEL, [markdown(`<font color='grey'>模型</font>`)]),
+    col(W_INFO, [markdown(`<font color='grey'>工具 · 模型</font>`)]),
     col(W_VALUE, [markdown(`<font color='grey'>Token 用量</font>`)]),
   ]));
   if (!tokenEntries.length) {
@@ -225,33 +231,28 @@ export function leaderboardCard({ title, entries, members, updatedAt, nowMs, per
   tokenEntries.slice(0, BOARD_LIMIT).forEach((e, i) => {
     const mine = meUid != null && e.uid === meUid;
     elements.push(boardRow({ rank: i + 1, entry: e,
-      nameHtml: mdEscape(String(e.nickname || '').slice(0, 14)), suffix: mine ? ' 我' : '',
+      nameHtml: mdEscape(shortName(e.nickname)), suffix: mine ? ' 我' : '',
       modelText: e.top_model || '', toolText: e.top_tool || '', valueText: formatTokens(e.tokens), bold: mine }));
   });
-  // 我的行：只有本人没出现在上面列表里（50 名外/未展示）才补一行灰底，避免与榜内行重复；
-  // 纯 Credits 用户没有 token 数字，不在 Token 榜补 0 值行
   const meInTokensBoard = meUid != null && tokenEntries.slice(0, BOARD_LIMIT).some((e) => e.uid === meUid);
   if (me && (me.tokens || 0) > 0 && !meInTokensBoard) {
     elements.push(boardRow({ rank: me.rank, entry: {}, nameHtml: mdEscape(me.nickname), suffix: ' 我',
       modelText: me.top_model || '', toolText: me.top_tool || '', valueText: formatTokens(me.tokens), bold: true, grey: true }));
   }
-  // Credits 榜单（Qoder 等按 Credits 计费的工具），与 Token 榜并列；工具列显示积分最多的计费工具
   const creditsEntries = entries.filter((e) => (e.credits || 0) > 0).sort((a, b) => b.credits - a.credits || a.uid - b.uid);
   if (creditsEntries.length) {
     elements.push(divider());
     elements.push(markdown(`### <font color='grey'>Credits 榜单</font>`));
     elements.push(rowOf([
       col(W_RANK, [markdown(`<font color='grey'>#</font>`)]),
-      col(W_AVATAR, [markdown(empty)]),
       col(W_NAME, [markdown(`<font color='grey'>成员 · ${creditsEntries.length} 人</font>`)]),
-      col(W_TOOL, [markdown(`<font color='grey'>工具</font>`)]),
-      col(W_MODEL, [markdown(empty)]),
+      col(W_INFO, [markdown(`<font color='grey'>计费工具</font>`)]),
       col(W_VALUE, [markdown(`<font color='grey'>Credits</font>`)]),
     ]));
     creditsEntries.slice(0, BOARD_LIMIT).forEach((e, i) => {
       const mine = meUid != null && e.uid === meUid;
       elements.push(boardRow({ rank: i + 1, entry: e,
-        nameHtml: mdEscape(String(e.nickname || '').slice(0, 14)), suffix: mine ? ' 我' : '',
+        nameHtml: mdEscape(shortName(e.nickname)), suffix: mine ? ' 我' : '',
         modelText: '', toolText: e.top_tool || '', valueText: `${credits2(e.credits)} Credits`, bold: mine }));
     });
     const meInCreditsBoard = meUid != null && creditsEntries.slice(0, BOARD_LIMIT).some((e) => e.uid === meUid);
