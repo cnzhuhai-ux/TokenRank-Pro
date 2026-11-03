@@ -1,4 +1,4 @@
-// extension.js —— Trae Credits 采集扩展 v0.1.1（只读查询 + 本地快照；遵守 docs/trae-collection.md 的安全边界）
+// extension.js —— Trae Credits 采集扩展 v0.1.3（只读查询 + 本地快照；遵守 docs/trae-collection.md 的安全边界）
 // v0.0.2 修复：credits 字段映射 credits_float（修正 credits=0 根因）
 // v0.0.3 增强：模型分类映射 + 全量行 + token 汇总
 // v0.0.4 增强：30 天窗口；缺失 model 行诊断；大小写精确匹配优先
@@ -15,6 +15,7 @@
 //            自定义模型 token 污染 auto 归因、平台无法查看；
 //          - 现按“计费事实”消歧：无模型名且未被 Trae 计费（credits≤0）→ 固定上报「自定义模型」；
 //            已计费的 Auto 行保持 `auto`。快照 30 天窗口随下次刷新自动回填历史。
+// v0.1.3 快照刷新频率 30 分钟 → 15 分钟（要求：活跃会话累计值最多一刻钟后进入下一次上报）。
 // 安全声明：只读查询（≤3 页、页间隔 ≥2s）；快照仅含按天聚合数字，不含 session_id、提示词、对话内容；
 //          不打印 token；不读取加密库；不上传任何数据（上传由 tokenrank 客户端独立完成）。
 const vscode = require('vscode');
@@ -32,7 +33,7 @@ const TRIGGER = join(tmpdir(), 'trae-credits-poc.trigger');
 const MARKER = join(tmpdir(), 'trae-credits-poc.autorun');
 const MODELMAP = join(tmpdir(), 'trae-credits-poc-models.json');
 const SNAPSHOT = join(homedir(), '.trae-cn', 'credits-usage.json');
-const REFRESH_MS = 30 * 60 * 1000;
+const REFRESH_MS = 15 * 60 * 1000;
 const PAGE_SIZE = 50;
 const MAX_PAGES = 100;   // 安全上限：5000 条足以覆盖任何重度用户；实际以内层 rows/total 条件提前退出
 const PAGE_GAP_MS = 2000;
@@ -364,7 +365,7 @@ function activate(context) {
   const refresh = setInterval(() => runOnce('periodic'), REFRESH_MS);
   context.subscriptions.push({ dispose: () => clearInterval(refresh) });
   if (existsSync(MARKER)) { try { unlinkSync(MARKER); } catch {} setTimeout(() => runOnce('autorun'), 1500); }
-  outCh.appendLine('[activate] Trae Credits 采集扩展 v0.1.2 已激活（快照: ' + SNAPSHOT + '）');
+  outCh.appendLine('[activate] Trae Credits 采集扩展 v0.1.3 已激活（快照: ' + SNAPSHOT + '，刷新间隔 15 分钟）');
 }
 
 function deactivate() {}

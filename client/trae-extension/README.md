@@ -10,7 +10,7 @@ SQLCipher 加密的），因此补充采集**不改 Trae、不解密、不注入
 
 | 文件 | 说明 |
 |---|---|
-| `extension.js` | 扩展入口（v0.1.2）：取令牌、查询、写快照与诊断报告 |
+| `extension.js` | 扩展入口（v0.1.3）：取令牌、查询、写快照与诊断报告 |
 | `model-resolve.cjs` | 纯函数：模型归因（Auto / 内置 / 自定义前缀 / 自定义模型桶）与按天聚合（schema 2），可脱离 Trae 单测 |
 | `package.json` | 扩展清单（`publisher: local-poc`，`activationEvents: onStartupFinished`） |
 | `build.ps1` | 离线打包 VSIX，不依赖 npm / vsce，PowerShell 5.1 可用 |
@@ -27,10 +27,10 @@ SQLCipher 加密的），因此补充采集**不改 Trae、不解密、不注入
 5. 诊断报告 `%TEMP%\trae-credits-poc-report.json`（本机排障用，上报链路不读它）。
 
 刷新时机：命令面板「Trae Credits: 查询每会话 Credits」、`%TEMP%\trae-credits-poc.trigger`
-文件出现、`%TEMP%\trae-credits-poc.autorun` 存在时启动后自动跑一次，以及运行期间**每 30 分钟**自动刷新
-（活跃会话的累计值最多半小时后即进入下一次上报）。
+文件出现、`%TEMP%\trae-credits-poc.autorun` 存在时启动后自动跑一次，以及运行期间**每 15 分钟**自动刷新
+（活跃会话的累计值最多一刻钟后即进入下一次上报；v0.1.3 起，此前为 30 分钟）。
 
-## 快照字段（schema 2，v0.1.0 起；v0.1.1 起每 30 分钟刷新）
+## 快照字段（schema 2，v0.1.0 起；v0.1.3 起每 15 分钟刷新）
 
 ```json
 {
