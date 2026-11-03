@@ -24,6 +24,8 @@ import { existsSync, readFileSync, statSync } from 'node:fs';
 
 export const TOOL_NAME = 'Trae';
 const SCHEMAS = [1, 2];
+const AUTO_LABEL = 'auto';
+const CUSTOM_LABEL = '自定义模型';
 const MAX = { tokens: 1e13, requests: 1e7, credits: 1e9 };
 const LIMITS = { models: 8, tools: 8, tool_models: 128 };
 const MAX_DAYS = 400;
@@ -77,7 +79,7 @@ function readTriples(list, { maxValue, limit, label, day, log }) {
 function emptyBucket(day) {
   return {
     day, tokens: 0, input_tokens: 0, output_tokens: 0, cache_read: 0, cache_write: 0,
-    requests: 0, credits: 0, tools: new Map(), models: new Map(),
+    requests: 0, credits: 0, customSessions: 0, tools: new Map(), models: new Map(),
     creditModels: new Map(), creditToolModels: new Map(),
   };
 }
@@ -111,6 +113,7 @@ function parseSnapshot(raw, log) {
     bucket.cache_write = clamp(day.cache_write, MAX.tokens);
     bucket.tokens = bucket.input_tokens + bucket.output_tokens + bucket.cache_read + bucket.cache_write;
     bucket.requests = clamp(day.requests, MAX.requests);
+    bucket.customSessions = clamp(day.custom_sessions, MAX.requests);
     const credits = Number(day.credits);
     if (Number.isFinite(credits) && credits > 0 && credits <= MAX.credits) bucket.credits = round6(credits);
     else if (Number.isFinite(credits) && (credits < 0 || credits > MAX.credits)) {
@@ -149,6 +152,34 @@ function withinTotal(detail, total, label, day, log) {
   return [...detail.entries()].sort(desc).map(([name, amount]) => [name, amount]);
 }
 
+/**
+ * 归因免疫（2026-11-03 多版本混跑事故修复）：
+ * 旧版扩展（<0.1.2）把 BYOK 自定义模型行归入 `auto` 桶，多窗口新旧版本混跑时快照会在
+ * 「自定义模型」与 `auto` 之间反复回退。本采集器在读取侧做终局纠正：
+ *   - 判据（三者同时成立才触发）：当日 credits==0（全天无预置计费行，即“已计费的真 Auto 行”
+ *     不可能存在）+ models 只有 `auto` 一个桶 + custom_sessions>0（快照明确记录了自定义会话数）。
+ *   - 此时 auto 桶 100% 是未计费的 BYOK 用量 → 整体重命名为「自定义模型」（models 与
+ *     *_full 来源均已读取后重命名，credits 分项不受影响——BYOK 本就不产生 credits）。
+ *   - 混合日（credits>0 且含 auto 桶）无法拆分已计费/未计费成分：保持原样并告警，由
+ *     扩展侧（0.1.2+ 的计费事实消歧）在源头产出正确归因后随下次刷新自然纠正。
+ */
+function immunizeAttribution(bucket, log) {
+  const modelNames = [...bucket.models.keys()];
+  const hasAuto = modelNames.includes(AUTO_LABEL);
+  const onlyAuto = modelNames.length === 1 && hasAuto;
+  if (bucket.credits === 0 && onlyAuto && bucket.customSessions > 0) {
+    const tokens = bucket.models.get(AUTO_LABEL);
+    bucket.models.delete(AUTO_LABEL);
+    bucket.models.set(CUSTOM_LABEL, tokens);
+    log(`trae 快照日 ${bucket.day} 检测到旧版扩展（<0.1.2）把 ${tokens} tokens 的自定义模型用量归入 auto，已纠正为「${CUSTOM_LABEL}」`);
+    return true;
+  }
+  if (bucket.credits > 0 && hasAuto && bucket.customSessions > 0) {
+    log(`trae 快照日 ${bucket.day} 的 auto 桶可能混有未计费的自定义模型用量（credits>0 无法拆分），建议重载全部 Trae 窗口升级扩展至 0.1.2+`);
+  }
+  return false;
+}
+
 /** 读取 Trae 快照并产出与上报协议同构的日行；文件不存在或不可用时返回空数组。 */
 export function collectTraeDays({ home = homedir(), log = () => {} } = {}) {
   const file = join(home, '.trae-cn', 'credits-usage.json');
@@ -165,6 +196,7 @@ export function collectTraeDays({ home = homedir(), log = () => {} } = {}) {
   try { buckets = parseSnapshot(raw, log); }
   catch (err) { log(`trae 快照不可用，已跳过：${err?.message || err}`); return []; }
   return buckets.map((bucket) => {
+    immunizeAttribution(bucket, log);
     const models = [...bucket.models.entries()].sort(desc);
     const row = {
       day: bucket.day,

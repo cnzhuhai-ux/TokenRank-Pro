@@ -210,3 +210,58 @@ test('credits=0 的 schema 2 日行不带 credits 对象，token 模型分项照
   assert.equal(days[0].tokens, 6200);
   assert.deepEqual(days[0].models, [['GLM-5.3', 6000], ['auto', 200]]);
 });
+
+test('归因免疫：纯 BYOK 日（credits=0、仅 auto 桶、custom_sessions>0）的 auto 桶纠正为「自定义模型」', (t) => {
+  const { home, done } = makeHome();
+  t.after(done);
+  // 0.1.1 旧版扩展写出的事故快照形态（2026-11-03 实测）：BYOK 行全进 auto 桶
+  writeSnapshot(home, {
+    schema: 2, generated_at: '2026-11-03T04:43:57.000Z', window_days: 30,
+    days: [{
+      day: '2026-11-02',
+      input_tokens: 117665, output_tokens: 764, cache_read: 70016, cache_write: 0, tokens: 188445,
+      requests: 3, credits: 0, billed_sessions: 0, custom_sessions: 3,
+      custom_input_tokens: 117665, custom_output_tokens: 764,
+      models: [['auto', 188445]], models_full: [['auto', 188445]],
+      credits_tools: [], credits_models: [], credits_models_full: [], credits_tool_models: [],
+      truncated: { models: false, credits_models: false, credits_tool_models: false },
+    }],
+  });
+  const logs = [];
+  const days = collectTraeDays({ home, log: (m) => logs.push(m) });
+  assert.equal(days.length, 1);
+  assert.deepEqual(days[0].models, [['自定义模型', 188445]]);
+  assert.deepEqual(days[0].tool_models, [[TOOL_NAME, '自定义模型', 188445]]);
+  assert.equal(days[0].tokens, 188445);
+  assert.equal(days[0].credits, null);
+  assert.ok(logs.some((m) => m.includes('已纠正为「自定义模型」')), '应有纠正告警日志');
+});
+
+test('归因免疫不误伤：混合日（credits>0 含 auto 桶）保持原样并告警', (t) => {
+  const { home, done } = makeHome();
+  t.after(done);
+  const mixed = JSON.parse(JSON.stringify(SNAPSHOT_V2));
+  mixed.days[0].custom_sessions = 1;
+  writeSnapshot(home, mixed);
+  const logs = [];
+  const days = collectTraeDays({ home, log: (m) => logs.push(m) });
+  assert.deepEqual(days[0].models.map(([n]) => n), ['GLM-5.3', 'auto']);
+  assert.ok(logs.some((m) => m.includes('建议重载全部 Trae 窗口')), '混合日应有升级建议告警');
+  assert.equal(logs.filter((m) => m.includes('已纠正')).length, 0);
+});
+
+test('归因免疫保守边界：credits=0 仅 auto 桶但无 custom_sessions 证据时不动作', (t) => {
+  const { home, done } = makeHome();
+  t.after(done);
+  writeSnapshot(home, {
+    schema: 2, generated_at: '2026-11-03T04:00:00.000Z', window_days: 30,
+    days: [{
+      day: '2026-11-02', input_tokens: 100, output_tokens: 10, cache_read: 0, cache_write: 0,
+      tokens: 110, requests: 1, credits: 0, models: [['auto', 110]], models_full: [['auto', 110]],
+    }],
+  });
+  const logs = [];
+  const days = collectTraeDays({ home, log: (m) => logs.push(m) });
+  assert.deepEqual(days[0].models, [['auto', 110]]);
+  assert.equal(logs.filter((m) => m.includes('已纠正')).length, 0);
+});

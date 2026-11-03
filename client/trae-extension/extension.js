@@ -16,11 +16,15 @@
 //          - 现按“计费事实”消歧：无模型名且未被 Trae 计费（credits≤0）→ 固定上报「自定义模型」；
 //            已计费的 Auto 行保持 `auto`。快照 30 天窗口随下次刷新自动回填历史。
 // v0.1.3 快照刷新频率 30 分钟 → 15 分钟（要求：活跃会话累计值最多一刻钟后进入下一次上报）。
+// v0.1.4 多窗口竞态加固（2026-11-03 事故修复）：
+//          - trigger/autorun 消费改为 rename 原子抢占：多窗口同时轮询时只有一个实例消费，
+//            避免同一文件被 N 个窗口重复查询（限速合规）；
+//          - 快照写入 writer_version，供采集器识别旧版写入（<0.1.2 的 auto 归因回退可观测）。
 // 安全声明：只读查询（≤3 页、页间隔 ≥2s）；快照仅含按天聚合数字，不含 session_id、提示词、对话内容；
 //          不打印 token；不读取加密库；不上传任何数据（上传由 tokenrank 客户端独立完成）。
 const vscode = require('vscode');
 const { createHash } = require('crypto');
-const { writeFileSync, readFileSync, existsSync, unlinkSync } = require('fs');
+const { writeFileSync, readFileSync, existsSync, unlinkSync, renameSync } = require('fs');
 const { tmpdir, homedir } = require('os');
 const { join } = require('path');
 const { buildModelIndex, resolveModel, buildSnapshot, clip, round6 } = require('./model-resolve.cjs');
@@ -313,6 +317,7 @@ function writeSnapshot(mapped, report) {
       cache_read_token: x.cache_read_token, cache_write_token: x.cache_write_token,
       credits: x.credits, tool: 'Trae' })),
     { windowDays: WINDOW_DAYS });
+  snapshot.writer_version = '0.1.4';   // 采集器据此识别旧版写入（<0.1.2 的 auto 归因回退可观测）
   // 一致性自检：未截断时三个维度的合计应等于当日 credits 总额
   let inconsistent = 0, truncatedDays = 0;
   for (const day of snapshot.days) {
@@ -353,19 +358,27 @@ async function runOnce(reason) {
   } finally { running = false; }
 }
 
+// 原子抢占消费标记文件：rename 成功者获得消费权（多窗口轮询同一文件时只有一个实例触发；
+// rename 对已不存在的源文件会抛错，失败即让位）。返回是否抢到。
+function claimMarker(file) {
+  try { renameSync(file, file + '.claiming'); } catch { return false; }
+  try { unlinkSync(file + '.claiming'); } catch {}
+  return true;
+}
+
 function activate(context) {
   outCh = vscode.window.createOutputChannel('Trae Credits POC');
   context.subscriptions.push(outCh);
   context.subscriptions.push(vscode.commands.registerCommand('trae-credits-poc.query', () => runOnce('command')));
   const timer = setInterval(() => {
-    if (existsSync(TRIGGER)) { try { unlinkSync(TRIGGER); } catch {} runOnce('trigger-file'); }
+    if (existsSync(TRIGGER) && claimMarker(TRIGGER)) runOnce('trigger-file');
   }, 2000);
   context.subscriptions.push({ dispose: () => clearInterval(timer) });
   // 运行期间定期刷新快照（每次 1~3 个只读请求，间隔 ≥2s），保证 tokenrank 上报的数据不过期
   const refresh = setInterval(() => runOnce('periodic'), REFRESH_MS);
   context.subscriptions.push({ dispose: () => clearInterval(refresh) });
-  if (existsSync(MARKER)) { try { unlinkSync(MARKER); } catch {} setTimeout(() => runOnce('autorun'), 1500); }
-  outCh.appendLine('[activate] Trae Credits 采集扩展 v0.1.3 已激活（快照: ' + SNAPSHOT + '，刷新间隔 15 分钟）');
+  if (existsSync(MARKER) && claimMarker(MARKER)) setTimeout(() => runOnce('autorun'), 1500);
+  outCh.appendLine('[activate] Trae Credits 采集扩展 v0.1.4 已激活（快照: ' + SNAPSHOT + '，刷新间隔 15 分钟）');
 }
 
 function deactivate() {}
