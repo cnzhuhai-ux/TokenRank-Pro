@@ -3,5 +3,5 @@
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $MyInvocation.MyCommand.Path
 $node = (Get-Command node -ErrorAction Stop).Source
-& $node (Join-Path $root '..' 'scripts' 'pack-vsix.mjs') @args
+& $node (Join-Path (Join-Path $root '..') (Join-Path 'scripts' 'pack-vsix.mjs')) @args
 if ($LASTEXITCODE -ne 0) { throw "pack-vsix.mjs 退出码 $LASTEXITCODE" }
