@@ -10,8 +10,8 @@ SQLCipher 加密的），因此补充采集**不改 Trae、不解密、不注入
 
 | 文件 | 说明 |
 |---|---|
-| `extension.js` | 扩展入口（v0.1.1）：取令牌、查询、写快照与诊断报告 |
-| `model-resolve.cjs` | 纯函数：模型归因（Auto / 内置 / 自定义前缀）与按天聚合（schema 2），可脱离 Trae 单测 |
+| `extension.js` | 扩展入口（v0.1.2）：取令牌、查询、写快照与诊断报告 |
+| `model-resolve.cjs` | 纯函数：模型归因（Auto / 内置 / 自定义前缀 / 自定义模型桶）与按天聚合（schema 2），可脱离 Trae 单测 |
 | `package.json` | 扩展清单（`publisher: local-poc`，`activationEvents: onStartupFinished`） |
 | `build.ps1` | 离线打包 VSIX，不依赖 npm / vsce，PowerShell 5.1 可用 |
 
@@ -45,7 +45,7 @@ SQLCipher 加密的），因此补充采集**不改 Trae、不解密、不注入
     "billed_sessions": 0, "custom_sessions": 0,
     "custom_input_tokens": 0, "custom_output_tokens": 0,
     "models": [["GLM-5.3", 6000]],
-    "models_full": [["GLM-5.3", 6000], ["auto", 4000], ["[bigmodel-plan] GLM-5.3", 1200]],
+    "models_full": [["GLM-5.3", 6000], ["auto", 4000], ["[bigmodel-plan] GLM-5.3", 1200], ["自定义模型", 2500]],
     "credits_tools": [["Trae", 123.456789]],
     "credits_models": [["GLM-5.3", 80.1]],
     "credits_models_full": [["GLM-5.3", 80.1], ["auto", 43.356789]],
@@ -60,9 +60,13 @@ SQLCipher 加密的），因此补充采集**不改 Trae、不解密、不注入
 
 - 接口行有 `model_name` → 以模型名为准；名字形如 `provider//模型` 判为自定义（BYOK），上报名
   `[provider] 模型名`；其余按内置（预置）模型上报原值，保留大小写；
-- 无 `model_name` 且 `mode` 判定为 Auto（归一匹配 `^auto(\s*mode)?$`，或显式 `use_max_mode === false`
-  兜底）→ 固定上报 `auto`，不再落入“未关联模型”；
-- 其余无模型名的行不产出模型分项，只进总额，服务端按残差处理；
+- 无 `model_name` 的行按**计费事实**消歧（credits>0 才是 Trae credits 计费；BYOK 自定义模型
+  不计 credits，且 API 不回传其模型名，实测 `model_name` 为空）：
+  - 已计费且 `mode` 判定为 Auto（归一匹配 `^auto(\s*mode)?$`，或显式 `use_max_mode === false`
+    兜底）→ 固定上报 `auto`；
+  - **未计费 → 固定上报「自定义模型」**（v0.1.2 修复：此前按 Auto 分支被打成 `auto`，自定义模型
+    token 污染 auto 归因、平台无法查看）；
+- 其余无模型名且已计费的行不产出模型分项，只进总额，服务端按残差处理；
 - 同名跨类（预置与自定义显示名相同）按计费事实裁决：产生 credits 视为预置。
 
 `requests` 是当日活跃会话行数，不是请求数；上报分项按协议上限截断（模型 8 / 组合 128），全量

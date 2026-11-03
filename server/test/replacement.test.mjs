@@ -1,7 +1,11 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-// 本用例驱动真实客户端：禁止 Oort 补充采集读到宿主机上的产品状态目录
+// 本用例驱动真实客户端：禁止补充采集读到宿主机上的产品状态目录
+// （Trae 快照 ~/.trae-cn/credits-usage.json 装了采集扩展后就存在，不关会把真实日数混进夹具）
 process.env.TOKENRANK_OORT_DISABLE = '1';
+process.env.TOKENRANK_EXTRA_DISABLE = '1';
+process.env.TOKENRANK_TRAE_DISABLE = '1';
+process.env.TOKENRANK_CODEBUDDY_DISABLE = '1';
 import { DatabaseSync } from 'node:sqlite';
 import { readFileSync, mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';

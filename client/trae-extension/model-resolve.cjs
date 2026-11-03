@@ -6,11 +6,15 @@
 // 口径（与 query_user_usage_group_by_session 返回行一致）：
 //   - 有 model_name → 以模型名归因；名字形如 `provider//模型` 判为自定义模型（BYOK），
 //     上报为 `[provider] 模型名`；其余为内置（预置）模型，上报接口原值（保留大小写）。
-//   - 无 model_name 且 mode 判定为 Auto（或显式 use_max_mode === false）→ 固定上报 `auto`。
-//   - 其余无模型名的行不产出模型分项，只计入总额，由服务端归入“未关联模型”残差。
+//   - 无 model_name 的行按“计费事实”消歧（credits>0 才是 Trae credits 计费，BYOK 自定义模型
+//     不计 credits）：已被 Trae 计费且 mode 判定为 Auto（或显式 use_max_mode === false）→ `auto`；
+//     未被 Trae 计费 → 固定上报「自定义模型」（BYOK 会话 API 不回传 model_name，此桶即
+//     自定义模型用量的展示形态，见 docs/trae-collection.md）。
+//   - 其余无模型名且已被 Trae 计费的行不产出模型分项，只计入总额，由服务端归入“未关联模型”残差。
 'use strict';
 
 const AUTO_LABEL = 'auto';
+const CUSTOM_LABEL = '自定义模型';
 const MAX_LABEL = 60;          // 服务端对名称的硬上限
 const MAX_PROVIDER = 20;
 const MAX_BASE = 40;
@@ -75,18 +79,28 @@ function resolveModel(row, index) {
   const raw = typeof row.model_name === 'string' ? clip(row.model_name, MAX_LABEL) : '';
   const mode = clip(row.mode, 20);
   const isAutoMode = /^auto(\s*mode)?$/i.test(mode);
+  const billed = numOf(row.credits_float) > 0;
   if (raw) {
     const hit = index.byExact.get(raw) || index.byLower.get(raw.toLowerCase())
       || index.byBaseLower.get(baseOf(raw).toLowerCase());
     let kind = hit ? hit.kind : (raw.indexOf('//') >= 0 ? 'custom' : 'preset');
     // ambiguous：产生 credits 说明走的是 Trae 计费（预置模型或其路由结果）
-    if (kind === 'ambiguous') kind = numOf(row.credits_float) > 0 ? 'preset' : 'custom';
+    if (kind === 'ambiguous') kind = billed ? 'preset' : 'custom';
     // 没有任何 Provider 线索时不编造前缀
     if (kind === 'custom' && raw.indexOf('//') < 0 && !(hit && hit.provider)) kind = 'preset';
     return { label: labelOf(kind, hit, raw), kind, source: 'row', mode };
   }
-  if (isAutoMode) return { label: AUTO_LABEL, kind: 'auto', source: 'auto', mode };
-  if (row.use_max_mode === false) return { label: AUTO_LABEL, kind: 'auto', source: 'fallback-auto', mode };
+  // 无模型名的行按计费事实消歧：未计费（BYOK 不计 Trae credits）即自定义模型会话，
+  // 不得归入 `auto` —— 否则自定义模型 token 会污染 auto 归因且平台无法查看（2026-11-03 修复）。
+  if (isAutoMode) {
+    return billed ? { label: AUTO_LABEL, kind: 'auto', source: 'auto', mode }
+      : { label: CUSTOM_LABEL, kind: 'custom', source: 'custom-unbilled', mode };
+  }
+  if (row.use_max_mode === false) {
+    return billed ? { label: AUTO_LABEL, kind: 'auto', source: 'fallback-auto', mode }
+      : { label: CUSTOM_LABEL, kind: 'custom', source: 'custom-unbilled', mode };
+  }
+  if (!billed) return { label: CUSTOM_LABEL, kind: 'custom', source: 'custom-unbilled', mode };
   return { label: null, kind: 'unknown', source: 'unknown', mode };
 }
 
@@ -166,5 +180,5 @@ function buildSnapshot(rows, { windowDays = 30, generatedAt = new Date().toISOSt
   };
 }
 
-module.exports = { AUTO_LABEL, SNAPSHOT_SCHEMA, LIMITS, SEP, clip, round6, baseOf, providerOf,
+module.exports = { AUTO_LABEL, CUSTOM_LABEL, SNAPSHOT_SCHEMA, LIMITS, SEP, clip, round6, baseOf, providerOf,
   buildModelIndex, labelOf, resolveModel, buildSnapshot };

@@ -10,6 +10,11 @@
 //          - credits 同时给出 tools / models / tool_models 三个维度的分项（同日边际一致），
 //            全量明细写入 *_full 字段，上报分项按协议上限截断并置 truncated 标记。
 // v0.1.1 快照刷新频率 6 小时 → 30 分钟（活跃会话的累计值最多半小时后即进入下一次上报）。
+// v0.1.2 自定义模型归因修复（2026-11-03）：
+//          - BYOK 会话行 API 不回传 model_name 且 credits=0；此前按 mode=Auto 被打成 `auto`，
+//            自定义模型 token 污染 auto 归因、平台无法查看；
+//          - 现按“计费事实”消歧：无模型名且未被 Trae 计费（credits≤0）→ 固定上报「自定义模型」；
+//            已计费的 Auto 行保持 `auto`。快照 30 天窗口随下次刷新自动回填历史。
 // 安全声明：只读查询（≤3 页、页间隔 ≥2s）；快照仅含按天聚合数字，不含 session_id、提示词、对话内容；
 //          不打印 token；不读取加密库；不上传任何数据（上传由 tokenrank 客户端独立完成）。
 const vscode = require('vscode');
@@ -262,7 +267,7 @@ async function queryUsage(out, report) {
 
   const byDay = {};
   for (const x of mapped) {
-    if (!byDay[x.day]) byDay[x.day] = { sessions: 0, credits: 0, custom_sessions: 0, custom_credits: 0, preset_credits: 0, unknown_credits: 0, input_token: 0, output_token: 0 };
+    if (!byDay[x.day]) byDay[x.day] = { sessions: 0, credits: 0, custom_sessions: 0, custom_credits: 0, preset_credits: 0, unknown_credits: 0, input_token: 0, output_token: 0, custom_input_token: 0, custom_output_token: 0 };
     const d0 = byDay[x.day];
     d0.sessions += 1;
     d0.credits += x.credits;
@@ -270,6 +275,8 @@ async function queryUsage(out, report) {
     d0.output_token += numOf(x.output_token);
     if (x.kind === 'custom') { d0.custom_sessions += 1; d0.custom_credits += x.credits; }
     if (x.billed) d0.preset_credits += x.credits;
+    // 自定义模型（未计费）token 按天监控：平台「自定义模型」桶应与这里的合计一致
+    if (!x.billed) { d0.custom_input_token += numOf(x.input_token); d0.custom_output_token += numOf(x.output_token); }
   }
   report.by_day = byDay;
 
@@ -357,7 +364,7 @@ function activate(context) {
   const refresh = setInterval(() => runOnce('periodic'), REFRESH_MS);
   context.subscriptions.push({ dispose: () => clearInterval(refresh) });
   if (existsSync(MARKER)) { try { unlinkSync(MARKER); } catch {} setTimeout(() => runOnce('autorun'), 1500); }
-  outCh.appendLine('[activate] Trae Credits 采集扩展 v0.1.1 已激活（快照: ' + SNAPSHOT + '）');
+  outCh.appendLine('[activate] Trae Credits 采集扩展 v0.1.2 已激活（快照: ' + SNAPSHOT + '）');
 }
 
 function deactivate() {}

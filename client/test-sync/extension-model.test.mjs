@@ -2,25 +2,41 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
 const require = createRequire(import.meta.url);
-const { buildModelIndex, resolveModel, buildSnapshot, labelOf, SNAPSHOT_SCHEMA } = require('../trae-extension/model-resolve.cjs');
+const { buildModelIndex, resolveModel, buildSnapshot, labelOf, SNAPSHOT_SCHEMA, CUSTOM_LABEL } = require('../trae-extension/model-resolve.cjs');
 
 const row = (over = {}) => ({ model_name: '', mode: '', use_max_mode: undefined, credits_float: 0, ...over });
 
-test('Auto 识别：mode 大小写混杂、Auto Mode、use_max_mode 兜底', () => {
+test('Auto 识别：已计费的 Auto 行归 auto（mode 大小写混杂、Auto Mode、use_max_mode 兜底）', () => {
   const index = buildModelIndex([]);
   for (const mode of ['Auto', 'auto', 'AUTO', 'Auto Mode', 'auto mode']) {
-    const r = resolveModel(row({ mode }), index);
+    const r = resolveModel(row({ mode, credits_float: 0.5 }), index);
     assert.equal(r.label, 'auto', mode);
     assert.equal(r.kind, 'auto');
     assert.equal(r.source, 'auto');
   }
-  const fallback = resolveModel(row({ mode: 'Max? unknown', use_max_mode: false }), index);
+  const fallback = resolveModel(row({ mode: 'Max? unknown', use_max_mode: false, credits_float: 0.5 }), index);
   assert.equal(fallback.label, 'auto');
   assert.equal(fallback.source, 'fallback-auto');
-  // use_max_mode 非严格 false 不触发兜底
-  const other = resolveModel(row({ mode: 'Pro', use_max_mode: 'false' }), index);
+  // use_max_mode 非严格 false 不触发兜底：已计费的无名行保持“未关联”残差
+  const other = resolveModel(row({ mode: 'Pro', use_max_mode: 'false', credits_float: 0.5 }), index);
   assert.equal(other.label, null);
   assert.equal(other.kind, 'unknown');
+});
+
+test('自定义模型桶：无模型名且未被 Trae 计费（credits=0）→ 「自定义模型」（2026-11-03 修复）', () => {
+  const index = buildModelIndex([]);
+  // BYOK 会话行实测形态：model_name 为空、credits=0、mode=Auto —— 不得再归入 auto
+  const byok = resolveModel(row({ mode: 'Auto', credits_float: 0 }), index);
+  assert.equal(byok.label, CUSTOM_LABEL);
+  assert.equal(byok.kind, 'custom');
+  assert.equal(byok.source, 'custom-unbilled');
+  // use_max_mode 兜底与非 Auto 模式同样按计费事实归桶
+  const fallback = resolveModel(row({ mode: 'Max? unknown', use_max_mode: false, credits_float: 0 }), index);
+  assert.equal(fallback.label, CUSTOM_LABEL);
+  assert.equal(fallback.kind, 'custom');
+  const plain = resolveModel(row({ mode: 'Pro', credits_float: 0 }), index);
+  assert.equal(plain.label, CUSTOM_LABEL);
+  assert.equal(plain.kind, 'custom');
 });
 
 test('有模型名时以模型名为准（含 mode=Auto 已回填），mode 原样保留', () => {
@@ -100,4 +116,29 @@ test('buildSnapshot 产出 schema 2：四维分项齐全、边际一致、截断
   assert.deepEqual(autoSnap.days[0].models, [['auto', 15]]);
   assert.deepEqual(autoSnap.days[0].credits_models, [['auto', 0.25]]);
   assert.deepEqual(autoSnap.days[0].modes, [['Auto', 1]]);
+
+  // 自定义模型桶：未计费行 token 进入「自定义模型」模型分项，custom_* 聚合列保持一致
+  const customSnap = buildSnapshot([
+    { day: '2026-11-02', label: CUSTOM_LABEL, kind: 'custom', mode: 'Auto', billed: false,
+      input_token: 117665, output_token: 764, cache_read_token: 70016, cache_write_token: 0, credits: 0, tool: 'Trae' },
+  ], { windowDays: 30 });
+  const cd = customSnap.days[0];
+  assert.deepEqual(cd.models, [[CUSTOM_LABEL, 188445]]);
+  assert.deepEqual(cd.models_full, [[CUSTOM_LABEL, 188445]]);
+  assert.equal(cd.credits, 0);
+  assert.deepEqual(cd.credits_models, []);
+  assert.equal(cd.custom_sessions, 1);
+  assert.equal(cd.custom_input_tokens, 117665);
+  assert.equal(cd.custom_output_tokens, 764);
+  // 同日混合：已计费 auto 与未计费自定义模型不互相污染
+  const mixed = buildSnapshot([
+    { day: '2026-11-03', label: 'auto', kind: 'auto', mode: 'Auto', billed: true,
+      input_token: 100, output_token: 10, cache_read_token: 0, cache_write_token: 0, credits: 0.5, tool: 'Trae' },
+    { day: '2026-11-03', label: CUSTOM_LABEL, kind: 'custom', mode: 'Auto', billed: false,
+      input_token: 200, output_token: 20, cache_read_token: 0, cache_write_token: 0, credits: 0, tool: 'Trae' },
+  ], { windowDays: 30 });
+  assert.deepEqual(mixed.days[0].models, [[CUSTOM_LABEL, 220], ['auto', 110]]);
+  assert.deepEqual(mixed.days[0].credits_models, [['auto', 0.5]]);
+  assert.equal(mixed.days[0].custom_sessions, 1);
+  assert.equal(mixed.days[0].billed_sessions, 1);
 });

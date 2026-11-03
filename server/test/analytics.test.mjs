@@ -235,3 +235,30 @@ test('模型分项缺失的部分计入未关联模型，不摊派到具体模�
   assert.equal(unknown.credits, 60);
   assert.equal(Math.round((models.items.reduce((sum, row) => sum + (row.credits || 0), 0) - 100) * 1e6), 0);
 });
+
+test('多端共用账号：同一用户两台设备的「自定义模型」跨设备相加（2026-11-03 回归）', async t => {
+  const f = fixture(t, 6);
+  const day = beijingDay(Date.now());
+  const ins = 'INSERT INTO daily_totals(user_id,device_id,day,tokens,input_tokens,output_tokens,cache_read,cache_write,requests,models_json,tools_json,source_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)';
+  const tokensOf = models => models.reduce((sum, [, value]) => sum + value, 0);
+  const row = (device, models) => f.db.prepare(ins).run(6, device, day, tokensOf(models), 0, 0, tokensOf(models), 0, 2,
+    JSON.stringify(models), JSON.stringify([['Trae', tokensOf(models)]]), Date.now(), Date.now());
+  // 设备 A：自定义模型（BYOK）用量（修复后 Trae 扩展 0.1.2 的归因）
+  row('pc-a', [['自定义模型', 188445]]);
+  // 设备 B：同日既有自定义模型也有已计费 auto
+  row('pc-b', [['自定义模型', 30000], ['auto', 20000]]);
+  for (const device of ['pc-a', 'pc-b']) {
+    f.db.prepare('INSERT INTO usage_device_state(user_id,device_id,source_at,active,last_report_at,updated_at) VALUES(?,?,?,1,NULL,?)')
+      .run(6, device, Date.now(), Date.now());
+  }
+  f.db.prepare('INSERT INTO usage_sync_state(user_id,device_id,source_at,updated_at) VALUES(?,?,?,?)').run(6, 'pc-a', Date.now(), Date.now());
+  const mine = await f.request('/api/my/analysis?period=day&dimension=models', 6);
+  assert.equal(mine.status, 200);
+  const byName = Object.fromEntries(mine.data.items.map(r => [r.name, r]));
+  // 同一飞书用户下两台设备的同名模型桶相加，不互相覆盖
+  assert.equal(byName['自定义模型'].tokens, 218445);
+  assert.equal(byName['auto'].tokens, 20000);
+  // 榜单/公开侧同样聚合两台设备
+  const pub = await f.request('/api/insights?period=day&dimension=models');
+  assert.equal(pub.data.items.find(r => r.name === '自定义模型').tokens, 218445);
+});
