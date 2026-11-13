@@ -5,6 +5,7 @@ import { readCostedDays } from './costs.js';
 import { collectOortDays, mergeOortDays } from './oort.js';
 import { collectTraeDays } from './trae.js';
 import { collectCodebuddyDays } from './codebuddy.js';
+import { collectDevinDays } from './devin.js';
 import { collectExtraDays } from './extra.js';
 import { inspectUpstream, collectorOutdated, MIN_REPORT_VERSION } from './upstream.js';
 const CLIENT_VERSION = JSON.parse(readFileSync(new URL('../package.json', import.meta.url),'utf8')).version;
@@ -64,9 +65,11 @@ export async function sync({ dir = SYNC_DIR, full = false, replace = false, dryR
     onProgress({stage:'source',source_day:null});
     let days = await readCostedDays(dbPath, { entry: config.upstream_entry, now, log });
     // 补充采集：Oort 系产品，以及 token-watcher 不认识的 WorkBuddy 各版本、DevEco Code、Genspark Code、
-    // ToCodex、独立 Cline/Roo Code、JoyCode、QoderWork、Kiro（点数）、TeleAgent 与 CodeArts Agent。
+    // ToCodex、独立 Cline/Roo Code、JoyCode、QoderWork、Kiro（点数）、TeleAgent 与 CodeArts Agent、
+    // Devin（Desktop 本地会话与 CLI 共用会话库）。
     // 数据目录在所有磁盘上发现，只读、逐文件容错，任何补充源失败都不阻断同步。
-    // TOKENRANK_OORT_DISABLE=1 / TOKENRANK_EXTRA_DISABLE=1 / TOKENRANK_TRAE_DISABLE=1 用于测试或按需关闭。
+    // TOKENRANK_OORT_DISABLE=1 / TOKENRANK_EXTRA_DISABLE=1 / TOKENRANK_TRAE_DISABLE=1 /
+    // TOKENRANK_CODEBUDDY_DISABLE=1 / TOKENRANK_DEVIN_DISABLE=1 用于测试或按需关闭。
     const supplemental = [];
     if (process.env.TOKENRANK_OORT_DISABLE !== '1') {
       try { supplemental.push(...collectOortDays({ log })); }
@@ -83,6 +86,10 @@ export async function sync({ dir = SYNC_DIR, full = false, replace = false, dryR
     if (process.env.TOKENRANK_OORT_DISABLE !== '1' && process.env.TOKENRANK_CODEBUDDY_DISABLE !== '1') {
       try { supplemental.push(...collectCodebuddyDays({ log })); }
       catch (err) { log(`CodeBuddy 补充采集失败，已跳过：${err?.message || err}`); }
+    }
+    if (process.env.TOKENRANK_DEVIN_DISABLE !== '1') {
+      try { supplemental.push(...collectDevinDays({ log })); }
+      catch (err) { log(`Devin 补充采集失败，已跳过：${err?.message || err}`); }
     }
     days = mergeOortDays(days, supplemental);
     const sourceDay=days.at(-1)?.day || null;

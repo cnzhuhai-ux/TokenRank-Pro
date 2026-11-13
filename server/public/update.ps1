@@ -1,6 +1,6 @@
 param([Parameter(Mandatory=$true)][string]$Server)
 $ErrorActionPreference = 'Stop'
-$VERSION = '0.2.32'
+$VERSION = '0.2.33'
 $node = (Get-Command node -ErrorAction Stop).Source
 $nodeVersion = & $node --version
 if ($LASTEXITCODE -ne 0 -or [version]($nodeVersion.Trim().TrimStart('v')) -lt [version]'22.13.0') { throw '需要 Node.js 22.13+' }

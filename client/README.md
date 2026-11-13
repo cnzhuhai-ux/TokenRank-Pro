@@ -1,6 +1,6 @@
 # TokenRank 独立同步器
 
-v0.2.32 为独立只读适配器，接入原版 [luwill/token-watcher](https://github.com/luwill/token-watcher)。Node.js 22.13+，无第三方运行依赖。
+v0.2.33 为独立只读适配器，接入原版 [luwill/token-watcher](https://github.com/luwill/token-watcher)。Node.js 22.13+，无第三方运行依赖。
 
 更换服务器、接入码或统计库后，会重新全量上传本机保留的历史用量，包含注销后重新接入的情况。上传中断可分批续传；重复执行同一账号的接入命令不会重传未变化的日期。
 
@@ -87,7 +87,7 @@ v0.2.10 增加独立心跳：启动、检查完成及每 5 分钟报告状态。
 
 心跳缓存单独写入 `~/.tokenrank/health/config.json`，不与同步子进程争写检查点。`rank status` 输出最近一次确认的心跳；这是历史状态，不保证当前正在运行。`rank off` 先在本机断开，再尽力发送关闭通知；网络不可用时服务器只能显示失联。`uninstall-agent` 和 `uninstall` 同样发送明确停止事件。小程序会分别显示最后联系、检查和上传时间，旧版无心跳时标为未知。
 
-默认每 5 分钟读取同一个 SQLite 快照，包含已提交的 WAL 记录；扫描全部已保留历史以发现旧日期变更。北京时间日桶、主用量直接读取原版 total_tokens（含缓存），input_tokens、output_tokens、缓存读写单列。工具、模型按原版总量各保留每日用量前 8 项，服务端将未分类差额单列。补充采集（Oort 系、WorkBuddy 各版本、DevEco Code、Genspark Code、ToCodex、独立 Cline、JoyCode、QoderWork、Kiro 点数、TeleAgent、CodeArts Agent）随后并入相同日桶，同样受前 8 项工具与模型、128 组工具—模型限制；金额估算仍只基于原版可识别的模型。
+默认每 5 分钟读取同一个 SQLite 快照，包含已提交的 WAL 记录；扫描全部已保留历史以发现旧日期变更。北京时间日桶、主用量直接读取原版 total_tokens（含缓存），input_tokens、output_tokens、缓存读写单列。工具、模型按原版总量各保留每日用量前 8 项，服务端将未分类差额单列。补充采集（Oort 系、WorkBuddy 各版本、DevEco Code、Genspark Code、ToCodex、独立 Cline、JoyCode、QoderWork、Kiro 点数、TeleAgent、CodeArts Agent、Devin）随后并入相同日桶，同样受前 8 项工具与模型、128 组工具—模型限制；金额估算仍只基于原版可识别的模型。
 
 历史按最多 400 天且小于 450 KiB 分批发送，无总历史天数截断；每批得到完整确认后才保存检查点。失败批次留待重试，429 按 Retry-After 等待，401 提示重新接入。超出当前计数协议范围会停止同步并提示，不裁剪源数据。原版升级后缺少必要字段时停止上报，不修改或自动升级原库。
 
@@ -154,9 +154,10 @@ token-watcher 1.8 首次迁移 Codex 去重键时，会在统计库里留下一�
 - **Kiro（0.2.30）**：AWS Kiro 本地只有点数没有 token——`~/.kiro/sessions` 逐会话 `messages.jsonl` 的 `usage_summary.promptTurnSummaries`（credit 单位）并入日行 credits（`{total, tools}`），不占 token 四分量。
 - **TeleAgent（0.2.30）**：OpenCode 分支（super-agent-code），`~/.local/share/TeleAgent/teleagent.db` 按 OpenCode 同构口径解析（data 列声明为 BLOB，读取时 CAST 成 TEXT）；未使用过的安装表为空，静默无数据。
 - **CodeArts Agent（0.2.30）**：华为的 OpenCode 分支，`~/.codeartsdoer` 各实例子目录的 `opencode.db` 同构解析，带模型名；cost 恒为 0（内部 MaaS 不计价），仅入库 token。
+- **Devin（0.2.33）**：Devin Desktop 本地会话与 Devin CLI 共用的会话库 `sessions.db`，逐请求四分量，详见下文「Devin 会话库采集（0.2.33）」。
 - **容错**：每个文件或数据库单独捕获异常，损坏项写入同步日志后跳过，不影响其他来源和正常上报。数据目录只读，不修改任何产品文件。
 
-`TOKENRANK_OORT_DISABLE=1` 可关闭全部补充采集，`TOKENRANK_EXTRA_DISABLE=1` 只关闭 WorkBuddy / DevEco / Genspark Code / ToCodex / Cline / JoyCode / QoderWork / Kiro / TeleAgent / CodeArts 部分，`TOKENRANK_CODEBUDDY_DISABLE=1` 只关闭 CodeBuddy 部分。
+`TOKENRANK_OORT_DISABLE=1` 可关闭全部补充采集，`TOKENRANK_EXTRA_DISABLE=1` 只关闭 WorkBuddy / DevEco / Genspark Code / ToCodex / Cline / JoyCode / QoderWork / Kiro / TeleAgent / CodeArts 部分，`TOKENRANK_CODEBUDDY_DISABLE=1` 只关闭 CodeBuddy 部分，`TOKENRANK_DEVIN_DISABLE=1` 只关闭 Devin 部分。
 
 **排查后明确不采的终端**（0.2.30 逐一排查本机数据后确认，结论存档于 [`../docs/prompts/`](../docs/prompts/)）：OpenCode 本体由原版覆盖；Zed 的 `threads.db` token 字段实测为空（zed.dev 云端计费）；豆包 / 豆包工作的用量在云端，本地只有编码 agent 的文件改动审计；Kimi 桌面端聊天与用量都在服务端，CLI（Kimi For Coding）由原版覆盖；OortCodex XP Edition 的会话 JSON 无 token 字段（主产品库已由 Oort 系采集）；CodeArts Space 内核同为 OpenCode，本机会话目录已被清空，待其重建后再评估；Comfy 本地是扩散模型图像生成，无 token 口径，云端用量不落本地。
 
@@ -167,6 +168,32 @@ Qoder（含 QoderWork）的企业网关只在 `usage.credits` 落真实消耗，
 ## 子进程日志中继（0.2.32）
 
 金额估算在子进程（cost-worker）里完成，stdout 只承载日桶 JSON；`readDays` 的口径提示与「超出上报协议范围」警告写在子进程 stderr，此前被父进程丢弃，用户永远看不到。0.2.32 起父进程把子进程 stderr 逐行中继给同步日志（`[tokenrank] ` 前缀剥除），诊断信息在 `rank push --dry-run` 与日常同步中均可见。
+
+## Devin 会话库采集（0.2.33）
+
+Devin Desktop（原 Windsurf 更名）与 Devin CLI 的本地 agent 会话共用同一份会话库
+`sessions.db`：Desktop 里发起的本地会话由 CLI 内核承载（库中 `backend_type` 为
+`windsurf`），CLI 直连会话也在同一库里，两个入口因此合并为同一展示名 `Devin`。
+0.2.33 起 [`sync/devin.js`](sync/devin.js) 只读该库，从 `message_nodes` 的
+`chat_message` JSON 提取逐请求用量：
+
+- **口径**：`metadata.metrics` 四分量（`input_tokens` 不含缓存，与库内
+  `context_input_tokens` = input + cache_read + cache_creation 的关系已实测对齐）；
+  模型取逐消息 `metadata.generation_model`（会话中途切换模型时逐消息记录），缺失退回
+  `sessions.model`。
+- **去重**：消息森林（重试/分叉）会把同一 `message_id` 写到多个节点，各节点 metrics
+  完全一致，按 message_id 只计一次；多份安装线（正式版与 `cli-federal`）指向不同文件时
+  同一套 seen 键去重。
+- **位置**：Windows `%APPDATA%\Devin\cli`（CLI 在 Windows 下不看 `XDG_*` 变量），
+  macOS/Linux `~/.local/share/devin/cli`（遵循 `XDG_DATA_HOME`，macOS 另补查
+  `~/Library/Application Support/{Devin,devin}`）；政府隔离版目录名 `cli-federal`、
+  布局相同，一并采集。只看已知安装位置，不做全盘扫描。
+- **不采**：Desktop 云端会话（ACP 转录在 `User/acp-messages/*.db`，只有 UI 侧消息没有
+  token，云端按 ACU 计费）；`state.vscdb` 只有账号级配额缓存，无逐日明细；
+  `sessions.metadata` 的 `total_acu_cost` 是会话级累计值，无法按日拆分。
+- **容错**：库是 CLI 的活动库（带 `-wal`），只读打开；缺失表结构、损坏或被占用只跳过并
+  告警，不阻断同步。时间戳为 Unix 秒，按北京时间分日。`TOKENRANK_DEVIN_DISABLE=1`
+  关闭该来源。
 
 ## Trae 快照采集（0.2.22）
 

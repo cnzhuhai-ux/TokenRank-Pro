@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 // 固定用临时统计库：禁止补充采集读到真实机器上的产品数据
 process.env.TOKENRANK_OORT_DISABLE = '1';
 process.env.TOKENRANK_TRAE_DISABLE = '1';
+process.env.TOKENRANK_DEVIN_DISABLE = '1';
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, existsSync, symlinkSync, realpathSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';

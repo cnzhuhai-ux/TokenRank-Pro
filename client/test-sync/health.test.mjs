@@ -13,6 +13,7 @@ import {installAgent,windowsScript,plist} from '../sync/agent.js';
 // 真实子进程用例只验证核心同步；关闭补充采集，避免读到宿主机上的产品数据。
 process.env.TOKENRANK_OORT_DISABLE = '1';
 process.env.TOKENRANK_TRAE_DISABLE = '1';
+process.env.TOKENRANK_DEVIN_DISABLE = '1';
 
 const sleep=ms=>new Promise(r=>setTimeout(r,ms));
 async function until(test) { const end=Date.now()+3000;while(!test()){if(Date.now()>end)throw new Error('condition timed out');await sleep(5);} }

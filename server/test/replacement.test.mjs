@@ -6,6 +6,7 @@ process.env.TOKENRANK_OORT_DISABLE = '1';
 process.env.TOKENRANK_EXTRA_DISABLE = '1';
 process.env.TOKENRANK_TRAE_DISABLE = '1';
 process.env.TOKENRANK_CODEBUDDY_DISABLE = '1';
+process.env.TOKENRANK_DEVIN_DISABLE = '1';
 import { DatabaseSync } from 'node:sqlite';
 import { readFileSync, mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';

@@ -27,7 +27,7 @@ node node-service.mjs
 
 ## 支持采集的终端
 
-采集分两层：统计内核 [token-watcher](https://github.com/luwill/token-watcher)（1.9.x，13 种 AI 编程工具）+ 本仓库在同步器内的补充采集。补充采集包括 Oort 系（[`client/sync/oort.js`](client/sync/oort.js)，详见 [`docs/oort-collection.md`](docs/oort-collection.md)）、WorkBuddy 各版本、DevEco Code、Genspark Code、ToCodex、独立 Cline / Roo Code、JoyCode、QoderWork、Kiro（点数）、TeleAgent 与 CodeArts Agent（[`client/sync/extra.js`](client/sync/extra.js)）、CodeBuddy 扩展日志（[`client/sync/codebuddy.js`](client/sync/codebuddy.js)），以及 Trae（[`client/sync/trae.js`](client/sync/trae.js)，详见 [`docs/trae-collection.md`](docs/trae-collection.md)）。0.2.21 起，WorkBuddy / DevEco Code / Genspark Code 的数据目录在**全部本地磁盘**上发现，不只看系统盘；只读取目录名和统计库，跳过系统与缓存目录，并排除 token-watcher 已覆盖的位置，避免重复计数。0.2.22 起支持 Trae：由 Trae 本机扩展查询官方用量接口写出按天快照，同步器只读快照，不解密 Trae 的会话库。0.2.23 起 OortCloud AI Studio 内置助手（`oortcodex.oortcodex`）写在 `tasks/*/ui_messages.json` 的逐请求用量也会并入统计。一台电脑可同时安装任意多个，用量按天汇总、按工具分别展示。
+采集分两层：统计内核 [token-watcher](https://github.com/luwill/token-watcher)（1.9.x，13 种 AI 编程工具）+ 本仓库在同步器内的补充采集。补充采集包括 Oort 系（[`client/sync/oort.js`](client/sync/oort.js)，详见 [`docs/oort-collection.md`](docs/oort-collection.md)）、WorkBuddy 各版本、DevEco Code、Genspark Code、ToCodex、独立 Cline / Roo Code、JoyCode、QoderWork、Kiro（点数）、TeleAgent 与 CodeArts Agent（[`client/sync/extra.js`](client/sync/extra.js)）、CodeBuddy 扩展日志（[`client/sync/codebuddy.js`](client/sync/codebuddy.js)）、Devin（Devin Desktop 本地会话与 Devin CLI，[`client/sync/devin.js`](client/sync/devin.js)），以及 Trae（[`client/sync/trae.js`](client/sync/trae.js)，详见 [`docs/trae-collection.md`](docs/trae-collection.md)）。0.2.21 起，WorkBuddy / DevEco Code / Genspark Code 的数据目录在**全部本地磁盘**上发现，不只看系统盘；只读取目录名和统计库，跳过系统与缓存目录，并排除 token-watcher 已覆盖的位置，避免重复计数。0.2.22 起支持 Trae：由 Trae 本机扩展查询官方用量接口写出按天快照，同步器只读快照，不解密 Trae 的会话库。0.2.23 起 OortCloud AI Studio 内置助手（`oortcodex.oortcodex`）写在 `tasks/*/ui_messages.json` 的逐请求用量也会并入统计。一台电脑可同时安装任意多个，用量按天汇总、按工具分别展示。
 
 **token-watcher 官方支持**
 
@@ -71,6 +71,7 @@ node node-service.mjs
 | Kiro（0.2.30 起） | AWS Kiro 本地只有点数：`~/.kiro/sessions` 逐会话 `messages.jsonl` 的 `usage_summary`（credit 单位），并入日行 credits（{total, tools}），不占 token | ✅ |
 | TeleAgent（0.2.30 起） | OpenCode 分支（super-agent-code），`~/.local/share/TeleAgent/teleagent.db` 同构解析（data 列 BLOB 兼容）；未使用过的安装表为空 | ✅ |
 | CodeArts Agent（0.2.30 起） | 华为 OpenCode 分支，`~/.codeartsdoer` 各实例的 `opencode.db` 同构解析，带模型名；cost 恒为 0 仅入库 token | ✅ |
+| Devin（0.2.33 起） | Devin Desktop（原 Windsurf 更名）本地会话与 Devin CLI 共用的会话库 `sessions.db`：Windows `%APPDATA%\Devin\cli`（CLI 在 Windows 下不看 `XDG_*`），macOS/Linux `~/.local/share/devin/cli`（遵循 `XDG_DATA_HOME`，macOS 另补查 Application Support），政府隔离版 `cli-federal` 同布局。逐请求用量在 `message_nodes` 消息 JSON 的 `metadata.metrics`（input/output/cache_read/cache_creation 四分量，输入侧不含缓存），模型取逐消息 `metadata.generation_model`、缺失退回会话模型；消息森林（重试/分叉）会把同一 `message_id` 写到多个节点，按 message_id 去重。Desktop 云端会话按 ACU 在云端计费、本地转录无 token，`state.vscdb` 只有账号级配额缓存，均不采 | ✅ |
 
 **本机排查后明确不采的终端**（用量不在本地或结构不符，详见 `docs/prompts/` 排查存档）：OpenCode 本体（上游已覆盖）、Zed（`threads.db` 的 token 字段实测为空，zed.dev 云端计费）、豆包 / 豆包工作（用量在云端，本地仅文件改动审计）、Kimi 桌面端（服务端计费；CLI 由上游覆盖）、OortCodex XP Edition（会话 JSON 无 token；主产品库已由 Oort 系采集）、CodeArts Space（内核同 OpenCode，本机会话目录已被清空，待重建后评估）、Comfy（本地扩散模型推理无 token，云端用量不落本地）。
 
@@ -152,7 +153,7 @@ tokenrank rank push --full --dry-run
 
 | 目录 | 内容 |
 |---|---|
-| `client/sync` | 电脑端同步器（当前 0.2.32）：接入、只读同步、心跳、超时恢复、更新重算、备份清理；含 Oort 系工具补充采集（`client/sync/oort.js`，见 [`docs/oort-collection.md`](docs/oort-collection.md)）、WorkBuddy / DevEco Code / Genspark Code / ToCodex / 独立 Cline / JoyCode / QoderWork / Kiro / TeleAgent / CodeArts Agent 全盘补充采集（`client/sync/extra.js`）、CodeBuddy 扩展日志采集（`client/sync/codebuddy.js`）与 Trae 快照采集（`client/sync/trae.js`，扩展源码在 `client/trae-extension`，见 [`docs/trae-collection.md`](docs/trae-collection.md)） |
+| `client/sync` | 电脑端同步器（当前 0.2.33）：接入、只读同步、心跳、超时恢复、更新重算、备份清理；含 Oort 系工具补充采集（`client/sync/oort.js`，见 [`docs/oort-collection.md`](docs/oort-collection.md)）、WorkBuddy / DevEco Code / Genspark Code / ToCodex / 独立 Cline / JoyCode / QoderWork / Kiro / TeleAgent / CodeArts Agent 全盘补充采集（`client/sync/extra.js`）、CodeBuddy 扩展日志采集（`client/sync/codebuddy.js`）、Devin 会话库采集（`client/sync/devin.js`）与 Trae 快照采集（`client/sync/trae.js`，扩展源码在 `client/trae-extension`，见 [`docs/trae-collection.md`](docs/trae-collection.md)） |
 | `client/bin/tokenrank.js` | 同步器命令行入口 |
 | `server` | Cloudflare Worker、D1 表结构与迁移、安装和更新脚本；含飞书机器人（`server/src/feishu.js`）与 Node 单进程部署入口（`server/node-service.mjs` + `server/src/d1-node.mjs`） |
 | `miniprogram` | 原生微信小程序 |
