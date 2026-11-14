@@ -179,15 +179,23 @@ Devin Desktop（原 Windsurf 更名）与 Devin CLI 的本地 agent 会话共用
 
 - **口径**：`metadata.metrics` 四分量（`input_tokens` 不含缓存，与库内
   `context_input_tokens` = input + cache_read + cache_creation 的关系已实测对齐）；
-  模型取逐消息 `metadata.generation_model`（会话中途切换模型时逐消息记录），缺失退回
-  `sessions.model`。
-- **去重**：消息森林（重试/分叉）会把同一 `message_id` 写到多个节点，各节点 metrics
-  完全一致，按 message_id 只计一次；多份安装线（正式版与 `cli-federal`）指向不同文件时
-  同一套 seen 键去重。
+  日桶按 `metadata.created_at` 完成时间分北京时间日，缺失或无法解析退回节点时间
+  （秒/毫秒，超出合理范围或落在未来北京日的行跳过）。模型取逐消息
+  `metadata.generation_model`（会话中途切换模型时逐消息记录），缺失或不可用退回
+  `sessions.model`，再退回 `unknown`；模型名先剥离 ASCII 控制字符再截 60 字符，
+  不做名单过滤——Fusion、swe 系列与未来的任意新名都原样保留。`models`/`tools`
+  沿用每日前 8 项协议，`tool_models` 明细全量保留（上限 128 条），超过 8 个的模型
+  仍出现在工具—模型联合明细中。
+- **去重**：优先按 `metadata.request_id` 全局去重——重试/续写把同一请求写到多个节点
+  或不同 `message_id` 行时只计首个有效用量，没有 `message_id` 的请求级行也计入；
+  `request_id` 缺失时退回会话 + `message_id` 元组（两者缺一即无法构造回退键，跳过）。零 metrics
+  的占位行不会吞掉同一请求后续的有效数据。多份安装线（正式版与 `cli-federal`）
+  指向不同文件时同一套 seen 键去重。
 - **位置**：Windows `%APPDATA%\Devin\cli`（CLI 在 Windows 下不看 `XDG_*` 变量），
   macOS/Linux `~/.local/share/devin/cli`（遵循 `XDG_DATA_HOME`，macOS 另补查
-  `~/Library/Application Support/{Devin,devin}`）；政府隔离版目录名 `cli-federal`、
-  布局相同，一并采集。只看已知安装位置，不做全盘扫描。
+  `~/Library/Application Support/{Devin,devin}`）；所有平台另补查 `~/.config/devin`
+  下的旧版/便携式会话库；政府隔离版目录名 `cli-federal`、布局相同，一并采集。
+  只看已知安装位置，不做全盘扫描。
 - **不采**：Desktop 云端会话（ACP 转录在 `User/acp-messages/*.db`，只有 UI 侧消息没有
   token，云端按 ACU 计费）；`state.vscdb` 只有账号级配额缓存，无逐日明细；
   `sessions.metadata` 的 `total_acu_cost` 是会话级累计值，无法按日拆分。

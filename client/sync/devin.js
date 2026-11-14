@@ -2,20 +2,21 @@
  * Devin（Cognition）用量补充采集：Devin Desktop（原 Windsurf 更名）与 Devin CLI 的
  * 本地 agent 会话共用同一份会话库 sessions.db——Desktop 的本地会话由 CLI 内核承载
  * （backend_type 为 windsurf 的会话就是 Desktop 里发起的），CLI 直连会话也在同一库里，
- * 因此两个入口天然合并为同一展示名 Devin，按 message_id 去重即可避免任何重复。
+ * 因此两个入口天然合并为同一展示名 Devin，按 request_id 去重。
  *
  * 逐请求用量在 message_nodes.chat_message（JSON 文本）的 metadata.metrics：
  *   - input_tokens / cache_read_tokens / cache_creation_tokens / output_tokens
  *   - input_tokens 不含缓存（库里的 context_input_tokens = 三项输入侧之和，已实测对齐）
  * 模型优先取逐消息 metadata.generation_model（会话中途切换模型时逐消息记录），
- * 缺失退回 sessions.model。消息森林（重试/分叉）会把同一 message_id 写到多个节点，
- * 各节点 metrics 完全一致，按 message_id 去重取首次出现。
+ * 缺失退回 sessions.model，再退回 unknown。消息森林会把同一请求写到多个节点，
+ * 优先按 request_id、缺失时按 session_id + message_id 去重取首个有效用量。
  *
  * 数据目录（官方文档 docs.devin.ai 的 on-disk formats 页）：
  *   - Windows：%APPDATA%\Devin\cli\sessions.db（Windows 下 CLI 忽略 XDG_* 变量）
  *   - macOS / Linux：~/.local/share/devin/cli/sessions.db（遵循 XDG_DATA_HOME），
  *     macOS 再补查 ~/Library/Application Support/{Devin,devin}
  *   - 政府隔离版（cli-federal）目录名不同、布局相同，一并采集
+ *   - 补查 ~/.config/devin 下的旧版/便携式会话库
  *
  * 明确不采：Devin Desktop 的云端会话（Agent Client Protocol 转录在
  * User/acp-messages/*.db，只有 UI 侧消息没有 token；云端按 ACU 计费、用量不出本地）；
@@ -23,7 +24,7 @@
  * 是会话级累计值且无法按日拆分，均不符合日桶口径。
  *
  * 会话库是 CLI 的活动库（带 -wal），只读打开；损坏或非预期结构只跳过并告警，
- * 不中断同步。时间戳为 Unix 秒，按北京时间分日。
+ * 不中断同步。优先按 metadata.created_at 的完成时间归日，缺失退回节点时间（秒/毫秒）。
  */
 import { statSync, realpathSync } from 'node:fs';
 import { join, resolve } from 'node:path';
@@ -48,9 +49,10 @@ const isFile = (path) => { try { return statSync(path).isFile(); } catch { retur
 function candidateBases({ home, env, platform }) {
   const appData = env.APPDATA || join(home, 'AppData', 'Roaming');
   const localAppData = env.LOCALAPPDATA || join(home, 'AppData', 'Local');
-  if (platform === 'win32') return [appData, localAppData, join(home, '.local', 'share')];
-  if (platform === 'darwin') return [join(home, 'Library', 'Application Support'), env.XDG_DATA_HOME || join(home, '.local', 'share')];
-  return [env.XDG_DATA_HOME || join(home, '.local', 'share')];
+  const legacy = join(home, '.config');
+  if (platform === 'win32') return [appData, localAppData, join(home, '.local', 'share'), legacy];
+  if (platform === 'darwin') return [join(home, 'Library', 'Application Support'), env.XDG_DATA_HOME || join(home, '.local', 'share'), legacy];
+  return [env.XDG_DATA_HOME || join(home, '.local', 'share'), legacy];
 }
 
 /** 发现本机全部 Devin 会话库（正式版与隔离版），按规范路径去重。 */
@@ -92,18 +94,21 @@ function addTo(bucket, { input = 0, output = 0, cacheRead = 0, cacheWrite = 0, t
 const topEntries = (map, limit) => [...map.entries()].filter(([, v]) => v > 0)
   .sort((a, b) => b[1] - a[1] || String(a[0]).localeCompare(String(b[0]))).slice(0, limit);
 
-/** 读一份会话库：逐请求四分量用量，按 message_id 去重（消息森林的重复节点只计一次）。 */
+/** 逐请求四分量用量：请求优先去重，完成时间优先分日；不读取对话正文。 */
 function readSessionDb(path, seen, buckets, log) {
   let db;
+  const today = beijingDayOf(Date.now());
   try {
     db = new DatabaseSync(path, { readOnly: true });
-    db.exec('PRAGMA busy_timeout = 3000');
+    db.exec('PRAGMA query_only = ON; PRAGMA busy_timeout = 3000');
     const tables = new Set(db.prepare("SELECT name FROM sqlite_master WHERE type='table'").all().map((row) => row.name));
     if (!tables.has('message_nodes')) return;
     // sessions 承载会话级模型名；缺失时视为非预期结构，静默跳过。
     if (!tables.has('sessions')) return;
-    const rows = db.prepare(`SELECT n.row_id AS row_id, n.created_at AS created_at,
+    const rows = db.prepare(`SELECT n.row_id AS row_id, n.session_id AS session_id, n.created_at AS created_at,
       json_extract(n.chat_message, '$.message_id') AS mid,
+      json_extract(n.chat_message, '$.metadata.request_id') AS rid,
+      json_extract(n.chat_message, '$.metadata.created_at') AS completed_at,
       json_extract(n.chat_message, '$.metadata.metrics.input_tokens') AS t_input,
       json_extract(n.chat_message, '$.metadata.metrics.output_tokens') AS t_output,
       json_extract(n.chat_message, '$.metadata.metrics.cache_read_tokens') AS t_cache_read,
@@ -114,19 +119,28 @@ function readSessionDb(path, seen, buckets, log) {
       WHERE json_valid(n.chat_message) AND json_extract(n.chat_message, '$.role') = 'assistant'
       ORDER BY n.row_id`).all();
     for (const row of rows) {
-      const key = 'dv:' + row.mid;
-      if (typeof row.mid !== 'string' || !row.mid || seen.has(key)) continue;
-      seen.add(key);
+      const requestId = typeof row.rid === 'string' && row.rid.trim() ? row.rid : null;
+      const messageId = typeof row.mid === 'string' && row.mid ? row.mid : null;
+      const sessionId = typeof row.session_id === 'string' && row.session_id ? row.session_id : null;
+      const key = requestId ? `dv:r:${requestId}`
+        : sessionId && messageId ? `dv:m:${JSON.stringify([sessionId, messageId])}` : null;
+      if (!key || seen.has(key)) continue;
       const input = Number(row.t_input) || 0;
       const output = Number(row.t_output) || 0;
       const cacheRead = Number(row.t_cache_read) || 0;
       const cacheWrite = Number(row.t_cache_write) || 0;
       if (input + output + cacheRead + cacheWrite <= 0) continue;
-      let ts = Number(row.created_at) || 0;
-      if (ts > 0 && ts < 1e12) ts *= 1000;
-      if (!ts) continue;
-      const model = String(row.gen_model || row.session_model || '').trim().slice(0, 60);
+      let ts = typeof row.completed_at === 'string' ? Date.parse(row.completed_at) : NaN;
+      if (!Number.isFinite(ts)) {
+        ts = Number(row.created_at) || 0;
+        if (ts > 0 && ts < 1e12) ts *= 1000;
+      }
+      if (!Number.isFinite(ts) || ts <= 0 || ts > 8.64e15 - 8 * 3600000) continue;
+      const name = value => typeof value === 'string' ? value.replace(/[\u0000-\u001f\u007f]/g, '').trim() : '';
+      const model = (name(row.gen_model) || name(row.session_model) || 'unknown').slice(0, 60);
       const day = beijingDayOf(ts);
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(day) || day > today) continue;
+      seen.add(key);
       let bucket = buckets.get(day);
       if (!bucket) { bucket = emptyBucket(day); buckets.set(day, bucket); }
       addTo(bucket, { input, output, cacheRead, cacheWrite, tool: TOOL_NAMES.devin, model });
