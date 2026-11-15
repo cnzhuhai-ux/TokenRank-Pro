@@ -21,13 +21,14 @@
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { existsSync, readFileSync, statSync } from 'node:fs';
+import { TOKEN_DETAIL_LIMITS } from './details.js';
 
 export const TOOL_NAME = 'Trae';
 const SCHEMAS = [1, 2];
 const AUTO_LABEL = 'auto';
 const CUSTOM_LABEL = '自定义模型';
 const MAX = { tokens: 1e13, requests: 1e7, credits: 1e9 };
-const LIMITS = { models: 8, tools: 8, tool_models: 128 };
+const CREDIT_LIMITS = { models: 8, tools: 8, tool_models: 128 };
 const MAX_DAYS = 400;
 const DAY_MS = 86_400_000;
 const EPSILON = 1e-6;
@@ -121,15 +122,15 @@ function parseSnapshot(raw, log) {
     }
     // 全量明细优先：截断在采集器做，快照本身不丢数据
     const modelSource = Array.isArray(day.models_full) && day.models_full.length ? day.models_full : day.models;
-    bucket.models = readPairs(modelSource, { cap: 'tokens', maxValue: MAX.tokens, limit: LIMITS.models,
+    bucket.models = readPairs(modelSource, { cap: 'tokens', maxValue: MAX.tokens, limit: TOKEN_DETAIL_LIMITS.models,
       label: '模型明细', day: day.day, log });
     if (json.schema >= 2 && bucket.credits > 0) {
       const creditSource = Array.isArray(day.credits_models_full) && day.credits_models_full.length
         ? day.credits_models_full : day.credits_models;
       bucket.creditModels = readPairs(creditSource, { cap: 'credits', maxValue: bucket.credits,
-        limit: LIMITS.models, label: '模型积分分项', day: day.day, log });
+        limit: CREDIT_LIMITS.models, label: '模型积分分项', day: day.day, log });
       bucket.creditToolModels = readTriples(day.credits_tool_models, { maxValue: bucket.credits,
-        limit: LIMITS.tool_models, label: '工具×模型积分分项', day: day.day, log });
+        limit: CREDIT_LIMITS.tool_models, label: '工具×模型积分分项', day: day.day, log });
     }
     buckets.push(bucket);
   }
@@ -206,9 +207,9 @@ export function collectTraeDays({ home = homedir(), log = () => {} } = {}) {
       cache_read: bucket.cache_read,
       cache_write: bucket.cache_write,
       requests: bucket.requests,
-      models: models.slice(0, LIMITS.models),
+      models: models.slice(0, TOKEN_DETAIL_LIMITS.models),
       tools: bucket.tokens > 0 ? [[TOOL_NAME, bucket.tokens]] : [],
-      tool_models: models.slice(0, LIMITS.models).map(([model, tokens]) => [TOOL_NAME, model, tokens]),
+      tool_models: models.slice(0, TOKEN_DETAIL_LIMITS.tool_models).map(([model, tokens]) => [TOOL_NAME, model, tokens]),
       credits: null,
     };
     if (bucket.credits <= 0) return row;

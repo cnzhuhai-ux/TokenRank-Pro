@@ -37,7 +37,7 @@ ZCode（token-watcher 的 `zcode`，数据在 `~/.zcode`）与 OortCodex Desktop
   与缓存命中，按 `started_at` 的北京时间分日，并带出模型明细。它内置的 ZCode 内核只服务
   Office 面板，与 `~/.zcode`（token-watcher 的 `zcode`）是两个 home，不会重复计数。
 - 金额估算（cost）仍只基于 token-watcher 的模型计价；Oort 增量暂不计价。
-- 工具明细每天最多 8 条（协议上限），超出按量截断。
+- 工具、模型与工具—模型明细按日全量上报（协议上限 models 1024 / tools 128 / tool_models 1024），不再按前 8 截断。
 
 ## OortOffice 的剩余限制
 

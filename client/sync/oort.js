@@ -43,6 +43,7 @@ import { join } from 'node:path';
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { DatabaseSync } from 'node:sqlite';
 import zlib from 'node:zlib';
+import { TOKEN_DETAIL_LIMITS } from './details.js';
 
 export const TOOL_NAMES = {
   dsh: 'DSH For OortCloud Work',
@@ -96,8 +97,9 @@ function readDshLog(file) {
   let text = '';
   let frames = 0;
   for (let at = buf.indexOf(ZSTD_MAGIC); at >= 0; at = buf.indexOf(ZSTD_MAGIC, at + 4)) {
-    // 截断帧内置解码器不报错、只返回空，按解出 0 字节视为失败
-    const part = decode(buf.subarray(at)).toString('utf8');
+    // 截断帧可能返回空，也可能直接抛 Z_BUF_ERROR；任一帧解不开整份作废。
+    let part;
+    try { part = decode(buf.subarray(at)).toString('utf8'); } catch { return null; }
     if (!part) return null;
     text += part;
     frames++;
@@ -402,8 +404,8 @@ export function collectOortDays({ home = homedir(), appData = process.env.APPDAT
   return [...merged.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([day, bucket]) => ({
     day, tokens: bucket.tokens, input_tokens: bucket.input_tokens, output_tokens: bucket.output_tokens,
     cache_read: bucket.cache_read, cache_write: bucket.cache_write, requests: bucket.requests,
-    models: topEntries(bucket.models, 8), tools: topEntries(bucket.tools, 8),
-    tool_models: [...topEntries(bucket.toolModels, 128)].map(([key, tokens]) => [...key.split('\u0000'), tokens]),
+    models: topEntries(bucket.models, TOKEN_DETAIL_LIMITS.models), tools: topEntries(bucket.tools, TOKEN_DETAIL_LIMITS.tools),
+    tool_models: [...topEntries(bucket.toolModels, TOKEN_DETAIL_LIMITS.tool_models)].map(([key, tokens]) => [...key.split('\u0000'), tokens]),
   }));
 }
 
@@ -460,7 +462,7 @@ function clampSum(list, total) {
 /**
  * 把补充采集的日行合并进 token-watcher 的日行：
  *   - 展示名重命名表同步作用于 tools 与 tool_models（当前为空表，保留扩展位）；
- *   - 同日数字相加，tools/models 按量取前 8，tool_models 按工具+模型合并后取前 128；
+ *   - 同日数字相加，tools/models/tool_models 按量取协议上限（全量优先），credits 仍取前 8；
  *   - credits（{ total, tools }）同日相加、tools 按名合并取前 8（Trae 等补充源也带 credits）；
  *   - 返回新数组，不改入参。重命名会改变日指纹，相关日会在下次同步时整行重传。
  */
@@ -508,8 +510,8 @@ export function mergeOortDays(days, oortDays = []) {
     .sort((a, b) => b[1] - a[1] || String(a[0]).localeCompare(String(b[0]))).slice(0, limit);
   return out.sort((a, b) => a.day.localeCompare(b.day)).map((day) => ({
     ...day,
-    tools: top(day.tools, 8),
-    models: top(day.models, 8),
-    tool_models: [...top(day.tool_models, 128)].map(([key, tokens]) => [...key.split('\u0000'), tokens]),
+    tools: top(day.tools, TOKEN_DETAIL_LIMITS.tools),
+    models: top(day.models, TOKEN_DETAIL_LIMITS.models),
+    tool_models: [...top(day.tool_models, TOKEN_DETAIL_LIMITS.tool_models)].map(([key, tokens]) => [...key.split('\u0000'), tokens]),
   }));
 }

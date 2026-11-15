@@ -362,9 +362,10 @@ test('合并补充日行时模型和工具内模型一起累加，超过协议�
   assert.equal(merged[0].tools.length, 2);
   assert.deepEqual(merged[0].tool_models, [['zcode', 'glm-5.3', 100], [TOOL_NAMES.workbuddy, 'glm-5.3', 60]]);
 
-  const many = Array.from({ length: 140 }, (_, i) => [`t${i}`, `m${i}`, 140 - i]);
+  const many = Array.from({ length: 1100 }, (_, i) => [`t${i}`, `m${i}`, 1100 - i]);
   const capped = mergeOortDays([{ day: '2026-10-28', tokens: 1, input_tokens: 1, output_tokens: 0, cache_read: 0,
     cache_write: 0, requests: 1, models: [], tools: [], tool_models: many }], []);
-  assert.equal(capped[0].tool_models.length, 128);
+  assert.equal(capped[0].tool_models.length, 1024);
   assert.equal(capped[0].tool_models[0][0], 't0');
+  assert.ok(capped[0].tool_models.every(([tool]) => tool !== 't1099'));
 });

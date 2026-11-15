@@ -4,6 +4,7 @@ import { validateCost } from './costs.js';
 import { validateCredits } from './credits.js';
 
 const fields = ['tokens', 'input_tokens', 'output_tokens', 'cache_read', 'cache_write', 'requests'];
+const DETAIL_LIMITS = { models: 1024, tools: 128, tool_models: 1024 };
 export function validateTotalReport(body, now = Date.now()) {
   if (body?.v !== 2 || body.timezone !== 'Asia/Shanghai' || body.token_basis !== 'upstream_total') throw new Error('请升级同步器以同步原版总用量');
   if (typeof body.device_id !== 'string' || !/^[a-zA-Z0-9_-]{1,64}$/.test(body.device_id)) throw new Error('invalid device');
@@ -18,7 +19,7 @@ export function validateTotalReport(body, now = Date.now()) {
     if (d.credits !== undefined) validateCredits(d.credits);
     for (const field of fields) if (!Number.isSafeInteger(d[field]) || d[field] < 0 || d[field] > (field === 'requests' ? 1e7 : 1e13)) throw new Error('invalid count');
     for (const field of ['models', 'tools']) {
-      if (!Array.isArray(d[field]) || d[field].length > 8) throw new Error('invalid details');
+      if (!Array.isArray(d[field]) || d[field].length > DETAIL_LIMITS[field]) throw new Error('invalid details');
       let total = 0; const names = new Set();
       for (const pair of d[field]) {
         if (!Array.isArray(pair) || pair.length !== 2 || typeof pair[0] !== 'string' || !pair[0] || pair[0].length > 60 || names.has(pair[0])
@@ -28,7 +29,7 @@ export function validateTotalReport(body, now = Date.now()) {
       if (total > d.tokens) throw new Error('invalid detail total');
     }
     if (d.tool_models !== undefined) {
-      if (!Array.isArray(d.tool_models) || d.tool_models.length > 128) throw new Error('invalid tool models');
+      if (!Array.isArray(d.tool_models) || d.tool_models.length > DETAIL_LIMITS.tool_models) throw new Error('invalid tool models');
       const names = new Set(), byTool = new Map(), byModel = new Map(); let total = 0;
       for (const pair of d.tool_models) {
         if (!Array.isArray(pair) || pair.length !== 3 || pair.slice(0, 2).some(name => typeof name !== 'string' || !name || name.length > 60) ||

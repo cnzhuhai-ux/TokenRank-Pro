@@ -1,6 +1,7 @@
 import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
+import { TOKEN_DETAIL_LIMITS } from './details.js';
 
 const fields = ['tokens', 'input_tokens', 'output_tokens', 'cache_read', 'cache_write', 'requests'];
 const count = (n) => typeof n === 'number' && Number.isSafeInteger(n) && n >= 0 ? n : 0;
@@ -20,7 +21,7 @@ export function mergeCodebuddyDays(base = [], extra = []) {
     }
   }
   return [...days.values()].sort((a,b) => a.day.localeCompare(b.day)).map(day => ({ ...day,
-    ...Object.fromEntries(['models', 'tools', 'tool_models'].map(k => [k, [...day[k]].sort((a,b) => b[1]-a[1] || a[0].localeCompare(b[0])).slice(0,k === 'tool_models' ? 128 : 8).map(([key,n]) => [...JSON.parse(key),n])])) }));
+    ...Object.fromEntries(['models', 'tools', 'tool_models'].map(k => [k, [...day[k]].sort((a,b) => b[1]-a[1] || a[0].localeCompare(b[0])).slice(0,TOKEN_DETAIL_LIMITS[k]).map(([key,n]) => [...JSON.parse(key),n])])) }));
 }
 
 // Only final per-step usage is counted. AgentReporter repeats the same usage;

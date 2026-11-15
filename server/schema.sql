@@ -61,7 +61,7 @@ CREATE TABLE IF NOT EXISTS rank_group_members (
 CREATE INDEX IF NOT EXISTS idx_members_user ON rank_group_members(user_id);
 
 -- 日桶：客户端按天上报；同日重报取 MAX（水位，防删本地日志回退榜单）
--- models_json / tools_json 为 [[名称, 当日该维 tokens], ...] ≤8 条，绝对量便于跨天聚合
+-- models_json / tools_json 为 [[名称, 当日该维 tokens], ...]，按日全量（协议上限 models 1024 / tools 128），绝对量便于跨天聚合
 CREATE TABLE IF NOT EXISTS daily_stats (
   user_id INTEGER NOT NULL,
   day TEXT NOT NULL,                         -- UTC YYYY-MM-DD
@@ -126,7 +126,7 @@ CREATE TABLE IF NOT EXISTS usage_device_state (
   PRIMARY KEY (user_id, device_id)
 );
 CREATE INDEX IF NOT EXISTS idx_device_state_user ON usage_device_state(user_id);
--- 单台设备聚合为一行：数字相加，models/tools 取前 8、tool_models 取前 128，
+-- 单台设备聚合为一行：数字相加，models/tools/tool_models 按日全量合并（协议上限 1024/128/1024），
 -- cost/credits 合并为同一 JSON 形状，读取侧无需区分单设备还是多设备。
 CREATE VIEW IF NOT EXISTS ranked_usage AS
 SELECT d.user_id, d.day,
@@ -142,14 +142,14 @@ SELECT d.user_id, d.day,
      JOIN usage_device_state sx ON sx.user_id=x.user_id AND sx.device_id=x.device_id AND sx.active=1,
        json_each(CASE WHEN json_valid(x.models_json) THEN CASE WHEN json_type(x.models_json)='array' THEN x.models_json ELSE '[]' END ELSE '[]' END) je
      WHERE x.user_id=d.user_id AND x.day=d.day AND json_valid(x.models_json)
-     GROUP BY name ORDER BY t DESC, name LIMIT 8)) AS models_json,
+     GROUP BY name ORDER BY t DESC, name)) AS models_json,
   (SELECT COALESCE(json_group_array(json_array(name, t)), '[]') FROM (
      SELECT json_extract(CASE WHEN je.type='array' THEN je.value ELSE '[]' END, '$[0]') AS name, SUM(json_extract(CASE WHEN je.type='array' THEN je.value ELSE '[]' END, '$[1]')) AS t
      FROM daily_totals x
      JOIN usage_device_state sx ON sx.user_id=x.user_id AND sx.device_id=x.device_id AND sx.active=1,
        json_each(CASE WHEN json_valid(x.tools_json) THEN CASE WHEN json_type(x.tools_json)='array' THEN x.tools_json ELSE '[]' END ELSE '[]' END) je
      WHERE x.user_id=d.user_id AND x.day=d.day AND json_valid(x.tools_json)
-     GROUP BY name ORDER BY t DESC, name LIMIT 8)) AS tools_json,
+     GROUP BY name ORDER BY t DESC, name)) AS tools_json,
   MAX(d.source_at) AS source_at,
   MAX(d.updated_at) AS updated_at,
   CASE WHEN COUNT(CASE WHEN json_valid(d.cost_json) THEN 1 END)=0 THEN NULL ELSE json_object(
@@ -178,7 +178,7 @@ SELECT d.user_id, d.day,
        JOIN usage_device_state sx ON sx.user_id=x.user_id AND sx.device_id=x.device_id AND sx.active=1,
          json_each(CASE WHEN json_valid(x.tool_models_json) THEN CASE WHEN json_type(x.tool_models_json)='array' THEN x.tool_models_json ELSE '[]' END ELSE '[]' END) je
        WHERE x.user_id=d.user_id AND x.day=d.day AND json_valid(x.tool_models_json) AND x.tool_models_json IS NOT NULL
-       GROUP BY tool, model ORDER BY t DESC, tool, model LIMIT 128)) END AS tool_models_json,
+       GROUP BY tool, model ORDER BY t DESC, tool, model)) END AS tool_models_json,
   CASE WHEN COUNT(CASE WHEN json_valid(d.credits_json) THEN 1 END)=0 THEN NULL ELSE json_object(
     'total', ROUND(SUM(CASE WHEN json_valid(d.credits_json) THEN json_extract(d.credits_json, '$.total') ELSE 0 END), 6),
     'tools', (SELECT COALESCE(json_group_array(json_array(name, amt)), '[]') FROM (

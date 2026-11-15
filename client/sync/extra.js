@@ -59,6 +59,7 @@ import { existsSync, readdirSync, readFileSync, statSync, realpathSync } from 'n
 import { join, resolve, sep } from 'node:path';
 import { homedir } from 'node:os';
 import { DatabaseSync } from 'node:sqlite';
+import { TOKEN_DETAIL_LIMITS } from './details.js';
 
 export const TOOL_NAMES = { workbuddy: 'WorkBuddy', deveco: 'DevEco Code', gencode: 'Genspark Code', tocodex: 'ToCodex',
   cline: 'Cline', roo: 'Roo Code', joycode: 'JoyCode', qoderwork: 'QoderWork', kiro: 'Kiro',
@@ -581,9 +582,9 @@ export function collectExtraDays({ home = homedir(), env = process.env, platform
   return [...buckets.values()].sort((a, b) => a.day.localeCompare(b.day)).map((bucket) => ({
     day: bucket.day, tokens: bucket.tokens, input_tokens: bucket.input_tokens, output_tokens: bucket.output_tokens,
     cache_read: bucket.cache_read, cache_write: bucket.cache_write, requests: bucket.requests,
-    models: topEntries(bucket.models, 8), tools: topEntries(bucket.tools, 8),
+    models: topEntries(bucket.models, TOKEN_DETAIL_LIMITS.models), tools: topEntries(bucket.tools, TOKEN_DETAIL_LIMITS.tools),
     tool_models: [...bucket.toolModels.entries()].sort((a, b) => b[1] - a[1])
-      .slice(0, 128).map(([key, tokens]) => { const [tool, model] = key.split('\u0000'); return [tool, model, tokens]; }),
+      .slice(0, TOKEN_DETAIL_LIMITS.tool_models).map(([key, tokens]) => { const [tool, model] = key.split('\u0000'); return [tool, model, tokens]; }),
     ...(bucket.credits ? { credits: clampCredits(bucket.credits) } : {}),
   }));
 }

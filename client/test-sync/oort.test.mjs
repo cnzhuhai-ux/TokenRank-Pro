@@ -223,7 +223,7 @@ test('collectOortDays 采集 AI Studio 的 Claude agent 转录用量', (t) => {
   assert.equal(yesterday.requests, 1);
 });
 
-test('mergeOortDays 为 Oort 独有的日子补新行，tools 超过 8 个按量截断', () => {
+test('mergeOortDays 为 Oort 独有的日子补新行，tools 按协议上限保留', () => {
   const oortOnly = [{
     day: '2026-10-20', tokens: 90, input_tokens: 90, output_tokens: 0, cache_read: 0, cache_write: 0,
     requests: 9, models: [], tools: [], tool_models: [],
@@ -236,9 +236,10 @@ test('mergeOortDays 为 Oort 独有的日子补新行，tools 超过 8 个按量
   const manyTools = Array.from({ length: 10 }, (_, i) => [`tool${i}`, (i + 1) * 10]);
   const base = [{ day: '2026-10-28', tokens: 550, input_tokens: 550, output_tokens: 0, cache_read: 0, cache_write: 0, requests: 0, models: [], tools: manyTools, tool_models: [] }];
   const result = mergeOortDays(base, []);
-  assert.equal(result[0].tools.length, 8);
-  // 保留量最大的 8 个（tool9..tool2），最小的 tool0/tool1 被裁掉
-  assert.ok(result[0].tools.every(([name]) => !['tool0', 'tool1'].includes(name)));
+  // 10 个工具低于协议上限 128，按量降序全部保留；最小的 tool0 也不再被裁掉。
+  assert.equal(result[0].tools.length, 10);
+  assert.deepEqual(result[0].tools.map(([name]) => name),
+    ['tool9', 'tool8', 'tool7', 'tool6', 'tool5', 'tool4', 'tool3', 'tool2', 'tool1', 'tool0']);
   assert.deepEqual(base[0].tools, manyTools);
 });
 

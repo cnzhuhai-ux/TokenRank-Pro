@@ -293,10 +293,11 @@ test('Devin keeps arbitrary per-message model names and all nine tool_models tup
   const [day] = read([db]);
   const trimmed = longModel.slice(0, 60);
   assert.deepEqual([day.tokens, day.requests], [1800, 9]);
-  // 模型维度沿用既有 top8 协议；tool_models 九条全部保留，名称原样（上限 60 字符）。
+  // 模型与工具—模型明细按日全量上报；名称原样（上限 60 字符）。
   assert.deepEqual(day.models, [
     ['arbor-1', 200], ['birch-2', 200], ['cedar-3', 200], ['glimmer-5', 200],
-    ['harbor-7', 200], ['ion-3', 200], ['jade-8', 200], ['swe-2-fusion-alpha-2027', 200]]);
+    ['harbor-7', 200], ['ion-3', 200], ['jade-8', 200], ['swe-2-fusion-alpha-2027', 200],
+    [trimmed, 200]]);
   assert.deepEqual(day.tool_models, [
     ['Devin', 'arbor-1', 200], ['Devin', 'birch-2', 200], ['Devin', 'cedar-3', 200],
     ['Devin', 'glimmer-5', 200], ['Devin', 'harbor-7', 200], ['Devin', 'ion-3', 200],

@@ -1,6 +1,7 @@
 import { DatabaseSync } from 'node:sqlite';
 import { existsSync, statSync } from 'node:fs';
 import { DEFAULT_DB } from './config.js';
+import { TOKEN_DETAIL_LIMITS } from './details.js';
 const REQUIRED = ['ts', 'tool', 'model', 'total_tokens', 'input_tokens', 'output_tokens', 'cached_input', 'cache_write'];
 const MAX = { tokens: 1e13, input_tokens: 1e13, output_tokens: 1e13, requests: 1e7, cache_read: 1e13, cache_write: 1e13 };
 
@@ -77,18 +78,18 @@ export function readDays(path, { now = Date.now(), fromDay = null, costing = nul
     for (const row of associations) {
       if (!toolModels.has(row.daynum)) toolModels.set(row.daynum, []);
       const items = toolModels.get(row.daynum);
-      if (items.length < 128 && row.tokens > 0) items.push([row.tool_name, row.model_name, row.tokens]);
+      if (items.length < TOKEN_DETAIL_LIMITS.tool_models && row.tokens > 0) items.push([row.tool_name, row.model_name, row.tokens]);
     }
-    const detailMap = list => {
+    const detailMap = (list, limit) => {
       const map = new Map();
       for (const r of list) {
         const items = map.get(r.daynum) || [];
-        if (items.length < 8 && r.tokens > 0) items.push([String(r.name).slice(0, 60), r.tokens]);
+        if (items.length < limit && r.tokens > 0) items.push([String(r.name).slice(0, 60), r.tokens]);
         map.set(r.daynum, items);
       }
       return map;
     };
-    const modelMap = detailMap(models), toolMap = detailMap(tools);
+    const modelMap = detailMap(models, TOKEN_DETAIL_LIMITS.models), toolMap = detailMap(tools, TOKEN_DETAIL_LIMITS.tools);
     const costs = costing ? costing(db, from, now) : null;
     const creditsMap = readCreditsMap(db, from, now);
     // Qoder 等纯 credits 工具不产生 events 行，日桶取两者并集

@@ -57,7 +57,7 @@ Authorization: Cloud-IDE-JWT <icube.common.getToken 返回的会话令牌>
 - **credits**：`credits_float` 按天合计（round6）。只有预置模型计费会产生 credits；自定义模型（BYOK）
   不计 credits，其 token 已含在 token 四分量中（快照以 `custom_*` 单列，采集器不重复拆分，避免与合计冲突）。
   展示名相同（如 `GLM-5.3` 预置与自定义同名）时按"credits>0 即预置计费"消歧。
-- **模型明细**：快照 `models` 为 `[模型名, tokens]` 前 8 条，并入日桶的 `tool_models`（工具名固定 `Trae`）。
+- **模型明细**：快照 `models` 为 `[模型名, tokens]` 前 8 条、`models_full` 为全量（采集器优先），并入日桶的 `tool_models`（工具名固定 `Trae`）；0.2.34 起 token 维度明细按日全量上报（上限 1024/128/1024）。
   扩展 v0.1.2 起（2026-11-03 修复）：无 `model_name` 的行按计费事实归桶——已计费的 Auto 行报 `auto`；
   **未计费行（BYOK 自定义会话，API 不回传模型名）报「自定义模型」**，不再混入 `auto`（此前自定义模型
   token 污染 auto 归因、平台模型维度看不到自定义模型用量）。该桶 token 与 `custom_*` 聚合列同源一致。
