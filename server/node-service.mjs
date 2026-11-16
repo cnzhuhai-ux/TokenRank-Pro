@@ -39,6 +39,7 @@ const cfg = {
   feishuAppId: fileConfig.feishu_app_id || process.env.FEISHU_APP_ID,
   feishuAppSecret: fileConfig.feishu_app_secret || process.env.FEISHU_APP_SECRET,
   feishuVerificationToken: fileConfig.feishu_verification_token || process.env.FEISHU_VERIFICATION_TOKEN,
+  feishuRemindersEnabled: fileConfig.feishu_reminders_enabled === true || process.env.FEISHU_REMINDERS_ENABLED === '1',
 };
 mkdirSync(ROOT, { recursive: true, mode: 0o700 });
 if (process.platform !== 'win32') {
@@ -63,6 +64,7 @@ const env = {
   PUBLIC_BASE_URL: process.env.PUBLIC_BASE_URL || cfg.publicOrigin,
   // 微信侧未部署：留空使 /api/wx/session 返回 503（不影响飞书与采集上报）
   WX_APPID: '', WX_REMINDERS_ENABLED: '0',
+  FEISHU_REMINDERS_ENABLED: cfg.feishuRemindersEnabled ? '1' : '0',
   ...(cfg.feishuAppId ? { FEISHU_APP_ID: cfg.feishuAppId } : {}),
   ...(cfg.feishuAppSecret ? { FEISHU_APP_SECRET: cfg.feishuAppSecret } : {}),
   ...(cfg.feishuVerificationToken ? { FEISHU_VERIFICATION_TOKEN: cfg.feishuVerificationToken } : {}),
@@ -105,6 +107,7 @@ const STATIC_ALLOW = [
   /^\/app\/$/,
   /^\/app\/[\w-]+\.(?:html|css|js|svg|png)$/,
   /^\/app\/assets\/badges\/(?:tiers\/)?[\w-]+\.png$/,
+  /^\/app\/vendor\/qrcode-generator-(?:1\.4\.4\.js|LICENSE\.txt)$/,
 ];
 function staticFile(pathname) {
   if (!STATIC_ALLOW.some((re) => re.test(pathname))) return null;

@@ -179,7 +179,7 @@ test('0024/0025 升级与完整 schema 等价，保留飞书和 Credits/多设�
  const f=fixture(t,true);f.seed(1,'2026-10-01',6e7);f.seed(1,'2026-10-01',6e7,{device_id:'second'});
  f.db.exec(`INSERT OR REPLACE INTO usage_device_state VALUES(1,'device',1,1,1,1),(1,'second',1,1,1,1); UPDATE daily_totals SET credits_json='{"total":2,"tools":[["Devin",2]]}'; INSERT INTO feishu_event_log VALUES('event',1); INSERT INTO feishu_avatar_cache VALUES(1,'image','source',1)`);
  const before=f.db.prepare('SELECT * FROM daily_totals ORDER BY device_id').all();
- for(const name of ['0024_achievements','0025_achievement_presentation'])for(let i=0;i<2;i++)f.db.exec(readFileSync(new URL('../migrations/'+name+'.sql',import.meta.url),'utf8'));
+ for(const name of ['0024_achievements','0025_achievement_presentation','0026_feishu_reminders_profiles'])for(let i=0;i<2;i++)f.db.exec(readFileSync(new URL('../migrations/'+name+'.sql',import.meta.url),'utf8'));
  const full=fixture(t),objects=db=>db.prepare("SELECT type,name,tbl_name,sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' ORDER BY type,name").all().map(r=>({...r,sql:r.sql.replace(/s+/g,' ').replace(/s*([(),=])s*/g,'$1').trim()}));
  assert.deepEqual(objects(f.db),objects(full.db));assert.deepEqual(f.db.prepare('SELECT * FROM daily_totals ORDER BY device_id').all(),before);
  const data=(await loadAchievements(f.env,1,now)).data;assert.equal(badge(data,'total:100000000').current,1.2e8);assert.equal(badge(data,'total:100000000').earned,true);

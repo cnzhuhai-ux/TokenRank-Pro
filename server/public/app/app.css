@@ -1,4 +1,4 @@
-/* Token 群排名 · 飞书网页应用 —— 一比一复刻小程序白底界面 */
+/* Token 群排名 · 飞书网页应用 —— 沿用已批准的小程序对齐设计系统 */
 :root {
   --green: #07c160;
   --orange: #fa8919;
@@ -7,6 +7,11 @@
   --line: #ececec;
   --bg: #fff;
   --bg2: #f7f7f7;
+  --chart-3: #597ef7;
+  --chart-4: #9254de;
+  --chart-5: #13a8a8;
+  --space: 16px;
+  --radius: 6px;
 }
 * { margin: 0; padding: 0; box-sizing: border-box; }
 html, body { height: 100%; }
@@ -207,5 +212,19 @@ button:disabled { cursor: default; opacity: .5; }
 .analysis-bars .bar-col { flex: 1 0 22px; }
 .login-mask { padding: 24px; text-align: center; }
 .login-mask .btn { max-width: 320px; }
+.field { display: flex; flex-wrap: wrap; align-items: center; gap: var(--radius); padding: var(--space); }
+.field input:not([type=checkbox]), .field select { min-width: 0; flex: 1 1 160px; padding: var(--radius); border: 1px solid var(--line); border-radius: var(--radius); background: var(--bg); color: var(--text); }
+.form { padding: var(--radius); border-bottom: 1px solid var(--line); }
+.form h2, #audience h2 { padding: var(--space); font-size: 17px; }
+.links > button, .group-row button, .form > button:not(.btn) { padding: var(--radius) var(--space); margin: var(--radius); background: var(--bg2); color: var(--green); border: 1px solid var(--line); border-radius: var(--radius); cursor: pointer; }
+.group-row p { padding-block: var(--radius); font-size: 13px; }
+.trend-details { padding: var(--space); line-height: 1.8; }
+.trend-details details { padding: var(--radius); border-bottom: 1px solid var(--line); }
+.fixed-mine { position: sticky; bottom: 48px; z-index: 3; border: 1px solid var(--line); background: var(--bg); }
+.donut-row .donut-cell { flex-basis: 45%; min-width: 0; }
+.share-result { padding: var(--space); }
+.share-result:empty { display: none; }
+[data-theme=dark] { --text: #eee; --text2: #aaa; --line: #343434; --bg: #151515; --bg2: #222; }
+@media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation-duration: 0s !important; transition-duration: 0s !important; } }
 @media (min-width: 760px) { .page { max-width: 900px; margin: auto; } .tabbar { padding-left: max(0px, calc((100vw - 900px) / 2)); padding-right: max(0px, calc((100vw - 900px) / 2)); } }
 @media (max-width: 400px) { .row { gap: 8px; padding-left: 12px; padding-right: 12px; } .row .amt { font-size: 16px; max-width: 112px; } .hero .big { font-size: 38px; } .nav-row { margin-left: 10px; margin-right: 10px; } }

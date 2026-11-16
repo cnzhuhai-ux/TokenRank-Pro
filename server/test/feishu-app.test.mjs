@@ -115,11 +115,117 @@ test('OAuth state is cryptographic, required, exact and consumed once even on fa
   map.set('tr_oauth_state', state); assert.equal(M.consumeOAuthState(storage, state), true); assert.equal(M.consumeOAuthState(storage, state), false);
 });
 
-test('web integration keeps read-only achievements, genuine sharing guidance and Windows installation', () => {
+function appHarness({ responses = {}, fetcher } = {}) {
+  const nodes = new Map(), storage = new Map([['tr_token', 'account-a']]), calls = [];
+  const node = selector => { if (!nodes.has(selector)) nodes.set(selector, { isConnected: true, disabled: false, innerHTML: '', dataset: {}, classList: { toggle() {} }, setAttribute() {}, addEventListener() {}, querySelector: node, querySelectorAll: () => [], insertAdjacentHTML() {}, replaceChildren() {}, remove() {} }); return nodes.get(selector); };
+  const document = { hidden: false, querySelector: node, querySelectorAll: () => [], body: node('body') };
+  class Form { constructor(form) { this.values = Object.entries(form?.values || {}); } set(k, v) { this.values.push([k,v]); } [Symbol.iterator]() { return this.values[Symbol.iterator](); } }
+  const ctx = { window: { TokenRankModel: M, TokenRankShare: { configure() {} } }, document, localStorage: { getItem: k => storage.get(k) ?? null, setItem: (k,v) => storage.set(k,v), removeItem: k => storage.delete(k) }, sessionStorage: {}, location: { origin: 'http://local', hash: '#/settings' }, history: {}, URL, URLSearchParams, Date, Map, Set, FormData: Form, console, setTimeout, clearTimeout, requestAnimationFrame: fn => fn(), matchMedia: () => ({ matches: false }), addEventListener() {}, crypto: { getRandomValues: a => a.fill(7) }, fetch: async (path, options) => { calls.push({path, ...options}); if (fetcher) return fetcher(path, options); return { ok: true, json: async () => responses[path] || {} }; } };
+  let app = readFileSync(new URL('../public/app/app.js', import.meta.url), 'utf8');
+  app = app.replace("  login().catch(error => loginMask('登录失败', error.message));", `  window.testApp = { request, read, cache, mutate, settings, email, subscriptions, reminders, playBadge, releaseDisplay, hero, analysisBlock, current: () => current, setToken: v => {token=v;}, setLease: v => {displayLease=v;}, setAlive: fn => {current=fn;}, setRoute: r => {route=r;} }; current=()=>true; route={name:'me',period:'week',dimension:'tools'};`);
+  vm.runInNewContext(app, ctx);
+  return { app: ctx.window.testApp, calls, nodes, node, ctx, storage, Form };
+}
+
+test('achievement image readiness and successful animation precede confirm; replay never confirms', async () => {
+  const h = appHarness(), decoded = deferred(), sequence = [];
+  const lease = { id: 'a'.repeat(32), expires_at: Date.now()+60000, identity:'account-a', confirmed:false };
+  h.app.setLease(lease);
+  const image = { isConnected: true, decode: () => decoded.promise, animate: () => { sequence.push('animate'); return { finished: Promise.resolve() }; } };
+  const task = h.app.playBadge({}, image, () => true, lease);
+  assert.equal(h.calls.length, 0); decoded.resolve(); await task;
+  assert.deepEqual(sequence, ['animate']); assert.equal(lease.confirmed, true);
+  assert.equal(h.calls[0].path, '/api/my/achievements/confirm');
+  assert.equal(JSON.parse(h.calls[0].body).claim_id, lease.id);
+  await h.app.playBadge({}, image, () => true); assert.equal(h.calls.length, 1);
+});
+
+test('achievement failed art, route departure and expired lease release without confirm', async () => {
+  for (const mode of ['art', 'departed', 'expired']) {
+    const h = appHarness(), lease = { id: 'b'.repeat(32), expires_at: mode === 'expired' ? 0 : Date.now()+60000, identity:'account-a' };
+    h.app.setLease(lease);
+    const image = { isConnected: true, decode: () => mode === 'art' ? Promise.reject(new Error('图片加载失败')) : Promise.resolve() };
+    await h.app.playBadge({}, image, () => mode !== 'departed', lease);
+    assert.equal(h.calls.length, 1, mode); assert.equal(h.calls[0].path, '/api/my/achievements/release');
+  }
+});
+
+test('reduced motion still acknowledges a ready visible image, never starts animation', async () => {
+  const h = appHarness(); h.storage.set('tr_reduce_motion','true');
+  const lease = {id:'c'.repeat(32),expires_at:Date.now()+60000,identity:'account-a'}; h.app.setLease(lease);
+  await h.app.playBadge({}, {isConnected:true,decode:async()=>{},animate:()=>{throw new Error('must not animate');}},()=>true,lease);
+  assert.equal(h.calls[0].path,'/api/my/achievements/confirm');
+});
+
+test('writes invalidate old pending reads both before dispatch and after completion', async () => {
+  const old = deferred();
+  const h = appHarness({fetcher: async (path, options) => path === '/api/slow' ? old.promise : {ok:true,json:async()=>({saved:true})}});
+  const pending = h.app.read('/api/slow'); await Promise.resolve();
+  await h.app.request('/api/profile/ranking',{method:'POST',body:{hidden:true}});
+  old.resolve({ok:true,json:async()=>({private:'old'})}); await assert.rejects(pending,e=>e.stale);
+  assert.equal(h.calls[1].credentials,'omit'); assert.equal(h.calls[1].headers.authorization,'Bearer account-a');
+});
+
+test('account switch and route departure prevent mutation callbacks; denied writes preserve identity', async () => {
+  const work = deferred(), h = appHarness(); let painted=0;
+  const task = h.app.mutate({disabled:false,isConnected:true},()=>work.promise,()=>painted++);
+  h.app.setToken('account-b'); work.resolve(); await task; assert.equal(painted,0);
+  const rejected = appHarness({fetcher:async()=>({ok:false,status:403,json:async()=>({error:'无权限'})})});
+  await assert.rejects(rejected.app.request('/api/profile',{method:'POST',body:{}}),e=>e.status===403);
+  assert.equal(rejected.storage.get('tr_token'),'account-a');
+});
+
+test('email form posts consent and expected revision and does not imply mail delivery', async () => {
+  const status={registered:true,email:'a@example.com',revision:'d'.repeat(32),consent_version:'email-daily-registration-v1'};
+  const h=appHarness({responses:{'/api/email-registration':status}}); await h.app.email(()=>true);
+  const form=h.node('#email-form'); form.elements={email:{value:'b@example.com'},consent:{checked:true}};
+  form.onsubmit({preventDefault(){},currentTarget:form}); await new Promise(r=>setTimeout(r,0));
+  const call=h.calls.find(c=>c.method==='POST'); assert.ok(call);
+  const body=JSON.parse(call.body); assert.equal(body.expected_revision,status.revision); assert.equal(body.consent,true); assert.equal(body.email,'b@example.com');
+  assert.match(h.node('#body').innerHTML,/不会发送日报邮件/);
+});
+
+test('Feishu reminder reservation needs no wx permission and DELETE carries appointment id', async () => {
+  const h=appHarness({responses:{'/api/reminders':{channel:'feishu',authorization_required:false,has_reported:true,kinds:[{key:'daily',label:'日报',available:true,appointment:{id:'e'.repeat(24),state:'pending'}}]}}});
+  await h.app.reminders(()=>true);
+  assert.match(h.node('#body').innerHTML,/data-reserve="daily"/);
+  const b={dataset:{reserve:'daily'},disabled:false,isConnected:true};
+  h.node('#body').onclick({target:{closest:()=>b}}); await new Promise(r=>setTimeout(r,0));
+  const call=h.calls.find(c=>c.method==='POST'); assert.match(JSON.parse(call.body).request_id,/^[a-f0-9]{48}$/);
+  const cancel={dataset:{cancelReminder:'daily',id:'e'.repeat(24)},disabled:false,isConnected:true};
+  h.node('#body').onclick({target:{closest:()=>cancel}}); await new Promise(r=>setTimeout(r,0));
+  assert.equal(JSON.parse(h.calls.find(c=>c.method==='DELETE').body).id,'e'.repeat(24));
+});
+
+test('ledger submits major-unit prices, custom days and active status without ended_day', async () => {
+  const h=appHarness({responses:{'/api/subscriptions':{items:[],topups:[]}}}); await h.app.subscriptions(()=>true);
+  h.node('#body').onclick({target:{closest:()=>({dataset:{ledgerNew:'subscriptions'}})}});
+  const form=h.node('#ledger-form');
+  form.values={name:'测试服务',plan:'Pro',price:'12.34',currency:'USD',cycle:'custom',custom_days:'17',start_day:'2026-11-01',status:'active',ended_day:'2026-11-16',notes:''};
+  form.elements={api_key:{checked:true}};
+  form.onsubmit({preventDefault(){},currentTarget:form}); await new Promise(r=>setTimeout(r,0));
+  const body=JSON.parse(h.calls.find(c=>c.path==='/api/subscriptions'&&c.method==='POST').body);
+  assert.equal(body.price,12.34);assert.equal(body.custom_days,17);assert.equal(body.api_key,true);assert.equal(Object.hasOwn(body,'ended_day'),false);
+});
+
+test('topup form posts a real zero balance and preserves vendor and currency', async () => {
+  const h=appHarness({responses:{'/api/subscriptions':{items:[],topups:[]}}});await h.app.subscriptions(()=>true);
+  h.node('#body').onclick({target:{closest:()=>({dataset:{ledgerNew:'topups'}})}});
+  const form=h.node('#ledger-form');form.values={vendor:'deepseek',kind:'balance',amount:'0',currency:'CNY',day:'2026-11-16',notes:'余额校准'};
+  form.onsubmit({preventDefault(){},currentTarget:form});await new Promise(r=>setTimeout(r,0));
+  const body=JSON.parse(h.calls.find(c=>c.path==='/api/topups'&&c.method==='POST').body);
+  assert.equal(body.amount,0);assert.equal(body.vendor,'deepseek');assert.equal(body.kind,'balance');assert.equal(body.currency,'CNY');
+});
+
+test('web integration wires sharing, two-phase achievements and Windows installation', () => {
   const app = readFileSync(new URL('../public/app/app.js', import.meta.url), 'utf8');
   const html = readFileSync(new URL('../public/app/index.html', import.meta.url), 'utf8');
   assert.ok(html.indexOf('/app/model.js') < html.indexOf('/app/app.js'));
-  assert.doesNotMatch(app, /achievements\/(prepare|confirm|claim|release)/);
+  for (const action of ['prepare', 'confirm', 'release']) assert.ok(app.includes('/api/my/achievements/' + action));
+  assert.doesNotMatch(app, /achievements\/claim/);
+  assert.ok(app.includes('await image.decode()'));
+  assert.ok(app.includes('calendar_snapshot: data.snapshot'));
+  assert.ok(app.includes("options.show_amount = !!$('#share-amount')?.checked"));
   assert.match(app, /install_command_windows/); assert.match(app, /Windows PowerShell/);
   assert.doesNotMatch(app, /onclick="return false"|分享图片/);
   assert.match(app, /consumeOAuthState/); assert.match(app, /crypto/);

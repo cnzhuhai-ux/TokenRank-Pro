@@ -120,13 +120,13 @@ test('趋势榜：工具项带积分与合计，模型项不显示积分', () =>
 
 test('飞书网页应用：我的用量、群榜统计与群内行都带 Credits', () => {
   const app = fs.readFileSync(path.resolve(root, '../server/public/app/app.js'), 'utf8');
-  assert.match(app, /累计 Credits/);
-  assert.match(app, /本期 Credits/);
-  assert.match(app, /Credits 计费工具/);
-  assert.match(app, /creditsBlock\(usage\.credits\)/);
+  // H5 使用同周期 hero，不再维护两套“累计 / 本期”硬编码标签。
+  assert.match(app, /creditsBlock\(data\.credits\)/);
+  assert.match(app, /credits\.status === 'partial'/);
+  assert.match(app, /Number\.isFinite\(credits\.total\)/);
   assert.match(app, /class="l3"/);
   // 广场环形图与工具分布同样带积分；模型维度给出说明而不是 0；新增 Credits 饼图与 Tokens 饼并排
-  assert.match(app, /d\.credits\.scope === dimension/);
+  assert.match(app, /\['credits', 'Credits'\]/);
   assert.match(app, /donut-row/);
   assert.match(app, /该维度暂无积分明细/);
   const css = fs.readFileSync(path.resolve(root, '../server/public/app/app.css'), 'utf8');

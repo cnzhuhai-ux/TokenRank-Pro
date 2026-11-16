@@ -13,6 +13,7 @@
  *   FEISHU_ENCRYPT_KEY（可选）                 — 事件加密密钥（开放平台配了 Encrypt Key 才需要）
  */
 
+import { validDay } from './history.js';
 import {
   hexToken, groupId, beijingDay, beijingDaysAgo, sanitizeName, sanitizeGroupName,
 } from './lib.js';
@@ -366,7 +367,7 @@ export function createFeishuService({ fetcher = (...args) => fetch(...args), now
 
   async function tenantToken(env) {
     const saved = tokenCache.get(env.FEISHU_APP_ID);
-    if (saved && saved.expires > now()) return saved.token;
+    if (saved && saved.expires > now() && saved.secret === env.FEISHU_APP_SECRET) return saved.token;
     let res;
     try {
       res = await fetcher(`${FEISHU_BASE}/open-apis/auth/v3/tenant_access_token/internal`, {
@@ -377,7 +378,7 @@ export function createFeishuService({ fetcher = (...args) => fetch(...args), now
     const data = await res.json().catch(() => ({}));
     if (!res.ok || data.code !== 0 || !data.tenant_access_token) throw new Error('feishu tenant token failed');
     tokenCache.set(env.FEISHU_APP_ID, {
-      token: data.tenant_access_token,
+      token: data.tenant_access_token, secret:env.FEISHU_APP_SECRET,
       expires: now() + Math.max(60, (Number(data.expire) || 7200) - 120) * 1000,
     });
     return data.tenant_access_token;
@@ -463,7 +464,7 @@ export function createFeishuService({ fetcher = (...args) => fetch(...args), now
   // ── 账号与接入码（语义与 worker.js 的微信流程一致） ──
 
   async function accountByOpenId(env, openId) {
-    return env.DB.prepare('SELECT id, nickname, avatar_path, avatar_url, rank_hidden FROM users WHERE openid = ?1')
+    return env.DB.prepare('SELECT id, nickname, avatar_path, avatar_url, rank_hidden, disabled_at FROM users WHERE openid = ?1')
       .bind(OPENID_PREFIX + openId).first() ?? null;
   }
 
@@ -478,6 +479,7 @@ export function createFeishuService({ fetcher = (...args) => fetch(...args), now
 
   async function bindAccount(env, openId) {
     let user = await accountByOpenId(env, openId);
+    if (user?.disabled_at) throw new Error('ACCOUNT_DISABLED');
     if (!user) {
       let nickname = null, avatarUrl = null;
       try {
@@ -491,6 +493,7 @@ export function createFeishuService({ fetcher = (...args) => fetch(...args), now
         .bind(OPENID_PREFIX + openId, nickname || fallback, avatarUrl, now()).run();
       user = { id: ins.meta.last_row_id, nickname: nickname || fallback };
     }
+    if (user.disabled_at) throw new Error('ACCOUNT_DISABLED');
     return { user, token: await ensureConnectToken(env, user.id) };
   }
 
@@ -745,6 +748,7 @@ export function createFeishuService({ fetcher = (...args) => fetch(...args), now
     const account = ['rank', 'my', 'join', 'leave', 'hide', 'show'].includes(command.cmd)
       ? await accountByOpenId(env, openId) : null;
 
+    if (account?.disabled_at) return reply(textCard('账号已停用','当前账号已停用，无法执行此操作。',appUrl));
     if (command.cmd === 'help') return reply(helpCard({ groupReady: isGroup ? undefined : null, appUrl }));
 
     if (command.cmd === 'bind') {
@@ -896,7 +900,27 @@ export function createFeishuService({ fetcher = (...args) => fetch(...args), now
     return respond();
   }
 
-  return { handle, _internals: { dispatch, boardRows, personalSummary, bindAccount, joinGroup, ensureAvatarKey } };
+  async function sendReminder(env,payload) {
+    if (!String(payload.touser).startsWith(OPENID_PREFIX)) return {state:'failed',code:'INVALID_CHANNEL'};
+    let link = null;
+    try {
+      const base = new URL(env.PUBLIC_BASE_URL);
+      if (base.protocol === 'https:' && !base.username && !base.password) {
+        if (payload.kind === 'daily' && validDay(payload.report_day)) link = base.origin + '/app/#/me?view=daily&day=' + payload.report_day;
+        else if (payload.kind === 'sync_error') link = base.origin + '/app/#/help';
+      }
+    } catch { /* Invalid deployment URL must never become a message link. */ }
+    try {
+      const text = Object.values(payload.data).map(item=>item.value).join(' · ') + (link ? '\n查看详情：' + link : '');
+      const response = await callApi(env,'/open-apis/im/v1/messages?receive_id_type=open_id',{method:'POST',body:JSON.stringify({
+        receive_id:payload.touser.slice(OPENID_PREFIX.length),msg_type:'text',content:JSON.stringify({text})})});
+      return response.code === 0 ? {state:'sent',code:null} : {state:'unknown',code:'SEND_UNCONFIRMED'};
+    } catch (error) {
+      const match=/error: (\d+)/.exec(error.message);
+      return {state:match?'failed':'unknown',code:match?'FEISHU_'+match[1]:'SEND_UNCONFIRMED'};
+    }
+  }
+  return { handle, sendReminder, _internals: { dispatch, boardRows, personalSummary, bindAccount, joinGroup, ensureAvatarKey } };
 }
 
 export const feishu = createFeishuService();

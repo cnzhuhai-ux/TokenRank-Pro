@@ -72,7 +72,8 @@ export async function calendarReport(env, userId, month, now = Date.now()) {
       return {day,outside,future:day>range.today,reported:!outside&&!!row,tokens:!outside&&row ? row.tokens:null,requests:!outside&&row ? row.requests:null,
         details:!outside&&row?calendarDetails([row],source.device_platform):null};
     })};
-  return Response.json({ month: range.month, today: range.today, timezone: 'Asia/Shanghai', token_basis: 'upstream_total',
+  const snapshot = await digest([range.month,range.today,daily,heatmap,source.history.updated_at]);
+  return Response.json({ snapshot, month: range.month, today: range.today, timezone: 'Asia/Shanghai', token_basis: 'upstream_total',
     daily, heatmap, first_day: source.history.first_day, previous_month: previous >= '2000-01' ? previous : null,
     next_month: next <= range.today.slice(0, 7) ? next : null,
     summary: { ...summary(monthRows),

@@ -19,7 +19,9 @@ test('网页奖章静态白名单只开放受限 PNG 路径', () => {
   const allowed = path => patterns.some(pattern => pattern.test(path));
   assert.equal(allowed('/app/assets/badges/terminal.png'), true);
   assert.equal(allowed('/app/assets/badges/tiers/usage-orbit-4.png'), true);
-  for (const path of ['/app/assets/badges/../config.json', '/app/assets/badges/secret.json', '/app/assets/badges/x/y.png']) {
+  assert.equal(allowed('/app/vendor/qrcode-generator-1.4.4.js'), true);
+  assert.equal(allowed('/app/vendor/qrcode-generator-LICENSE.txt'), true);
+  for (const path of ['/app/vendor/arbitrary.js', '/app/vendor/../config.json', '/app/assets/badges/../config.json', '/app/assets/badges/secret.json', '/app/assets/badges/x/y.png']) {
     assert.equal(allowed(path), false, path);
   }
 });

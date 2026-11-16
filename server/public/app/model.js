@@ -13,23 +13,31 @@
     const [path, query = ''] = String(hash || '').replace(/^#\/?/, '').split('?');
     const parts = path.split('/'), q = new URLSearchParams(query);
     let name = parts[0] || 'groups', id = '';
-    if (!['groups', 'group', 'group-analysis', 'square', 'me', 'achievements', 'help'].includes(name)) name = 'groups';
+    if (!['groups', 'group', 'group-analysis', 'square', 'me', 'achievements', 'help', 'subscriptions', 'settings', 'email', 'reminders', 'share'].includes(name)) name = 'groups';
     if (['group', 'group-analysis'].includes(name)) {
       if (!/^[a-z0-9]+$/.test(parts[1] || '')) name = 'groups';
       else id = parts[1];
     }
+    if (name === 'share') {
+      if (!/^[a-f0-9]{24}$/.test(parts[1] || '')) name = 'groups';
+      else id = parts[1];
+    }
     const period = [...periods.map(p => p[0]), ...(name === 'me' ? ['all'] : [])].includes(q.get('period')) ? q.get('period') : name === 'me' ? 'all' : 'day';
     return { name, id, period, metric: q.get('metric') === 'credits' ? 'credits' : 'tokens',
-      view: ['sum', 'daily', 'cal', 'trend', 'analysis'].includes(q.get('view')) ? q.get('view') : 'sum',
+      view: ['sum', 'daily', 'cal', 'trend', 'analysis', 'weekly'].includes(q.get('view')) ? q.get('view') : 'sum',
       dimension: q.get('dimension') === 'models' ? 'models' : 'tools',
       day: validDay(q.get('day')) ? q.get('day') : '',
       month: /^\d{4}-(0[1-9]|1[0-2])$/.test(q.get('month') || '') ? q.get('month') : '',
       week: validDay(q.get('week')) ? monday(q.get('week')) : '',
-      family: q.get('family') || '', badge: q.get('badge') || '' };
+      family: q.get('family') || '', badge: q.get('badge') || '', tool: q.get('tool') || '',
+      range: q.get('range') === 'month' ? 'month' : 'quarter', end: validDay(q.get('end')) ? q.get('end') : '',
+      trendMetric: q.get('trendMetric') === 'tokens' ? 'tokens' : 'users',
+      analysisView: ['share', 'trend', 'detail'].includes(q.get('analysisView')) ? q.get('analysisView') : 'share',
+      analysisBasis: q.get('analysisBasis') === 'users' ? 'users' : 'tokens', category: q.get('category') || '' };
   }
   function routeHash(route) {
     const q = new URLSearchParams();
-    for (const key of ['period', 'metric', 'view', 'dimension', 'day', 'month', 'week', 'family', 'badge']) if (route[key]) q.set(key, route[key]);
+    for (const key of ['period', 'metric', 'view', 'dimension', 'day', 'month', 'week', 'family', 'badge', 'tool', 'range', 'end', 'trendMetric', 'analysisView', 'analysisBasis', 'category']) if (route[key]) q.set(key, route[key]);
     return '#/' + route.name + (route.id ? '/' + encodeURIComponent(route.id) : '') + (q.size ? '?' + q : '');
   }
   function parentRoute(route) {

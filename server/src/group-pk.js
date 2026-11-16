@@ -14,7 +14,7 @@ export async function groupPk(env, user, groupId, body, origin, now = Date.now()
   if (!USAGE_PERIODS.includes(period) || !Number.isSafeInteger(rank) || rank < 1 || rank > 1e9 ||
     typeof snapshot !== 'string' || !/^[a-f0-9]{64}$/.test(snapshot)) return jsonError(400, 'PK 参数无效，请重新从群榜选择');
   const range = usageWindow(period, now), to = period === 'all' ? '9999-12-31' : range.to;
-  const ranked = `SELECT u.id AS uid, u.nickname, u.avatar_path,
+  const ranked = `SELECT u.id AS uid, u.nickname, u.avatar_path, u.avatar_url,
     SUM(ds.tokens) AS tokens, SUM(ds.requests) AS requests, SUM(ds.cache_read + ds.cache_write) AS cache,
     SUM(COALESCE(json_extract(ds.credits_json,'$.total'),0)) AS credits
     FROM public_usage ds JOIN users u ON u.id=ds.user_id
@@ -48,9 +48,9 @@ export async function groupPk(env, user, groupId, body, origin, now = Date.now()
   const publicUsage = usage => ({ period, from, to: range.to, timezone: 'Asia/Shanghai', token_basis: 'upstream_total',
     summary: { tokens: usage.summary.tokens, requests: usage.summary.requests, active_days: usage.summary.active_days },
     tools: usage.tools.filter(tool => !tool.unclassified).slice(0, 1) });
-  const profile = (uid, nickname, avatar) => ({ nickname: nickname || `AI玩家-${String(uid).slice(-4).padStart(4, '0')}`,
-    avatar_url: avatar ? origin + '/avatars/' + avatar : null });
+  const profile = (uid, nickname, avatar, fallback) => ({ nickname: nickname || `AI玩家-${String(uid).slice(-4).padStart(4, '0')}`,
+    avatar_url: avatar ? origin + '/avatars/' + avatar : (fallback || null) });
   return Response.json({ style: 'comparison', transient: true, created_at: now,
-    user: profile(user.id, user.nickname, user.avatar_path), usage: publicUsage(right),
-    comparison: { source: { user: profile(peer.uid, peer.nickname, peer.avatar_path), usage: publicUsage(left), created_at: now } } });
+    user: profile(user.id, user.nickname, user.avatar_path, user.avatar_url), usage: publicUsage(right),
+    comparison: { source: { user: profile(peer.uid, peer.nickname, peer.avatar_path, peer.avatar_url), usage: publicUsage(left), created_at: now } } });
 }

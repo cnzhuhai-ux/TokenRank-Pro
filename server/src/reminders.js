@@ -1,10 +1,27 @@
+import { feishu } from './feishu.js';
 import { jsonError, beijingDay } from './lib.js';
 import { addDays, buildDaily, validDay } from './history.js';
 const KEYS = ['daily','sync_error'], STALE = 15 * 60000;
 const VALUES = new Set(['title','range','tokens','active_days','reported_days','requests','time','reason','platform','duration','summary']);
 const SOURCES = { daily:new Set(['title','range','tokens','requests','time','summary']), sync_error:new Set(['title','reason','platform','duration','time']) };
 const LABELS = { daily:'用量日报', sync_error:'同步异常' };
+export function feishuReminderReason(env) {
+  if (env.FEISHU_REMINDERS_ENABLED !== '1') return '飞书提醒开关未开启';
+  if (!env.FEISHU_APP_ID || !env.FEISHU_APP_SECRET) return '飞书应用凭证未配置';
+  return null;
+}
+function channelEnv(env) {
+  return {...env, __feishuReminder:true, DB:{prepare(sql) { return env.DB.prepare(sql.replaceAll('reminder_jobs','feishu_reminder_jobs').replaceAll('reminder_failure_runs','feishu_reminder_failure_runs')); }}};
+}
+async function identityEnv(env,userId) {
+  if (env.__feishuReminder) return env;
+  const user=await env.DB.prepare('SELECT openid,disabled_at FROM users WHERE id=?1').bind(userId).first();
+  if (!user) throw new Error('ACCOUNT_NOT_FOUND');
+  if (user.disabled_at) throw new Error('ACCOUNT_DISABLED');
+  return user.openid.startsWith('feishu:') ? channelEnv(env) : env;
+}
 export function reminderConfig(env) {
+  if (env.__feishuReminder) return feishuReminderReason(env) ? {} : {daily:{template_id:'feishu_daily_v1',fields:{thing1:'summary',thing2:'range'}},sync_error:{template_id:'feishu_sync_error_v1',fields:{thing1:'reason',thing2:'platform',number3:'duration'}}};
   let raw; try { raw = JSON.parse(env.WX_REMINDER_TEMPLATES || '{}'); } catch { raw = {}; }
   const result = {};
   if (env.WX_REMINDERS_ENABLED !== '1' || !env.WX_APPID || !env.WX_APPSECRET) return result;
@@ -26,6 +43,7 @@ export function reminderMeta(env, preference, lastReport) {
 }
 /** Called when obtaining an installation command, before a first upload exists. */
 export async function connectionReminderMeta(env, userId, lastReport) {
+  env=await identityEnv(env,userId);
   let preference = await env.DB.prepare('SELECT * FROM reminder_preferences WHERE user_id=?1').bind(userId).first();
   if (!preference) {
     await env.DB.prepare(`INSERT OR IGNORE INTO reminder_preferences(user_id,awaiting_first_report)
@@ -42,17 +60,19 @@ export function nextDaily(now = Date.now()) {
   return { report_day:addDays(sendDay, -1), scheduled_at:Date.parse(sendDay + 'T09:00:00+08:00') };
 }
 export async function reminderStatus(env, userId, now = Date.now()) {
+  env=await identityEnv(env,userId);
   const user = await env.DB.prepare(`SELECT c.last_report_at,p.awaiting_first_report,p.prompt_seen_at
     FROM users u LEFT JOIN connect_tokens c ON c.user_id=u.id LEFT JOIN reminder_preferences p ON p.user_id=u.id WHERE u.id=?1`).bind(userId).first();
   if (!user) throw new Error('ACCOUNT_NOT_FOUND');
   const {results} = await env.DB.prepare('SELECT * FROM reminder_jobs WHERE user_id=?1').bind(userId).all(), config = reminderConfig(env);
-  return { ...reminderMeta(env,user,user.last_report_at), has_reported:!!user.last_report_at,
+  return { channel:env.__feishuReminder?'feishu':'wechat', authorization_required:!env.__feishuReminder, ...reminderMeta(env,user,user.last_report_at), has_reported:!!user.last_report_at,
     kinds:KEYS.map(key => { const job=results.find(row=>row.kind===key);return {key,label:LABELS[key],available:!!config[key],
-      template_id:config[key]?.template_id || null, ...(key==='daily' ? nextDaily(now) : {}),
+      unavailable_reason:config[key]?null:(env.__feishuReminder?feishuReminderReason(env):'微信提醒模板或凭证未配置，或开关未开启'), template_id:env.__feishuReminder?null:(config[key]?.template_id || null), ...(key==='daily' ? nextDaily(now) : {}),
       appointment:job ? {id:job.id,state:job.state,scheduled_at:job.scheduled_at,...(key==='daily' ? {report_day:job.week_start} : {}),
         updated_at:job.updated_at,error_code:job.error_code} : null}; }) };
 }
 export async function acknowledgeReminderPrompt(env, userId, now = Date.now()) {
+  env=await identityEnv(env,userId);
   await env.DB.prepare(`UPDATE reminder_preferences SET prompt_seen_at=COALESCE(prompt_seen_at,?2)
     WHERE user_id=?1 AND awaiting_first_report=1
     AND EXISTS(SELECT 1 FROM connect_tokens WHERE user_id=?1 AND last_report_at IS NOT NULL)`)
@@ -60,10 +80,12 @@ export async function acknowledgeReminderPrompt(env, userId, now = Date.now()) {
   return Response.json({acknowledged:true});
 }
 export async function reserveReminder(env, userId, kind, body, now = Date.now()) {
+  env=await identityEnv(env,userId);
   if (kind === 'weekly') return jsonError(410,'周报提醒已调整为日报，请重新预约');
   if (!KEYS.includes(kind) || !/^[A-Za-z0-9_-]{16,80}$/.test(body?.request_id || '')) return jsonError(400,'预约参数无效');
   const config = reminderConfig(env)[kind];
-  if (!config) return jsonError(503,'该提醒暂未开放');
+  if (!config) return jsonError(503,env.__feishuReminder?feishuReminderReason(env):'该提醒暂未开放');
+  if (env.__feishuReminder && ['receive_id','openid','touser','channel','template_id'].some(key=>body?.[key]!==undefined)) return jsonError(400,'接收者与渠道仅由服务端确定');
   const connected = await env.DB.prepare('SELECT 1 AS ok FROM connect_tokens WHERE user_id=?1 AND last_report_at IS NOT NULL').bind(userId).first();
   if (!connected) return jsonError(409,'请先完成电脑接入和首次用量同步');
   const current = await env.DB.prepare('SELECT * FROM reminder_jobs WHERE user_id=?1 AND kind=?2').bind(userId,kind).first();
@@ -79,6 +101,7 @@ export async function reserveReminder(env, userId, kind, body, now = Date.now())
   return Response.json(await reminderStatus(env,userId,now));
 }
 export async function cancelReminder(env, userId, kind, body, now=Date.now()) {
+  env=await identityEnv(env,userId);
   if (!KEYS.includes(kind) || !/^[a-f0-9]{24}$/.test(body?.id || '')) return jsonError(400,'预约参数无效');
   const result = await env.DB.prepare(`UPDATE reminder_jobs SET state='cancelled',updated_at=?4 WHERE user_id=?1 AND kind=?2 AND id=?3 AND state='pending'`)
     .bind(userId,kind,body.id,now).run();
@@ -87,6 +110,7 @@ export async function cancelReminder(env, userId, kind, body, now=Date.now()) {
 }
 /** Only accepted, ordered heartbeats can extend a continuous failure episode. */
 export async function trackReminderFailure(env, userId, deviceId) {
+  env=await identityEnv(env,userId);
   if (!reminderConfig(env).sync_error) return;
   await env.DB.prepare(`INSERT INTO reminder_failure_runs(user_id,device_id,state,error_since,event_at,last_seen_at)
     SELECT a.user_id,a.device_id,a.state,CASE WHEN a.state='error' THEN a.last_seen_at ELSE NULL END,a.event_at,a.last_seen_at
@@ -145,15 +169,21 @@ export function dailySummary(tokens, requests) {
   return Number(tokens).toExponential(2) + ' · ' + Number(requests).toExponential(1) + '次';
 }
 const reason = {SOURCE_READ_FAILED:'读取统计失败',COLLECTOR_OUTDATED:'统计内核需更新',UPLOAD_FAILED:'用量上传失败',AUTH_INVALID:'接入凭证失效',SYNC_CONFLICT:'同步任务冲突',UPGRADE_REQUIRED:'同步程序需更新',RATE_LIMITED:'上传请求受限',CHECK_TIMEOUT:'同步检查超时',PROCESS_EXIT:'同步检查退出'};
-export async function runReminders(env,{now=Date.now(),send=sender}={}) {
+export async function runReminders(env,{now=Date.now(),send=sender,sendFeishu=(env,payload)=>feishu.sendReminder(env,payload)}={}) {
+  const wx=await runChannelReminders(env,{now,send});
+  const fs=await runChannelReminders(channelEnv(env),{now,send:sendFeishu});
+  return {processed:wx.processed+fs.processed};
+}
+async function runChannelReminders(env,{now,send}) {
   const config=reminderConfig(env);if (!Object.keys(config).length) return {processed:0};
   await env.DB.prepare(`UPDATE reminder_jobs SET state='unknown',error_code='SEND_INTERRUPTED',updated_at=?1
-    WHERE state='sending' AND attempted_at<?2`).bind(now,now-10*60000).run();
-  const {results}=await env.DB.prepare(`SELECT j.*,u.openid,a.platform,a.error_code AS agent_error,r.error_since FROM reminder_jobs j
+    WHERE state='sending' AND attempted_at<?2 AND EXISTS(SELECT 1 FROM users u WHERE u.id=reminder_jobs.user_id
+      AND ${env.__feishuReminder ? "u.openid LIKE 'feishu:%'" : "u.openid NOT LIKE 'feishu:%'"})`).bind(now,now-10*60000).run();
+  const {results}=await env.DB.prepare(`SELECT j.*,u.openid,c.token AS connect_token,a.platform,a.error_code AS agent_error,r.error_since FROM reminder_jobs j
     JOIN users u ON u.id=j.user_id AND u.disabled_at IS NULL JOIN connect_tokens c ON c.user_id=j.user_id AND c.last_report_at IS NOT NULL
     LEFT JOIN usage_sync_state s ON s.user_id=j.user_id LEFT JOIN sync_agents a ON a.user_id=j.user_id AND a.device_id=s.device_id
     LEFT JOIN reminder_failure_runs r ON r.user_id=a.user_id AND r.device_id=a.device_id
-    WHERE j.state='pending' AND ((j.kind='daily' AND j.scheduled_at<=?1) OR
+    WHERE ${env.__feishuReminder ? "u.openid LIKE 'feishu:%'" : "u.openid NOT LIKE 'feishu:%'"} AND j.state='pending' AND ((j.kind='daily' AND j.scheduled_at<=?1) OR
       (j.kind='sync_error' AND a.state='error' AND a.last_seen_at>=?2 AND r.event_at=a.event_at
        AND r.error_since IS NOT NULL AND MAX(r.error_since,j.created_at)<=?2 AND (j.last_sent_at IS NULL OR j.last_sent_at<=?3)))
     ORDER BY j.created_at,j.user_id LIMIT 50`).bind(now,now-STALE,now-86400000).all();
@@ -184,8 +214,11 @@ export async function runReminders(env,{now=Date.now(),send=sender}={}) {
       }
       // Recheck deletion/cancellation immediately before crossing into WeChat.
       const active=!result && await env.DB.prepare(`SELECT 1 AS ok FROM reminder_jobs j JOIN users u ON u.id=j.user_id
-        WHERE j.user_id=?1 AND j.id=?2 AND j.state='sending' AND u.disabled_at IS NULL`).bind(job.user_id,job.id).first();
-      if (active) result=await send(env,{touser:job.openid,template_id:item.template_id,page,data:templateData(item,values),miniprogram_state:'formal',lang:'zh_CN'});
+        JOIN connect_tokens c ON c.user_id=j.user_id AND c.token=?3 AND c.last_report_at IS NOT NULL
+        WHERE j.user_id=?1 AND j.id=?2 AND j.state='sending' AND u.disabled_at IS NULL`).bind(job.user_id,job.id,job.connect_token).first();
+      if (active) result=await send(env,env.__feishuReminder
+        ? {touser:job.openid,kind:job.kind,report_day:job.kind==='daily'?job.week_start:null,data:templateData(item,values)}
+        : {touser:job.openid,template_id:item.template_id,page,data:templateData(item,values),miniprogram_state:'formal',lang:'zh_CN'});
       else if (!result) continue;
     } catch (error) { const invalid=['DATA_UNAVAILABLE','FIELD_TYPE_MISMATCH','FIELD_TOO_LONG'].includes(error.message); result={state:invalid?'failed':'unknown',code:invalid?error.message:'SEND_UNCONFIRMED'}; }
     await env.DB.prepare(`UPDATE reminder_jobs SET state=?3,error_code=?4,updated_at=?5,last_sent_at=CASE WHEN ?3='sent' THEN ?5 ELSE last_sent_at END

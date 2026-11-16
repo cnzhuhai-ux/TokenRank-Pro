@@ -107,6 +107,7 @@ export default {
     try {
       return timed(await route(request, env, url, path, ctx) ?? jsonError(404, 'not found'));
     } catch (err) {
+      if (err?.message?.includes('ACCOUNT_DISABLED')) return timed(Response.json({error:'账号已停用',code:'ACCOUNT_DISABLED'},{status:403,headers:corsHeaders(request,env)}));
       // Database guards also reject requests authenticated just before deletion.
       if (err?.message?.includes('ACCOUNT_NOT_FOUND')) return timed(Response.json({ error: '账号已注销，请重新登录', code: 'ACCOUNT_DELETED' }, { status: 410, headers: corsHeaders(request, env) }));
       if (err?.message?.includes('GROUP_NOT_FOUND')) return timed(new Response(JSON.stringify({ error: '群榜已变化，请重新进入' }), { status: 409, headers: { ...corsHeaders(request, env), 'content-type': 'application/json' } }));
@@ -123,6 +124,12 @@ async function route(request, env, url, path, ctx) {
   if (method === 'GET' && path === '/healthz') {
     await env.DB.prepare('SELECT 1 FROM users LIMIT 1').first();
     return withCors(Response.json({ ok: true, day: beijingDay() }));
+  }
+
+  // Central write gate: public/anonymous GETs and explicit account deletion remain available.
+  if (!['GET','HEAD','OPTIONS'].includes(method) && path.startsWith('/api/') && path !== '/api/account' && !path.endsWith('/session')) {
+    const actor=await sessionUser(request,env);
+    if (actor?.disabled_at) return withCors(jsonError(403,'账号已停用'));
   }
 
   // ---- 飞书机器人事件回调（回调处理放 waitUntil，先回 200 防飞书重试风暴） ----
@@ -144,11 +151,11 @@ async function route(request, env, url, path, ctx) {
     const { user } = await feishu._internals.bindAccount(env, identity.openId);
     const fallbackNick = `飞书用户-${String(identity.openId).replace(/[^a-zA-Z0-9]/g, '').slice(-4).padStart(4, '0')}`;
     await env.DB.prepare(`UPDATE users SET
-      nickname = CASE WHEN ?2 != '' THEN ?2 ELSE COALESCE(nickname, ?3) END,
-      avatar_url = CASE WHEN ?4 != '' THEN ?4 ELSE COALESCE(avatar_url, '') END,
+      nickname = CASE WHEN NOT EXISTS(SELECT 1 FROM user_profile_preferences p WHERE p.user_id=users.id AND p.nickname_custom=1) AND ?2 != '' THEN ?2 ELSE COALESCE(nickname, ?3) END,
+      avatar_url = CASE WHEN avatar_path IS NULL AND ?4 != '' THEN ?4 ELSE COALESCE(avatar_url, '') END,
       updated_at = ?5
       WHERE id = ?1 AND openid = ?6`)
-      .bind(user.id, identity.name, fallbackNick, identity.avatarUrl, Date.now(), `feishu:${identity.openId}`).run();
+      .bind(user.id, sanitizeName(identity.name)||'', fallbackNick, String(identity.avatarUrl||'').startsWith('https://')?identity.avatarUrl:'', Date.now(), `feishu:${identity.openId}`).run();
     const token = crypto.randomUUID();
     await env.DB.prepare('INSERT INTO mp_sessions (token, user_id, expires_at) VALUES (?1, ?2, ?3)')
       .bind(token, user.id, Date.now() + MP_SESSION_TTL_MS).run();
@@ -322,6 +329,19 @@ async function route(request, env, url, path, ctx) {
     }
     const usageUrl = new URL(request.url); usageUrl.searchParams.set('period', milestone ? 'all' : body?.period || 'day');
     if (body?.style === 'daily' && !validDay(body.day)) return withCors(jsonError(400,'日报分享日期无效'));
+    if (body?.style === 'calendar') {
+      if (typeof body.month !== 'string' || (body.show_amount !== undefined && typeof body.show_amount !== 'boolean')) return withCors(jsonError(400,'日历分享参数无效'));
+      const response = await calendarReport(env,user.id,body.month);
+      if (!response.ok) return withCors(response);
+      const calendar = await response.json();
+      if (body.calendar_snapshot !== undefined && body.calendar_snapshot !== calendar.snapshot)
+        return withCors(Response.json({error:'日历数据已有更新，请刷新后重新分享',code:'CALENDAR_CHANGED'},{status:409}));
+      if (!calendar.summary.reported_days) return withCors(Response.json({error:'先同步一份用量，再生成分享记录',code:'NO_USAGE'},{status:400}));
+      calendar.show_amount = body.show_amount === true;
+      const usage = {period:'month',from:calendar.month+'-01',to:calendar.heatmap.to,timezone:calendar.timezone,token_basis:calendar.token_basis,
+        summary:{tokens:calendar.summary.tokens,requests:calendar.daily.reduce((sum,row)=>sum+(row.requests||0),0),active_days:calendar.summary.active_days},tools:[],calendar};
+      return withCors(await createShare(env,await publicUser(env,user.id,userOrigin(env,request)),usage,'calendar'));
+    }
     const result = body?.style === 'daily' ? await dailyReport(env,user.id,body.day)
       : body?.style === 'weekly' ? await weeklyReport(env, user.id, body.week) : await myUsage(request, env, usageUrl, null, user);
     if (!result.ok) return withCors(result);
@@ -412,6 +432,12 @@ async function route(request, env, url, path, ctx) {
   if (method === 'POST' && path === '/report') return withCors(await report(request, env));
 
   // ---- 群 ----
+  if (method === 'POST' && /^\/api\/groups\/[a-z0-9]+\/leave$/.test(path)) {
+    const user = await sessionUser(request,env);
+    if (!user) return withCors(jsonError(401,'请先登录'));
+    await env.DB.prepare('DELETE FROM rank_group_members WHERE group_id=?1 AND user_id=?2').bind(path.split('/')[3],user.id).run();
+    return withCors(Response.json({ok:true}));
+  }
   if (method === 'POST' && path === '/api/groups') return withCors(await createGroup(request, env));
   if (method === 'POST' && path === '/api/groups/resolve') return withCors(await resolveGroup(request, env));
   if (method === 'POST' && path === '/api/groups/join') return withCors(await joinGroup(request, env));
@@ -470,9 +496,10 @@ async function wxSession(request, env) {
   }
 
   const now = Date.now();
-  const existing = await env.DB.prepare('SELECT id FROM users WHERE openid = ?1').bind(openid).first();
+  const existing = await env.DB.prepare('SELECT id,disabled_at FROM users WHERE openid = ?1').bind(openid).first();
   // A stale session on another phone must not silently recreate a deleted account.
   if (!existing && body.existing_only === true) return Response.json({ error: '账号已注销，请重新登录', code: 'ACCOUNT_DELETED' }, { status: 410 });
+  if (existing?.disabled_at) return jsonError(403, '账号已停用');
   let userId;
   if (existing) {
     userId = existing.id;
@@ -503,13 +530,13 @@ async function sessionUser(request, env) {
 }
 
 async function publicUser(env, userId, origin = '') {
-  const [u,health] = await Promise.all([env.DB.prepare(`SELECT u.id, u.nickname, u.avatar_path, u.avatar_url, u.rank_hidden,
+  const [u,health] = await Promise.all([env.DB.prepare(`SELECT u.id, u.openid, u.nickname, u.avatar_path, u.avatar_url, u.rank_hidden,
     c.user_id AS connected_user_id, c.last_report_at,p.awaiting_first_report,p.prompt_seen_at FROM users u
     LEFT JOIN connect_tokens c ON c.user_id=u.id LEFT JOIN reminder_preferences p ON p.user_id=u.id WHERE u.id=?1`).bind(userId).first(),syncHealth(env,userId)]);
   if (!u) throw new Error('ACCOUNT_NOT_FOUND');
   return {
     user_id: u.id,
-    ...reminderMeta(env,u,u.last_report_at),
+    ...reminderMeta(u.openid.startsWith('feishu:')?{...env,__feishuReminder:true}:env,u,u.last_report_at),
     nickname: u.nickname,
     avatar_url: u.avatar_path ? `${origin}/avatars/${u.avatar_path}` : (u.avatar_url || null),
     profile_complete: completeProfile(u),
@@ -554,11 +581,15 @@ async function setProfile(request, env) {
       env.DB.prepare(`INSERT INTO user_avatars (user_id, content, mime_type, updated_at) VALUES (?1, ?2, ?3, ?4)
         ON CONFLICT(user_id) DO UPDATE SET content=excluded.content, mime_type=excluded.mime_type, updated_at=excluded.updated_at`)
         .bind(user.id, avatar.data, avatar.type, now),
+      env.DB.prepare('INSERT INTO user_profile_preferences(user_id,nickname_custom) VALUES(?1,1) ON CONFLICT(user_id) DO UPDATE SET nickname_custom=1').bind(user.id),
       env.DB.prepare('UPDATE users SET nickname = ?1, avatar_path = ?2, updated_at = ?3 WHERE id = ?4')
         .bind(nickname, avatar.path, now, user.id),
     ]);
   } else {
-    await env.DB.prepare('UPDATE users SET nickname = ?1, updated_at = ?2 WHERE id = ?3').bind(nickname, now, user.id).run();
+    await env.DB.batch([
+      env.DB.prepare('INSERT INTO user_profile_preferences(user_id,nickname_custom) VALUES(?1,1) ON CONFLICT(user_id) DO UPDATE SET nickname_custom=1').bind(user.id),
+      env.DB.prepare('UPDATE users SET nickname = ?1, updated_at = ?2 WHERE id = ?3').bind(nickname, now, user.id),
+    ]);
   }
   return Response.json(await publicUser(env, user.id, userOrigin(env, request)));
 }
@@ -580,6 +611,7 @@ async function ensureConnectToken(env, userId) {
 async function getConnectToken(request, env) {
   const user = await sessionUser(request, env);
   if (!user) return jsonError(401, '请先登录');
+  if (user.disabled_at) return jsonError(403,'账号已停用');
   const token = await ensureConnectToken(env, user.id);
   const row = await env.DB.prepare('SELECT last_report_at FROM connect_tokens WHERE user_id = ?1').bind(user.id).first();
   return Response.json({
@@ -600,7 +632,10 @@ async function createConnectToken(request, env) {
   const token = hexToken(16);
   const now = Date.now();
   const batch = [
+    env.DB.prepare("UPDATE reminder_jobs SET state=CASE WHEN state='sending' THEN 'unknown' ELSE 'cancelled' END,error_code='CREDENTIAL_RESET',updated_at=?2 WHERE user_id=?1 AND state IN ('pending','sending')").bind(user.id,now),
     env.DB.prepare('DELETE FROM reminder_failure_runs WHERE user_id=?1').bind(user.id),
+    env.DB.prepare('DELETE FROM feishu_reminder_failure_runs WHERE user_id=?1').bind(user.id),
+    env.DB.prepare("UPDATE feishu_reminder_jobs SET state=CASE WHEN state='sending' THEN 'unknown' ELSE 'cancelled' END,error_code='CREDENTIAL_RESET',updated_at=?2 WHERE user_id=?1 AND state IN ('pending','sending')").bind(user.id,now),
     env.DB.prepare('DELETE FROM sync_agents WHERE user_id=?1').bind(user.id),
     env.DB.prepare('DELETE FROM connect_tokens WHERE user_id = ?1').bind(user.id),
     env.DB.prepare('INSERT INTO connect_tokens (token, user_id, created_at) VALUES (?1, ?2, ?3)').bind(token, user.id, now),
@@ -859,7 +894,7 @@ async function leaderboard(request, env, url, context = {}) {
   // 群榜仍只列本群有用量的人，避免把从未上报的成员塞进群内名次。
   const rowsTask = scope === 'global'
     ? env.DB.prepare(`
-        SELECT u.id AS uid, u.nickname, u.avatar_path,
+        SELECT u.id AS uid, u.nickname, u.avatar_path, u.avatar_url,
                COALESCE(a.tokens, 0) AS tokens, COALESCE(a.requests, 0) AS requests,
                COALESCE(a.cache, 0) AS cache, COALESCE(a.credits, 0) AS credits
         FROM users u
@@ -876,7 +911,7 @@ async function leaderboard(request, env, url, context = {}) {
                OR EXISTS (SELECT 1 FROM rank_group_members m WHERE m.user_id = u.id))
         ORDER BY ${metric === 'credits' ? 'credits' : 'tokens'} DESC, uid ASC`).bind(from, to).all()
     : env.DB.prepare(`
-        SELECT u.id AS uid, u.nickname, u.avatar_path,
+        SELECT u.id AS uid, u.nickname, u.avatar_path, u.avatar_url,
                SUM(ds.tokens) AS tokens, SUM(ds.requests) AS requests,
                SUM(ds.cache_read + ds.cache_write) AS cache,
                ${creditsSum} AS credits
@@ -937,7 +972,7 @@ async function leaderboard(request, env, url, context = {}) {
   const entries = pageRows.map((r, i) => ({
     rank: offset + i + 1,
     nickname: r.nickname || `AI玩家-${String(r.uid).slice(-4).padStart(4, '0')}`,
-    avatar_url: r.avatar_path ? `${origin}/avatars/${r.avatar_path}` : null,
+    avatar_url: r.avatar_path ? `${origin}/avatars/${r.avatar_path}` : (r.avatar_url || null),
     tokens: r.tokens,
     credits: Math.round((r.credits || 0) * 1e6) / 1e6,
     requests: r.requests,

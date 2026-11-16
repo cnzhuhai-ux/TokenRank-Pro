@@ -9,7 +9,7 @@ const shareRateLimited = () => Response.json({error:'分享准备较频繁，请
   {status:429,headers:{'Retry-After':String(SHARE_WINDOW_MS / 1000)}});
 export async function readShare(env, id, allowComparison = true) {
   if (!SHARE_ID.test(id || '')) return null;
-  const row = await env.DB.prepare('SELECT id, user_id, snapshot_json, created_at, expires_at FROM usage_shares WHERE id = ?1 AND expires_at > ?2 AND revoked_at IS NULL')
+  const row = await env.DB.prepare('SELECT id, user_id, snapshot_json, created_at, expires_at FROM usage_shares WHERE id = ?1 AND expires_at > ?2 AND revoked_at IS NULL AND EXISTS(SELECT 1 FROM users WHERE users.id=usage_shares.user_id AND disabled_at IS NULL)')
     .bind(id, Date.now()).first();
   if (!row) return null;
   const record = { id: row.id, ...JSON.parse(row.snapshot_json), created_at: row.created_at, expires_at: row.expires_at };
@@ -72,6 +72,19 @@ export async function createShare(env, user, usage, style = 'usage', source = nu
       summary: { tokens: usage.summary.tokens, requests: usage.summary.requests, active_days: usage.summary.active_days },
       tools: style === 'tools' ? shareTools(usage) : usage.tools.filter(t => !t.unclassified).slice(0, 1), activity: usage.activity, standing: usage.standing },
   };
+  if (style === 'calendar') {
+    const calendar = usage.calendar, showAmount = calendar.show_amount === true;
+    const pick = (value, keys) => Object.fromEntries(keys.filter(key=>value?.[key] !== undefined).map(key=>[key,value[key]]));
+    const details = value => value && showAmount && value.cost ? {cost:pick(value.cost,['basis','currency','status','usd_micros','missing_days','unpriced_count'])} : null;
+    const days = rows => rows.map(row=>({...pick(row,['day','reported','future','outside','tokens','requests']),
+      ...(row.details ? {details:details(row.details)} : {})}));
+    snapshot.style = 'calendar';
+    snapshot.usage = {...pick(usage,['period','from','to','timezone','token_basis']),summary:snapshot.usage.summary,
+      calendar:{month:calendar.month,today:calendar.today,show_amount:showAmount,
+        summary:pick(calendar.summary,['tokens','reported_days','active_days','elapsed_days']),daily:days(calendar.daily),
+        heatmap:{...pick(calendar.heatmap,['from','to','end']),summary:pick(calendar.heatmap.summary,['tokens','reported_days','active_days']),
+          details:details(calendar.heatmap.details),daily:days(calendar.heatmap.daily)}}};
+  }
   if (style === 'tools') snapshot.style = 'tools';
   if (style === 'milestone') {
     snapshot.style = 'milestone';
