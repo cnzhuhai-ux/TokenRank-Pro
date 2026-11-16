@@ -1,489 +1,282 @@
-/* Token 群排名 · 飞书网页应用（复刻小程序界面与交互） */
+/* Token 群排名 · 飞书网页应用；原生路由、只读数据页。 */
 (() => {
   'use strict';
-  const $ = (sel) => document.querySelector(sel);
-  const page = $('#page');
-  const state = { tab: 'groups', period: 'day', scope: 'all', token: localStorage.getItem('tr_token') || '', me: null, meView: 'sum' };
-
-  // ── 工具 ──
-  const fmt = (n) => {
-    n = Math.max(0, Math.round(Number(n) || 0));
-    if (n >= 1e8) return (n / 1e8).toFixed(2) + ' 亿';
-    if (n >= 1e4) return (n / 1e4).toFixed(2).replace(/\.?0+$/, '') + ' 万';
-    return n.toLocaleString('en-US');
-  };
-  const full = (n) => (Math.max(0, Math.round(Number(n) || 0))).toLocaleString('en-US');
-  const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-  const bj = (ms) => new Date(ms + 8 * 3600000).toISOString();
-  const bjDay = (ms = Date.now()) => bj(ms).slice(0, 10);
-  async function api(path, { silent } = {}) {
-    const res = await fetch(path, state.token ? { headers: { authorization: `Bearer ${state.token}` } } : undefined);
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok) {
-      if (res.status === 401) { logout('登录已过期，请重新登录'); throw new Error('unauthorized'); }
-      if (!silent) toast(data.error || '加载失败');
-      throw new Error(data.error || '加载失败');
+  const M = window.TokenRankModel, page = document.querySelector('#page');
+  const $ = selector => page.querySelector(selector);
+  const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+  const full = value => Math.max(0, Number(value) || 0).toLocaleString('en-US', { maximumFractionDigits: 2 });
+  const fmt = value => Number(value) >= 1e8 ? (value / 1e8).toFixed(2) + ' 亿' : Number(value) >= 1e4 ? (value / 1e4).toFixed(2).replace(/\.?0+$/, '') + ' 万' : full(value);
+  let token = localStorage.getItem('tr_token') || '', route, current, user, ready = false, force = false;
+  const guard = M.createGuard();
+  async function request(path) {
+    const sentWith = token;
+    const response = await fetch(path, { headers: sentWith ? { authorization: 'Bearer ' + sentWith } : {}, cache: 'no-store' });
+    const data = await response.json();
+    if (sentWith !== token) throw Object.assign(new Error('账号已变化'), { stale: true });
+    if (!response.ok) {
+      if (response.status === 401) {
+        token = ''; localStorage.removeItem('tr_token'); cache.clear(); guard.invalidate(); ready = false;
+        loginMask('登录已过期', '请重新通过飞书授权登录');
+      }
+      throw Object.assign(new Error(data.error || '加载失败，请稍后重试'), { status: response.status, code: data.code });
     }
     return data;
   }
-  let toastTimer;
-  function toast(msg) {
-    const el = $('#toast'); el.textContent = msg; el.hidden = false;
-    clearTimeout(toastTimer); toastTimer = setTimeout(() => { el.hidden = true; }, 2200);
+  const cache = M.createCache({ request, account: () => token });
+  const read = path => cache.read(path, { force });
+  function go(next) {
+    const hash = M.routeHash(next);
+    if (location.hash !== hash) history.pushState({ trApp: true }, '', hash);
+    render();
   }
-  function logout(msg) {
-    localStorage.removeItem('tr_token'); state.token = ''; state.me = null;
-    if (msg) toast(msg);
-    login();
+  function patch(changes) { go({ ...route, ...changes }); }
+  function link(next, label, cls = '') { return `<a class="${cls}" href="${esc(M.routeHash(next))}">${esc(label)}</a>`; }
+  function tabs(items, active, key) {
+    return `<div class="tabs">${items.map(([value, label]) => `<button class="tab ${value === active ? 'active' : ''}" data-set="${key}" data-value="${esc(value)}" aria-pressed="${value === active}">${esc(label)}</button>`).join('')}</div>`;
   }
-
-  // ── 登录 ──
-  async function login() {
-    const qs = new URLSearchParams(location.search);
-    const code = qs.get('code');
-    const cfg = await fetch('/api/feishu/session').then((r) => r.json()).catch(() => ({}));
-    if (!cfg.app_id) return renderLoginMask('登录服务未配置', '请联系管理员在服务端配置飞书凭证');
-    if (code) {
-      try {
-        const res = await fetch('/api/feishu/session', {
-          method: 'POST', headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ code }),
-        });
-        const data = await res.json();
-        if (!res.ok) throw new Error(data.error || '登录失败');
-        state.token = data.token; state.me = data.user;
-        localStorage.setItem('tr_token', data.token);
-        history.replaceState(null, '', '/app/');
-        return boot();
-      } catch (err) { return renderLoginMask('登录失败', err.message + '，请重试'); }
+  const periodTabs = () => tabs(route.name === 'me' ? [...M.periods, ['all', '累计']] : M.periods, route.period, 'period');
+  const metricTabs = () => tabs([['tokens', 'Token 榜'], ['credits', 'Credits 榜']], route.metric, 'metric');
+  const dimensions = () => tabs([['tools', '工具'], ['models', '模型']], route.dimension, 'dimension');
+  const note = text => `<div class="footnote">${esc(text)}</div>`;
+  const empty = text => `<div class="empty">${esc(text)}</div>`;
+  function heading(title, back = false) {
+    return `<header class="pagebar">${back ? '<button class="back" data-back>返回</button>' : ''}<h1>${esc(title)}</h1><button class="refresh" data-refresh>刷新</button></header>`;
+  }
+  function costBlock(cost) {
+    const view = M.costView(cost);
+    return `<div class="cost"><strong>${esc(view.label)} · ${esc(view.amount)}${view.available ? ' USD' : ''}</strong><div>${esc(view.note)}</div><div>仅供参考，不等同实际账单</div></div>`;
+  }
+  function creditsBlock(credits) {
+    if (!credits || credits.status === 'unavailable' || !Number.isFinite(credits.total)) return '';
+    return `<div class="num-line"><span class="big num">${fmt(credits.total)}</span><span class="tail">Credits${credits.status === 'partial' ? ' · 已记录部分' : ''}</span></div>`;
+  }
+  function hero(data, label) {
+    const s = data.summary || {};
+    if (data.has_history === false) return empty('本期没有同步记录，未同步不代表零用量') + costBlock(data.cost);
+    return `<div class="hero"><div class="label">${esc(label)} · 总用量含缓存</div><div class="num-line"><span class="big num">${fmt(s.tokens)}</span><span class="tail">tokens</span></div><div class="full">${full(s.tokens)} tokens · ${full(s.requests)} 次调用</div>${creditsBlock(data.credits)}<div class="full">${esc(data.from || data.day || '')} — ${esc(data.to || data.day || '')} · 北京时间</div></div>${costBlock(data.cost)}`;
+  }
+  function stats(data) {
+    if (data.has_history === false) return '';
+    const s = data.summary || {};
+    return `<div class="stats dense">${[['input_tokens', '输入'], ['output_tokens', '输出'], ['cache_read', '缓存读'], ['cache_write', '缓存写']].map(([key, label]) => `<div><div class="v num">${fmt(s[key])}</div><div class="k">${label}</div></div>`).join('')}</div>`;
+  }
+  function syncBlock(profile) {
+    const health = profile?.sync_health;
+    const statusLabels = { online: '同步器在线', checking: '正在检查', error: '同步异常，请检查电脑同步器', stopped: '同步器已停止', unreachable: '暂未联系到同步器', unknown: '暂无同步器状态' };
+    const label = typeof health === 'string' ? health : health?.label || health?.message || statusLabels[health?.state] || health?.status;
+    return `<div class="sync">同步状态：${esc(label || (profile?.last_report_at ? '已有上报记录' : '暂无同步记录'))}<div>${profile?.last_report_at ? '最近上报 ' + esc(new Date(profile.last_report_at + 8 * 3600000).toISOString().slice(0, 16).replace('T', ' ')) + ' · 北京时间' : '单聊飞书机器人发送「绑定」，接入电脑后开始记录'}</div></div>`;
+  }
+  const robotNote = () => note('网页暂不生成分享卡片。需要在飞书交流用量，请单聊机器人发送「我的」，或在群里发送「榜单」。');
+  function analysisBlock(data) {
+    if (!data) return empty('分析暂不可用，请刷新后重试');
+    const rows = data.items || [];
+    const daily = data.daily || [];
+    const max = Math.max(1, ...daily.map(d => d.tokens || 0));
+    return `<div class="caption">${Number.isFinite(data.summary?.users) ? full(data.summary.users) + ' 位用户 · ' : ''}${data.from && data.to ? esc(data.from) + ' — ' + esc(data.to) + ' · ' : ''}仅代表已上报数据</div>
+      ${daily.length ? `<div class="bars analysis-bars" aria-label="每日 Token 用量">${daily.map(d => `<div class="bar-col" title="${esc(d.day)} · ${d.reported ? full(d.tokens) + ' tokens' : '未同步'}"><span class="v">${d.reported ? fmt(d.tokens) : '—'}</span><div class="bar-fill" style="height:${d.reported ? Math.max(1, (d.tokens || 0) / max * 100) : 0}%"></div><span class="k">${esc(d.day?.slice(5))}</span></div>`).join('')}</div>` : ''}
+      ${rows.map(row => `<div class="dist"><div class="head"><span class="name">${esc(row.name)}</span><span class="pct num">${Number(row.percent || 0).toFixed(1)}%</span></div><div class="bar"><i style="width:${Math.max(0, Math.min(100, row.percent || 0))}%"></i></div><div class="meta"><span>${fmt(row.tokens)} tokens${Number(row.credits) > 0 ? ' · ' + full(row.credits) + ' Credits' : ''}</span><span>${Number.isFinite(row.users) ? full(row.users) + ' 人用过' : ''}</span></div></div>`).join('') || empty('该周期暂无分项记录；接入电脑并同步后可查看工具与模型分布')}`;
+  }
+  async function groups(alive) {
+    page.innerHTML = heading('我的群榜') + periodTabs() + '<div id="body" aria-live="polite">' + empty('加载群榜…') + '</div>';
+    const data = await read('/api/my/groups-overview?period=' + route.period);
+    if (!alive()) return;
+    user = data.user;
+    $('#body').innerHTML = syncBlock(user) + `<div class="list-header"><span>已加入群榜</span><span>${data.rankings.groups.length} 个</span></div>` +
+      data.rankings.groups.map(group => `<a class="group-row group-link" href="${esc(M.routeHash({ name: 'group', id: group.id, period: route.period }))}"><div class="l1"><span class="name">${esc(group.name)}</span><span class="when">查看群榜 ›</span></div><div class="l2"><span class="rank">群内 <span class="num">${group.my_rank ?? '—'}</span></span><span class="members">${full(group.members)} 人已加入</span></div><div class="l3">${fmt(group.my_tokens)} tokens${Number(group.my_credits) > 0 ? ' · ' + full(group.my_credits) + ' Credits' : ''}</div></a>`).join('') +
+      (data.rankings.groups.length ? '' : empty('还没有加入群榜：把机器人拉进飞书群，在群里发送「加入」'));
+  }
+  function avatar(entry) {
+    const url = entry.avatar_url;
+    return url && /^(https?:\/\/|\/avatars\/)/.test(url) ? `<img class="avatar" src="${esc(url)}" referrerpolicy="no-referrer" alt="">` : `<span class="avatar-ph">${esc([...String(entry.nickname || '?')][0])}</span>`;
+  }
+  function boardHTML(board) {
+    const credit = route.metric === 'credits';
+    function row(entry, mine = false) {
+      return `<div class="row ${mine ? 'me' : ''}"><span class="rank num">${esc(entry.rank)}</span>${avatar(entry)}<div class="who"><div class="nick">${esc(entry.nickname || (mine ? user?.nickname : '') || '未命名')}${mine ? ' · 我' : ''}</div><div class="sub">${esc([entry.top_tool, entry.top_model].filter(Boolean).join(' · ') || (!entry.tokens && !entry.credits ? '尚未上报' : '已记录用量'))}</div><div class="sub alt">${credit ? fmt(entry.tokens) + ' tokens' : Number(entry.credits) > 0 ? full(entry.credits) + ' Credits' : ''}</div></div><span class="amt num">${credit ? full(entry.credits) : fmt(entry.tokens)}</span></div>`;
     }
-    if (!state.token) {
-      const state_ = Math.random().toString(36).slice(2);
-      sessionStorage.setItem('tr_oauth_state', state_);
-      location.href = cfg.authorize_url + '&state=' + state_;
+    return `<div class="list-header"><span>${full(board.total)} 人 · ${credit ? 'Credits 用量' : 'Token 用量'}</span><span>已显示 ${board.entries.length} 人</span></div>${board.entries.map(e => row(e, e.rank === board.me?.rank)).join('') || empty('本期暂无上报成员；请通过飞书机器人加入群榜并接入电脑')}${board.me ? row({ ...board.me, nickname: user?.nickname, avatar_url: user?.avatar_url }, true) : note('本期暂无我的公开排名，可通过机器人查看加入或显示状态')}
+      ${board.has_more ? '<button class="btn ghost" id="load-more">加载更多</button>' : note('已显示全部排名')}`;
+  }
+  function mountBoard(board, alive) {
+    const box = $('#board');
+    box.innerHTML = boardHTML(board);
+    const more = box.querySelector('#load-more');
+    if (more) more.addEventListener('click', async () => {
+      more.disabled = true; more.textContent = '加载中…';
+      try {
+        const next = await read(M.boardPath(route, board.next_offset, board.snapshot));
+        if (!alive()) return;
+        mountBoard(M.mergeBoard(board, next), alive);
+      } catch (error) {
+        if (!alive() || error.stale) return;
+        if (error.status === 409) {
+          box.innerHTML = empty('榜单已有更新，不能拼接旧排名。请刷新榜单后重新加载。') + '<button class="btn" data-refresh>刷新榜单</button>';
+        } else { more.disabled = false; more.textContent = '重新加载更多'; showError(error); }
+      }
+    });
+  }
+  async function group(alive) {
+    page.innerHTML = heading(route.name === 'group-analysis' ? '群数据分析' : '群榜详情', true) + periodTabs() + '<div id="body">' + empty('加载群数据…') + '</div>';
+    const data = await read('/api/groups/' + route.id + '/page?period=' + route.period);
+    if (!alive()) return;
+    user = data.user;
+    const prefix = `<div class="section"><span class="t">${esc(data.group.name)}</span><span>${full(data.group.members)} 人</span></div>` + syncBlock(user);
+    if (!data.board) { $('#body').innerHTML = prefix + empty('需先加入群榜并完善昵称头像。请在飞书群发送「加入」，单聊机器人查看账号接入状态。'); return; }
+    if (route.name === 'group-analysis') {
+      const report = data.insights;
+      $('#body').innerHTML = prefix + (report ? hero(report, '群公开成员用量') + `<div class="caption">${full(report.summary?.active_users)} 人活跃 · ${full(report.summary?.reported_users)} 人已上报 · 隐藏成员不纳入统计</div>` + stats(report) + dimensions() + analysisBlock(report[route.dimension]) : empty(data.insights_error || '群分析暂不可用，请刷新后重试')) + robotNote();
+    } else {
+      $('#body').innerHTML = prefix + `<div class="links">${link({ ...route, name: 'group-analysis' }, '群数据分析')}</div>` + metricTabs() + '<div id="board"></div>' + robotNote();
+      const board = route.metric === 'credits' ? await read(M.boardPath(route)) : data.board;
+      if (alive()) mountBoard(M.mergeBoard(null, board), alive);
+    }
+  }
+  async function square(alive) {
+    page.innerHTML = heading('广场排名') + periodTabs() + tabs([['sum', '双榜'], ['analysis', '分析']], route.view === 'analysis' ? 'analysis' : 'sum', 'view') + '<div id="body">' + empty('加载广场…') + '</div>';
+    if (route.view === 'analysis') {
+      const bundle = await read('/api/insights?period=' + route.period + '&dimension=tools&bundle=1');
+      let data = bundle[route.dimension];
+      if (!data) data = route.dimension === 'tools' ? bundle : await read('/api/insights?period=' + route.period + '&dimension=models');
+      if (alive()) $('#body').innerHTML = dimensions() + analysisBlock(data) + note('Credits 为工具自报积分；未覆盖的分项不按零费用解释。');
+    } else {
+      $('#body').innerHTML = metricTabs() + '<div id="board">' + empty('加载排名…') + '</div>';
+      const board = await read(M.boardPath({ ...route, id: '' }));
+      if (alive()) mountBoard(M.mergeBoard(null, board), alive);
+    }
+  }
+  function dateNav(previous, next, key, title) {
+    return `<div class="nav-row"><button class="nav-btn" ${previous ? `data-set="${key}" data-value="${esc(previous)}"` : 'disabled'}>上一${key === 'month' ? '月' : key === 'week' ? '周' : '天'}</button><span class="nav-title">${esc(title)}</span><button class="nav-btn" ${next ? `data-set="${key}" data-value="${esc(next)}"` : 'disabled'}>下一${key === 'month' ? '月' : key === 'week' ? '周' : '天'}</button></div>`;
+  }
+  async function me(alive) {
+    page.innerHTML = heading('我的用量', route.view !== 'sum') + tabs([['sum', '汇总'], ['cal', '日历'], ['daily', '日报'], ['trend', '走势'], ['analysis', '分析']], route.view, 'view') + (['sum', 'analysis'].includes(route.view) ? periodTabs() : '') + '<div id="body">' + empty('加载我的用量…') + '</div>';
+    if (route.view === 'analysis') {
+      const bundle = await read('/api/my/analysis?period=' + route.period + '&dimension=tools&bundle=1');
+      const data = bundle[route.dimension] || (route.dimension === 'tools' ? bundle : await read('/api/my/analysis?period=' + route.period + '&dimension=models'));
+      if (alive()) $('#body').innerHTML = dimensions() + analysisBlock(data);
       return;
     }
-    try { state.me = await api('/api/me'); boot(); }
-    catch { /* logout 已处理 */ }
+    if (route.view === 'cal') return calendar(alive);
+    if (route.view === 'daily') return daily(alive);
+    if (route.view === 'trend') return weekly(alive);
+    const data = await read('/api/my/overview?period=' + route.period);
+    if (!alive()) return;
+    user = data.user;
+    $('#body').innerHTML = syncBlock(user) + (data.usage ? hero(data.usage, '我的用量') + `<div class="stats"><div><div class="v num">${full(data.usage.activity?.active_days)} 天</div><div class="k">活跃天数</div></div><div><div class="v num">${full(data.usage.activity?.current_streak)} 天</div><div class="k">连续记录</div></div></div>` + stats(data.usage) : empty(data.usage_error?.error || '用量暂不可用，请刷新后重试')) + `<div class="links">${link({ name: 'achievements' }, '成就图鉴')}${link({ name: 'groups', period: route.period === 'all' ? 'day' : route.period }, '我的群榜')}</div>` + robotNote();
   }
-  function renderLoginMask(t, s) {
-    document.body.insertAdjacentHTML('beforeend',
-      `<div class="login-mask"><div class="t">${esc(t)}</div><div class="s">${esc(s || '正在打开飞书授权…')}</div></div>`);
+  async function daily(alive) {
+    const day = route.day || M.shiftDay(M.beijingDay(), -1);
+    const data = await read('/api/my/daily?day=' + day);
+    if (!alive()) return;
+    $('#body').innerHTML = dateNav(data.previous_day, data.next_day, 'day', day) + `<div class="caption">选择日期 <input class="date-pick" id="daily-date" type="date" value="${day}" max="${M.shiftDay(M.beijingDay(), -1)}" aria-label="日报日期"></div>` + (data.has_history ? hero(data, day) + stats(data) + analysisBlock({ items: data.tools }) + analysisBlock({ items: data.models }) : empty('这一天没有同步记录；未同步不代表零用量或零费用')) + note('日报只展示已结束的自然日 · 北京时间');
+    $('#daily-date').addEventListener('change', event => { if (M.validDay(event.target.value) && event.target.value < M.beijingDay()) patch({ day: event.target.value }); });
   }
-
-  // ── 通用片段 ──
-  const periods = [['day', '今日'], ['week', '近7天'], ['month', '近30天']];
-  const periodLabels = { day: '今日', week: '近7天', month: '近30天', all: '累计' };
-  const avatar = (url, nick) => url
-    ? `<img class="avatar" src="${esc(url)}" referrerpolicy="no-referrer" alt="">`
-    : `<div class="avatar-ph">${esc((nick || '?').slice(0, 1))}</div>`;
-  function tabsRow(items, active, attr = 'data-p') {
-    return `<div class="tabs">${items.map(([key, label]) =>
-      `<button class="tab ${key === active ? 'active' : ''}" ${attr}="${key}">${esc(label)}</button>`).join('')}</div>`;
+  async function calendar(alive) {
+    const month = route.month || M.beijingDay().slice(0, 7);
+    const data = await read('/api/my/calendar?month=' + month);
+    if (!alive()) return;
+    const map = M.heatmap(data);
+    $('#body').innerHTML = dateNav(data.previous_month, data.next_month, 'month', month) + `<div class="caption">${esc(map.from)} — ${esc(map.to)} · 北京时间 · ${map.extended ? '近13周' : '本月'}</div><div class="heatmap-scroll"><div class="heatmap" style="--weeks:${Math.ceil(map.days.length / 7)}">${map.days.map(day => `<button class="heat-cell level-${day.level} ${day.outside ? 'outside' : ''} ${day.future ? 'future' : ''}" data-calendar-day="${esc(day.day)}" ${day.outside || day.future ? 'disabled' : ''} aria-label="${esc(day.day + ' · ' + day.statusText + (day.reported ? ' · ' + full(day.tokens) + ' tokens' : ''))}" title="${esc(day.day + ' · ' + day.statusText)}"><span>${Number(day.day.slice(-2))}</span></button>`).join('')}</div></div><div class="caption">颜色深浅表示 Token 用量；空白表示未同步或范围外，已同步零用量会单独标注。</div><div id="day-detail" aria-live="polite"></div>`;
+    function select(day) {
+      const c = M.costView(day.details?.cost || day.cost);
+      $('#day-detail').innerHTML = `<div class="section"><span class="t">${esc(day.day)}</span><span>${esc(day.statusText)}</span></div><div class="hero"><div class="full">${day.reported ? full(day.tokens) + ' tokens' : '暂无用量记录'}</div><div class="full">${esc(c.label)} · ${esc(c.amount)}${c.available ? ' USD' : ''}</div><div class="full">${esc(c.note)} · 非实际账单</div></div>${day.reported && day.day < data.today ? `<div class="links">${link({ ...route, view: 'daily', day: day.day }, '查看当日日报')}</div>` : note(day.day === data.today ? '今天进行中，结束后可查看日报' : '未同步日期不按零用量或零费用统计')}`;
+    }
+    $('#body').querySelectorAll('[data-calendar-day]').forEach(button => button.addEventListener('click', () => select(map.days.find(d => d.day === button.dataset.calendarDay))));
+    const selected = map.days.find(d => d.day === route.day && !d.outside && !d.future) || [...map.days].reverse().find(d => d.reported) || map.days.find(d => !d.outside && !d.future);
+    if (selected) select(selected);
   }
-  function bindTabRow(row, attr, fn) {
-    row.querySelectorAll('.tab').forEach((b) => b.addEventListener('click', () => fn(b.getAttribute(attr))));
+  async function weekly(alive) {
+    const week = route.week || M.shiftDay(M.monday(M.beijingDay()), -7);
+    const data = await read('/api/my/weekly?week=' + week);
+    if (!alive()) return;
+    const w = data.weekly || {}, max = Math.max(1, ...data.daily.map(d => d.tokens || 0));
+    const comparison = w.comparison_status === 'comparable' ? `较上期 ${w.change_tokens >= 0 ? '+' : ''}${w.change_percent}% · 上期 ${fmt(w.previous_tokens)} tokens` : w.comparison_status === 'ongoing' ? '本周进行中，暂不比较' : '上期数据不足，暂无可比';
+    $('#body').innerHTML = dateNav(data.previous_week, data.next_week, 'week', data.from + ' — ' + data.to) + hero(data, '周走势') + `<div class="caption">${esc(comparison)} · ${full(w.reported_days)}/7 天有记录</div><div class="bars">${data.daily.map(d => `<div class="bar-col" title="${esc(d.day + ' · ' + (d.future ? '未到日期' : d.reported ? full(d.tokens) + ' tokens' : '未同步'))}"><span class="v">${d.reported ? fmt(d.tokens) : '—'}</span><div class="bar-fill" style="height:${d.future || !d.reported ? 0 : Math.max(1, (d.tokens || 0) / max * 100)}%"></div><span class="k">${esc(d.day.slice(5))}</span></div>`).join('')}</div>` + stats(data) + note('走势按北京时间自然日；未同步不视为零用量');
   }
-  // 北京时间日期工具（与服务端口径一致：day 均为 YYYY-MM-DD）
-  const dayShift = (day, n) => new Date(Date.parse(day + 'T00:00:00Z') + n * 86400000).toISOString().slice(0, 10);
-  const mondayOf = (day) => dayShift(day, -((new Date(day + 'T00:00:00Z').getUTCDay() + 6) % 7));
-  const heroNum = (n) => {
-    const parts = fmt(n).split(' ');
-    return { big: parts.length > 1 ? parts.slice(0, -1).join(' ') : parts[0], unit: parts.length > 1 ? parts.at(-1) : '' };
-  };
-  // credits 与 tokens 用同一套大数字样式：数字放大 + 橙色，单位收尾。
-  const creditNum = (n) => {
-    n = Math.max(0, Number(n) || 0);
-    if (n >= 1e8) return { big: (n / 1e8).toFixed(2), unit: '亿' };
-    if (n >= 1e4) return { big: (n / 1e4).toFixed(2).replace(/\.?0+$/, ''), unit: '万' };
-    return { big: (Math.round(n * 100) / 100).toLocaleString('en-US', { maximumFractionDigits: 2 }), unit: '' };
-  };
-  const creditsTotal = (c) => (c && c.status !== 'unavailable' && Number(c.total) > 0 ? Number(c.total) : null);
-  const creditsText = (total) => { const c = creditNum(total); return c.big + (c.unit ? ' ' + c.unit : ''); };
-  const heroLine = (big, unit, tail) =>
-    `<div class="num-line"><span class="big num">${esc(big)}</span>${unit ? `<span class="unit">${esc(unit)}</span>` : ''}<span class="tail">${esc(tail)}</span></div>`;
-  const creditsHero = (total) => (total == null ? '' : (() => { const c = creditNum(total); return heroLine(c.big, c.unit, 'Credits'); })());
-  /** credits 区块：大数字与 tokens 完全同款，下面补一行计费工具说明。 */
-  const creditsBlock = (c) => {
-    const total = creditsTotal(c);
-    if (total == null) return '';
-    const tools = (c.tools || []).map((t) => t[0]).slice(0, 2).join('、');
-    return creditsHero(total) + (tools ? `<div class="credit-note">Credits 计费工具：${esc(tools)}</div>` : '');
-  };
-  const statsCredits = (total) => (total == null ? '' :
-    `<div><div class="v num">${esc(creditsText(total))}</div><div class="k">累计 Credits</div></div>`);
-  const inlineCredits = (total) => (total == null ? '' :
-    `<span class="credits"> · ${esc(creditsText(total))} Credits</span>`);
-  const distBlock = (title, items, limit = 4) => {
-    const rows = (items || []).filter((x) => !x.unclassified).slice(0, limit);
-    if (!rows.length) return '';
-    return `<div class="section"><span class="t">${esc(title)}</span></div>` + rows.map((x) => `
-      <div class="dist">
-        <div class="head"><span class="name">${esc(x.name)}</span><span class="pct num">${(x.percent || 0).toFixed(1)}%</span></div>
-        <div class="bar"><i style="width:${Math.min(100, x.percent || 0)}%"></i></div>
-        <div class="meta"><span>${fmt(x.tokens)} tokens</span></div>
-      </div>`).join('');
-  };
-
-  // ── 页面：广场（总榜/工具/模型） ──
-  async function renderSquare() {
-    page.innerHTML = `
-      <div class="pagebar">广场排名</div>
-      ${tabsRow(periods, state.period)}
-      ${tabsRow([['all', '总榜'], ['tools', '工具'], ['models', '模型']], state.scope, 'data-s')}
-      <div id="body"></div>`;
-    const tabRows = page.querySelectorAll('.tabs');
-    bindTabRow(tabRows[0], 'data-p', (p) => { state.period = p; renderSquare(); });
-    bindTabRow(tabRows[1], 'data-s', (s) => { state.scope = s; renderSquare(); });
-    const body = $('#body');
-    if (state.scope === 'all') {
-      state.metric = state.metric || 'tokens';
-      const metricTabs = tabsRow([['tokens', 'Token 榜'], ['credits', 'Credits 榜']], state.metric, 'data-m');
-      body.innerHTML = `${metricTabs}<div id="board"></div>`;
-      bindTabRow($('#board').previousElementSibling, 'data-m', (m) => { state.metric = m; renderSquare(); });
-      const d = await api(`/api/leaderboard?scope=global&period=${state.period}&metric=${state.metric}`);
-      const creditsView = state.metric === 'credits';
-      const amt = (e) => creditsView ? creditsText(e.credits) : fmt(e.tokens);
-      // 另一维度补角：Token 榜带 Credits，Credits 榜带 tokens，同一行读齐两个口径
-      const alt = (e) => creditsView
-        ? (Number(e.tokens) > 0 ? `<div class="sub alt">${fmt(e.tokens)} tokens</div>` : '')
-        : (Number(e.credits) > 0 ? `<div class="sub alt">${esc(creditsText(e.credits))} Credits</div>` : '');
-      // 绑定了接入码但还没上报的成员也留在榜上，标出原因而不是只显示 0；常用工具与模型同一行展示
-      const note = (e) => {
-        const bits = [e.top_tool, e.top_model].filter(Boolean).map(esc).join(' · ');
-        if (bits) return `<div class="sub">${bits}</div>`;
-        return (!Number(e.tokens) && !Number(e.credits) ? '<div class="sub">尚未上报</div>' : '');
-      };
-      const rows = d.entries.map((e) => `
-        <div class="row ${state.me && e.rank === d.me?.rank && e.nickname === d.me?.nickname ? 'me' : ''}">
-          <div class="rank num">${e.rank}</div>
-          ${avatar(e.avatar_url, e.nickname)}
-          <div class="who"><div class="nick">${esc(e.nickname)}</div>${note(e)}${alt(e)}</div>
-          <div class="amt num">${amt(e)}</div>
-        </div>`).join('');
-      $('#board').innerHTML = `
-        <div class="list-header"><span>全站排名 · ${d.total} 人</span><span>${creditsView ? 'Credits 用量（Qoder 等）' : 'Token 用量'}</span></div>
-        ${rows || '<div class="empty">还没有成员绑定接入码或加入群榜</div>'}
-        ${d.me ? `<div class="row me">
-            <div class="rank num">${d.me.rank}</div>
-            ${avatar(state.me?.avatar_url, state.me?.nickname)}
-            <div class="who"><div class="nick">${esc(state.me?.nickname || '')} 我</div>
-              <div class="sub">我的全站排名${[d.me.top_tool, d.me.top_model].filter(Boolean).map(esc).map((s) => ' · ' + s).join('')}</div>${alt(d.me)}</div>
-            <div class="amt num">${creditsView ? amt(d.me) : fmt(d.me.tokens)}</div>
-          </div>` : ''}
-        <div class="footnote">${creditsView ? 'Credits 为 Qoder 等按 Credits 计费工具的自报数字' : '数据由用户电脑上报，仅供参考'}</div>`;
+  async function achievements(alive) {
+    page.innerHTML = heading('成就图鉴', true) + '<div id="body">' + empty('加载成就图鉴…') + '</div>';
+    const catalogue = await read('/api/my/achievements');
+    if (!alive()) return;
+    const family = catalogue.families.find(f => f.id === route.family);
+    if (route.family && !family) { $('#body').innerHTML = empty('该成就不存在，请返回图鉴重新选择'); return; }
+    if (family) {
+      const badges = family.badges || [], badge = badges.find(b => b.id === route.badge) || [...badges].reverse().find(b => b.earned) || badges[0];
+      $('#body').innerHTML = `<div class="section"><span class="t">${esc(family.label)}</span><span>${family.enabled ? '已达成 ' + badges.filter(b => b.earned).length + '/' + badges.length : '暂未开放'}</span></div>${badge ? `<img class="badge-detail ${badge.earned ? '' : 'locked'}" src="${esc(M.badgeArt(badge))}" alt="${esc(badge.label)}"><div class="badge-info"><h2>${esc(badge.label)} · ${fmt(badge.threshold)} ${esc(badge.unit)}</h2><p>${esc(badge.metric_label)}：${fmt(badge.current)} ${esc(badge.unit)}</p><progress max="${badge.threshold}" value="${Math.min(badge.threshold, Math.max(0, badge.current))}" aria-label="达成进度"></progress><p>${badge.earned ? '已达成 · ' + esc(badge.achieved_day || '') : '未达成 · 还差 ' + fmt(Math.max(0, badge.threshold - badge.current)) + ' ' + esc(badge.unit)}</p></div><div class="tier-list">${badges.map(b => link({ ...route, badge: b.id }, `${b.tier} 阶 · ${fmt(b.threshold)} ${b.unit} · ${b.earned ? '已达成' : '未达成'}`, 'tier')).join('')}</div>` : empty(family.metric_label || '指标尚未接入，暂未开放')}` + note('网页成就图鉴仅供查看，不领取、不标记已展示，也不触发解锁播放');
     } else {
-      const dimension = state.scope;
-      const d = await api(`/api/insights?period=${state.period}&dimension=${dimension}`);
-      const label = dimension === 'tools' ? '工具使用分布' : '模型使用分布';
-      const sum = d.summary || {};
-      const details = (d.items || []).filter((x) => !x.unclassified);
-      const colors = ['#fa8919', '#7a9e7e', '#8e9aaf', '#c9b27c', '#b5651d', '#c8c8c8', '#9e7bb5', '#5b8c5a'];
-      const R = 70, C = 2 * Math.PI * R;
-      // 同一工具/模型在两个饼图里同色：颜色按 Token 榜的顺序分配
-      const colorOf = new Map(details.map((x, i) => [x.name, colors[i % colors.length]]));
-      const arcsOf = (items, percentOf) => {
-        let offset = 0;
-        return items.map((x, i) => {
-          const len = Math.max(0, Number(percentOf(x)) || 0) / 100 * C;
-          const arc = `<circle r="${R}" cx="110" cy="110" fill="none" stroke="${colorOf.get(x.name) || colors[i % colors.length]}" stroke-width="26"
-            stroke-dasharray="${len} ${C - len}" stroke-dashoffset="${-offset}" transform="rotate(-90 110 110)"><title>${esc(x.name)} ${(Number(percentOf(x)) || 0).toFixed(1)}%</title></circle>`;
-          offset += len;
-          return arc;
-        }).join('');
-      };
-      const donutCell = (inner, big, key) => `
-        <div class="donut-cell"><div class="donut-wrap">${inner}
-          <div class="donut-center"><div class="v num">${esc(big)}</div><div class="k">${esc(key)}</div></div></div></div>`;
-      // Tokens 饼：沿用服务端 percent 口径（未分类份额表现为空档）
-      const tokensPie = donutCell(`<svg width="220" height="220" viewBox="0 0 220 220">${arcsOf(details.slice(0, 8), (x) => x.percent)}</svg>`,
-        fmt(sum.tokens || 0), 'Tokens');
-      // Credits 饼：同一批条目按积分份额展开，分母用上报的 Credits 总额（未关联份额同样表现为空档）；
-      // 该维度没有积分分项时给出说明而不是空图
-      const creditItems = details.filter((x) => Number(x.credits) > 0)
-        .sort((a, b) => b.credits - a.credits).slice(0, 8);
-      const creditSum = creditItems.reduce((n, x) => n + x.credits, 0);
-      const creditsByScope = d.credits && d.credits.scope === dimension && Number(d.credits.total) > 0;
-      const creditBase = creditsByScope ? Number(d.credits.total) : creditSum;
-      const creditsPie = creditItems.length
-        ? donutCell(`<svg width="220" height="220" viewBox="0 0 220 220">${arcsOf(creditItems, (x) => x.credits / creditBase * 100)}</svg>`,
-          creditsText(creditSum), 'Credits')
-        : '<div class="donut-cell"><div class="donut-empty">该维度暂无积分明细：需新版同步器与 Trae 采集扩展上报</div></div>';
-      const rowCredits = (x) => (creditsByScope && Number(x.credits) > 0 ? ` · ${esc(creditsText(x.credits))} Credits` : '');
-      body.innerHTML = `
-        <div class="section"><span class="t">${label}</span><span class="more">完整分析</span></div>
-        <div class="caption">${sum.users || 0} 位公开用户 · ${details.length} 种${dimension === 'tools' ? '工具' : '模型'}${creditsByScope && sum.credits > 0 ? ` · ${esc(creditsText(sum.credits))} Credits` : ''}</div>
-        <div class="donut-row">${tokensPie}${creditsPie}</div>
-        ${details.map((x) => `
-          <div class="dist">
-            <div class="head"><span class="name">${esc(x.name)}</span><span class="pct num">${(x.percent || 0).toFixed(1)}%</span></div>
-            <div class="bar"><i style="width:${Math.min(100, x.percent || 0)}%"></i></div>
-            <div class="meta"><span>${fmt(x.tokens)} tokens${rowCredits(x)}</span><span>${x.preferred_users || 0} 人常用 · ${x.users || 0} 人用过</span></div>
-          </div>`).join('')}
-        <div class="footnote">${creditsByScope
-          ? `Credits 按${dimension === 'tools' ? '工具' : '模型'}归属，由电脑上报的积分明细汇总，未覆盖部分计入未关联`
-          : 'Credits 只按工具上报，该维度暂无积分分项'} · 仅代表已上报数据 · 数据由用户电脑上报，仅供参考</div>`;
+      $('#body').innerHTML = `<div class="caption">已达成 ${full(catalogue.earned_count)} 枚 · ${esc(catalogue.as_of)} · 北京时间</div><div class="badge-grid">${catalogue.families.map(f => {
+        const badge = [...(f.badges || [])].reverse().find(b => b.earned) || f.badges?.[0] || f;
+        return `<a href="${esc(M.routeHash({ name: 'achievements', family: f.id }))}" class="badge-tile"><img src="${esc(M.badgeArt(badge))}" class="${f.badges?.some(b => b.earned) ? '' : 'locked'}" alt=""><strong>${esc(f.label)}</strong><span>${f.enabled ? f.badges.filter(b => b.earned).length + ' / ' + f.badges.length : '暂未开放'}</span></a>`;
+      }).join('')}</div>` + note('成就按已上报数据计算，仅展示进度；未接入产出数据的成就不会虚构达成。');
     }
   }
-
-  // ── 页面：群榜 ──
-  async function renderGroups() {
-    page.innerHTML = `
-      <div class="pagebar">我的群榜</div>
-      <div class="list-header"><span>每个群一张榜</span><a href="#" data-go="help" style="color:var(--green);font-size:13px;text-decoration:none">使用说明</a></div>
-      ${tabsRow(periods, state.period)}
-      <div id="body"></div>`;
-    bindTabRow(page.querySelector('.tabs'), 'data-p', (p) => { state.period = p; renderGroups(); });
-    page.querySelector('[data-go="help"]').addEventListener('click', (e) => { e.preventDefault(); switchTab('help'); });
-    const body = $('#body');
-    const usage = await api(`/api/my/usage?period=${state.period}`);
-    const rankings = await api(`/api/my/rankings?period=${state.period}`).catch(() => ({ groups: [] }));
-    const heroUnit = fmt(usage.summary.tokens).split(' ');
-    const statCells = [
-      `<div><div class="v num">${fmt(usage.lifetime_tokens)}</div><div class="k">累计 tokens</div></div>`,
-      statsCredits(Number(usage.lifetime_credits) > 0 ? Number(usage.lifetime_credits) : null),
-      `<div><div class="v num">${usage.activity?.active_days ?? 0} 天</div><div class="k">活跃天数</div></div>`,
-      `<div><div class="v num">${usage.activity?.current_streak ?? 0} 天</div><div class="k">连续记录</div></div>`,
-    ].filter(Boolean);
-    body.innerHTML = `
-      <div class="section"><span class="t">我的用量</span><button class="more" data-go="me">详情 ›</button></div>
-      <div class="hero">
-        ${heroLine(heroUnit.length > 1 ? heroUnit.slice(0, -1).join(' ') : heroUnit[0], heroUnit.length > 1 ? heroUnit.at(-1) : '', 'tokens')}
-        <div class="full num">${periodLabels[state.period]} · ${full(usage.summary.requests)} 次调用</div>
-        ${creditsBlock(usage.credits)}
-      </div>
-      <div class="stats${statCells.length > 3 ? ' dense' : ''}">
-        ${statCells.join('')}
-      </div>
-      <div class="list-header"><span>已加入群榜</span><span>${rankings.groups.length} 个</span></div>
-      ${rankings.groups.map((g) => `
-        <div class="group-row">
-          <div class="l1"><span class="name">${esc(g.name)}</span><span class="when">${g.updated_at ? Math.max(1, Math.round((Date.now() - g.updated_at) / 60000)) + ' 分钟前' : '暂未更新'}</span></div>
-          <div class="l2">
-            <span class="rank">群内 <span class="num">${g.my_rank ?? '—'}</span></span>
-            <span class="members">${g.members} 人已加入</span>
-          </div>
-          <div class="l3">${fmt(g.my_tokens)} tokens${inlineCredits(g.my_credits > 0 ? g.my_credits : null)}</div>
-        </div>`).join('') || '<div class="empty">还没有加入群榜：把机器人拉进飞书群，在群里发「加入」</div>'}
-      <div class="footnote">数据由用户电脑上报，仅供参考</div>`;
-    // 详情 = 打开「我的用量」详情页（与小程序一致），并沿用当前统计周期
-    body.querySelector('[data-go="me"]')?.addEventListener('click', () => {
-      state.mePeriod = state.period;
-      switchTab('me');
-    });
-  }
-
-  // ── 页面：我的（汇总 / 日报 / 日历 / 走势） ──
-  const meViews = [['sum', '汇总'], ['daily', '日报'], ['cal', '日历'], ['trend', '走势']];
-  async function renderMe() {
-    const view = state.meView || 'sum';
-    page.innerHTML = `
-      <div class="pagebar">我的用量</div>
-      ${tabsRow(meViews, view, 'data-mv')}
-      ${view === 'sum' ? tabsRow([...periods, ['all', '累计']], state.mePeriod || 'all', 'data-p') : ''}
-      <div id="body"></div>`;
-    bindTabRow(page.querySelector('.tabs'), 'data-mv', (v) => { state.meView = v; renderMe(); });
-    if (view === 'sum') bindTabRow(page.querySelectorAll('.tabs')[1], 'data-p', (p) => { state.mePeriod = p; renderMe(); });
-    const body = $('#body');
-    if (view === 'daily') return renderMeDaily(body);
-    if (view === 'cal') return renderMeCalendar(body);
-    if (view === 'trend') return renderMeTrend(body);
-    return renderMeSum(body);
-  }
-
-  async function renderMeSum(body) {
-    const period = state.mePeriod || 'all';
-    const d = await api(`/api/my/usage?period=${period}`);
-    const hero = heroNum(d.summary.tokens);
-    const activeDays = d.activity?.active_days ?? 0;
-    const cost = d.cost && d.cost.usd_micros != null ? `$${(d.cost.usd_micros / 1e6).toFixed(4)}USD` : null;
-    body.innerHTML = `
-      <div class="hero">
-        <div class="label">${periodLabels[period]} · 总用量 · 含缓存</div>
-        ${heroLine(hero.big, hero.unit, 'tokens')}
-        <div class="full num">${full(d.summary.tokens)} tokens</div>
-        ${creditsBlock(d.credits)}
-        <div class="full">${d.from === '0000-01-01' ? (d.first_day || '') : d.from} — ${d.to} · 北京时间${d.last_report_at ? ' · 同步于 ' + bj(d.last_report_at).slice(5, 16).replace('T', ' ') : ''}</div>
-        ${cost ? `<div class="full">API 等值估算${cost} · 仅供参考，不等同账单</div>` : ''}
-      </div>
-      <a class="btn" href="#" onclick="return false">转发我的用量</a>
-      <a class="btn ghost" href="#" onclick="return false">分享图片</a>
-      <div class="stats">
-        <div><div class="v num">${full(d.summary.requests)}</div><div class="k">调用次数</div></div>
-        <div><div class="v num">${activeDays} 天</div><div class="k">活跃天数</div></div>
-        ${creditsTotal(d.credits) != null ? `<div><div class="v num">${esc(creditsText(d.credits.total))}</div><div class="k">本期 Credits</div></div>` : ''}
-      </div>
-      <div class="links">
-        <a href="#" data-go="square">广场排名</a>
-        <a href="#" data-go="groups">我的群榜</a>
-      </div>
-      <div class="footnote">${d.has_history ? `已上报 ${d.reported_days || 0} 天 · 自 ${d.first_day || '—'}` : '暂无同步记录：单聊机器人发「绑定」接入电脑'}</div>`;
-    body.querySelectorAll('[data-go]').forEach((a) => a.addEventListener('click', (e) => { e.preventDefault(); switchTab(a.dataset.go); }));
-  }
-
-  // 日报：默认昨天，前后切换 + 日期直选
-  async function renderMeDaily(body) {
-    state.dailyDay = state.dailyDay || dayShift(bjDay(), -1);
-    const day = state.dailyDay;
-    const d = await api(`/api/my/daily?day=${day}`);
-    const nav = `
-      <div class="nav-row">
-        <button class="nav-btn" id="d-prev" ${d.previous_day ? '' : 'disabled'}>‹ 前一天</button>
-        <span class="nav-title">${day}${day === dayShift(bjDay(), -1) ? '（昨天）' : ''}</span>
-        <button class="nav-btn" id="d-next" ${d.next_day ? '' : 'disabled'}>后一天 ›</button>
-      </div>
-      <div class="caption" style="text-align:center;padding-top:0">跳到 <input type="date" id="d-pick" class="date-pick" value="${day}" max="${dayShift(bjDay(), -1)}"></div>`;
-    if (!d.has_history) {
-      body.innerHTML = `${nav}
-        <div class="hero"><div class="label">${day} · 无上报记录</div>
-          <div class="full">这一天电脑没有同步数据（未开机或同步器未运行）</div></div>
-        <div class="footnote">日报只展示已经结束的自然日 · 北京时间</div>`;
-    } else {
-      const s = d.summary, hero = heroNum(s.tokens);
-      const cost = d.cost && d.cost.usd_micros != null ? '$' + (d.cost.usd_micros / 1e6).toFixed(2) : null;
-      body.innerHTML = `${nav}
-        <div class="hero">
-          <div class="label">${day} · 总用量 · 含缓存</div>
-          <div class="num-line"><span class="big num">${esc(hero.big)}</span>${hero.unit ? `<span class="unit">${esc(hero.unit)}</span>` : ''}<span class="tail">tokens</span></div>
-          <div class="full num">${full(s.tokens)} tokens</div>
-          ${creditsBlock(d.credits)}
-          ${cost ? `<div class="full">API 等值估算${cost}USD · 仅供参考，不等同账单</div>` : ''}
-        </div>
-        <div class="stats">
-          <div><div class="v num">${full(s.requests)}</div><div class="k">调用次数</div></div>
-          <div><div class="v num">${fmt(s.input_tokens)}</div><div class="k">输入</div></div>
-          <div><div class="v num">${fmt(s.output_tokens)}</div><div class="k">输出</div></div>
-        </div>
-        <div class="stats">
-          <div><div class="v num">${fmt(s.cache_read)}</div><div class="k">缓存读</div></div>
-          <div><div class="v num">${fmt(s.cache_write)}</div><div class="k">缓存写</div></div>
-          <div><div class="v" style="font-size:15px">${esc(d.top_tool ? d.top_tool.name : '—')}</div><div class="k">常用工具</div></div>
-        </div>
-        ${distBlock('工具分布', d.tools)}
-        ${distBlock('模型分布', d.models)}
-        <div class="footnote">首次上报 ${d.first_day || '—'} · 点击日历页的有记录日期也可到达这里</div>`;
-    }
-    if (d.previous_day) $('#d-prev').addEventListener('click', () => { state.dailyDay = d.previous_day; renderMeDaily(body); });
-    if (d.next_day) $('#d-next').addEventListener('click', () => { state.dailyDay = d.next_day; renderMeDaily(body); });
-    const pick = $('#d-pick');
-    pick.addEventListener('change', () => {
-      const v = pick.value;
-      if (v && v < bjDay()) { state.dailyDay = v; renderMeDaily(body); }
-    });
-  }
-
-  // 日历：整月格子，有记录的日期可点进日报
-  async function renderMeCalendar(body) {
-    state.calMonth = state.calMonth || bjDay().slice(0, 7);
-    const d = await api(`/api/my/calendar?month=${state.calMonth}`);
-    const firstDow = (new Date(d.month + '-01T00:00:00Z').getUTCDay() + 6) % 7;
-    const cells = [];
-    for (let i = 0; i < firstDow; i++) cells.push('<div class="cal-cell pad"></div>');
-    for (const day of d.daily) {
-      const cls = ['cal-cell', day.future ? 'future' : '', day.reported ? (day.tokens > 0 ? 'has' : 'zero') : '', day.day === d.today ? 'today' : ''].join(' ');
-      const clickable = day.reported && !day.future && day.day < d.today;
-      cells.push(`<div class="${cls}"${clickable ? ` data-day="${day.day}" style="cursor:pointer"` : ''}>
-        <span class="d">${Number(day.day.slice(-2))}</span>
-        ${day.reported && day.tokens > 0 ? `<span class="t num">${fmt(day.tokens)}</span>` : ''}</div>`);
-    }
-    body.innerHTML = `
-      <div class="nav-row">
-        <button class="nav-btn" id="c-prev" ${d.previous_month ? '' : 'disabled'}>‹ 上月</button>
-        <span class="nav-title">${d.month} · 使用日历</span>
-        <button class="nav-btn" id="c-next" ${d.next_month ? '' : 'disabled'}>下月 ›</button>
-      </div>
-      <div class="caption" style="text-align:center">月用量 ${d.summary.tokens != null ? fmt(d.summary.tokens) + ' tokens' : '暂无'} · 记录 ${d.summary.reported_days || 0}/${d.summary.elapsed_days || 0} 天 · 活跃 ${d.summary.active_days || 0} 天</div>
-      <div class="cal-grid">${['一', '二', '三', '四', '五', '六', '日'].map((w) => `<div class="cal-head">${w}</div>`).join('')}${cells.join('')}</div>
-      <div class="footnote">绿底为有上报的日期，点击可看当日日报 · 北京时间</div>`;
-    if (d.previous_month) $('#c-prev').addEventListener('click', () => { state.calMonth = d.previous_month; renderMeCalendar(body); });
-    if (d.next_month) $('#c-next').addEventListener('click', () => { state.calMonth = d.next_month; renderMeCalendar(body); });
-    body.querySelectorAll('[data-day]').forEach((el) => el.addEventListener('click', () => {
-      state.dailyDay = el.dataset.day; state.meView = 'daily'; renderMe();
-    }));
-  }
-
-  // 走势：按周 7 日柱状图 + 环比
-  async function renderMeTrend(body) {
-    state.weekStart = state.weekStart || dayShift(mondayOf(bjDay()), -7);
-    const d = await api(`/api/my/weekly?week=${state.weekStart}`);
-    const w = d.weekly;
-    const max = Math.max(1, ...d.daily.map((x) => x.tokens || 0));
-    const bars = d.daily.map((x) => `
-      <div class="bar-col" title="${x.day}${x.reported ? ' · ' + full(x.tokens) + ' tokens' : ''}">
-        <span class="v num">${x.reported && x.tokens ? fmt(x.tokens) : ''}</span>
-        <div class="bar-fill" style="height:${x.future ? 0 : Math.max(2, Math.round((x.tokens || 0) / max * 100))}%"></div>
-        <span class="k">${x.day.slice(8)}日</span>
-      </div>`).join('');
-    const change = w.comparison_status === 'comparable'
-      ? `<span class="${w.change_tokens >= 0 ? 'change-up' : 'change-down'}">${w.change_tokens >= 0 ? '▲' : '▼'} ${Math.abs(w.change_percent)}%（上期 ${fmt(w.previous_tokens)}）</span>`
-      : w.comparison_status === 'ongoing' ? '<span class="change-down">本周进行中</span>'
-      : '<span class="change-down">上期数据不足，暂无可比</span>';
-    const hero = heroNum(d.summary.tokens);
-    const cost = d.cost && d.cost.usd_micros != null ? '$' + (d.cost.usd_micros / 1e6).toFixed(2) : null;
-    body.innerHTML = `
-      <div class="nav-row">
-        <button class="nav-btn" id="w-prev" ${d.previous_week ? '' : 'disabled'}>‹ 上周</button>
-        <span class="nav-title">${d.from} ~ ${d.to}${w.complete ? '' : '（进行中）'}</span>
-        <button class="nav-btn" id="w-next" ${d.next_week ? '' : 'disabled'}>下周 ›</button>
-      </div>
-      <div class="hero">
-        <div class="label">周走势 · 总用量 · 含缓存 · 较上期 ${change}</div>
-        <div class="num-line"><span class="big num">${esc(hero.big)}</span>${hero.unit ? `<span class="unit">${esc(hero.unit)}</span>` : ''}<span class="tail">tokens</span></div>
-        <div class="full num">${full(d.summary.tokens)} tokens · ${w.reported_days}/7 天有记录</div>
-        ${creditsBlock(d.credits)}
-      </div>
-      <div class="bars">${bars}</div>
-      <div class="stats">
-        <div><div class="v num">${w.peak ? fmt(w.peak.tokens) : '—'}</div><div class="k">单日峰值${w.peak ? ' · ' + w.peak.day.slice(5).replace('-', '/') : ''}</div></div>
-        <div><div class="v" style="font-size:15px">${esc(w.top_model ? w.top_model.name : '—')}</div><div class="k">常用模型</div></div>
-        <div><div class="v num">${cost ?? '—'}</div><div class="k">成本估算</div></div>
-      </div>
-      <div class="footnote">柱高按本周单日最大用量归一 · 走势按北京时间自然日</div>`;
-    if (d.previous_week) $('#w-prev').addEventListener('click', () => { state.weekStart = d.previous_week; renderMeTrend(body); });
-    if (d.next_week) $('#w-next').addEventListener('click', () => { state.weekStart = d.next_week; renderMeTrend(body); });
-  }
-
-  // ── 页面：说明 ──
-  async function renderHelp() {
-    page.innerHTML = `<div class="pagebar">使用说明</div><div class="help" id="body">
-      <p>接入、更新、统计口径和卸载</p>
-      <h3>接入电脑</h3>
-      <p>在电脑终端运行你的接入命令。</p>
-      ${state.token ? '<a class="btn" href="#" id="getcmd">获取接入命令</a><div id="cmd"></div>' : '<p style="color:var(--text2)">登录后可获取专属接入命令；也可以在飞书单聊机器人发「绑定」。</p>'}
-      <h3>群内命令</h3>
-      <p><b>榜单 [今日|本周|本月|总榜]</b>　看本群排行<br><b>加入</b>　上榜本群<br><b>隐藏 / 显示 / 退出</b>　管理我的排名</p>
-      <h3>单聊命令</h3>
-      <p><b>绑定</b>　接入电脑　<b>我的</b>　个人用量　<b>榜单</b>　广场榜</p>
-      <h3>统计口径</h3>
-      <p>总用量含缓存，按北京时间自然日统计。这是各人电脑自报的数字，只能当交流参考，不等于厂商账单。不上传代码、对话内容、提示词、项目名和文件路径。</p>
-    </div>`;
-    const btn = $('#getcmd');
-    if (btn) btn.addEventListener('click', async () => {
+  async function help() {
+    page.innerHTML = heading('使用说明') + `<div class="help"><h3>接入电脑</h3><p>在飞书单聊机器人发送「绑定」，或在这里获取专属安装命令。命令含接入凭证，请勿公开转发。</p><button class="btn" id="getcmd">获取接入命令</button><div id="cmd" aria-live="polite"></div><h3>群内命令</h3><p><b>加入</b>：上榜本群<br><b>榜单 [今日|本周|本月|总榜]</b>：查看群排名<br><b>隐藏 / 显示 / 退出</b>：管理我的排名</p><h3>单聊命令</h3><p><b>绑定</b>：接入电脑　<b>我的</b>：个人用量　<b>榜单</b>：广场榜</p><h3>统计与分享</h3><p>总用量含缓存，按北京时间自然日统计。用量来自个人电脑上报，仅供交流参考，不等同厂商账单。不上传代码、对话内容、提示词、项目名和文件路径。网页暂不生成分享卡片，请使用飞书机器人查询用量后在群内交流。</p><button class="btn ghost" id="logout">退出登录</button></div>`;
+    const alive = current;
+    $('#getcmd').addEventListener('click', async event => {
+      const button = event.currentTarget; button.disabled = true;
       try {
-        const d = await api('/api/connect/token', { silent: false });
-        $('#cmd').innerHTML = `<code class="cmd">${esc(d.install_command)}</code>`;
-      } catch { /* toast 已提示 */ }
+        // Credentials deliberately bypass the shared read cache.
+        const data = await request('/api/connect/token');
+        if (!alive()) return;
+        $('#cmd').innerHTML = `<h3>macOS / Linux</h3><code class="cmd">${esc(data.install_command || '安装命令暂不可用，请单聊机器人发送「绑定」')}</code><h3>Windows PowerShell</h3><code class="cmd">${esc(data.install_command_windows || 'Windows 安装命令暂不可用，请联系管理员')}</code>`;
+      } catch (error) { if (alive()) showError(error); }
+      finally { if (alive()) button.disabled = false; }
     });
+    $('#logout').addEventListener('click', () => { token = ''; localStorage.removeItem('tr_token'); cache.clear(); guard.invalidate(); ready = false; loginMask('已退出登录', '重新授权后可查看群榜与个人用量'); });
   }
-
-  // ── Tab 框架 ──
-  const views = { groups: renderGroups, square: renderSquare, me: renderMe, help: renderHelp };
+  function showError(error) {
+    if (error.stale || error.status === 401) return;
+    const toast = document.querySelector('#toast'); toast.textContent = error.message; toast.hidden = false;
+    clearTimeout(showError.timer); showError.timer = setTimeout(() => { toast.hidden = true; }, 4000);
+  }
   async function render() {
-    try { await views[state.tab](); }
-    catch (err) { if (err.message !== 'unauthorized') page.insertAdjacentHTML('beforeend', `<div class="empty">加载失败：${esc(err.message)}</div>`); }
+    if (!ready) return;
+    route = M.parseRoute(location.hash); current = guard.next(); const alive = current;
+    document.querySelectorAll('.tabbar button').forEach(button => {
+      const active = button.dataset.tab === (route.name.startsWith('group') ? 'groups' : route.name === 'achievements' ? 'me' : route.name);
+      button.classList.toggle('active', active); button.setAttribute('aria-current', active ? 'page' : 'false');
+    });
+    try { await ({ groups, group, 'group-analysis': group, square, me, achievements, help })[route.name](alive); }
+    catch (error) { if (alive() && !error.stale && error.status !== 401) page.insertAdjacentHTML('beforeend', `<div role="alert" class="empty">${esc(error.message)}<button class="btn ghost" data-refresh>重新加载</button></div>`); }
+    finally { if (alive()) force = false; }
   }
-  function switchTab(tab) {
-    state.tab = tab;
-    document.querySelectorAll('.tabbar button').forEach((b) => b.classList.toggle('active', b.dataset.tab === tab));
-    page.innerHTML = '<div class="empty">加载中…</div>';
-    render();
+  page.addEventListener('click', event => {
+    const button = event.target.closest('button'); if (!button) return;
+    if (button.hasAttribute('data-set')) patch({ [button.dataset.set]: button.dataset.value });
+    if (button.hasAttribute('data-back')) {
+      // App-owned history supports browser back; a direct deep link gets a deterministic parent.
+      if (history.state?.trApp) history.back(); else go(M.parentRoute(route));
+    }
+    if (button.hasAttribute('data-refresh')) { force = true; cache.clear(); render(); }
+  });
+  document.querySelectorAll('.tabbar button').forEach(button => button.addEventListener('click', () => go({ name: button.dataset.tab })));
+  addEventListener('hashchange', render);
+  function loginMask(title, subtitle) {
+    document.querySelector('.login-mask')?.remove();
+    document.body.insertAdjacentHTML('beforeend', `<div class="login-mask"><div class="t">${esc(title)}</div><div class="s">${esc(subtitle)}</div><button class="btn" id="authorize">通过飞书登录</button></div>`);
+    document.querySelector('#authorize').addEventListener('click', () => authorize().catch(error => { document.querySelector('.login-mask .s').textContent = error.message; }));
   }
-  document.querySelectorAll('.tabbar button').forEach((b) => b.addEventListener('click', () => switchTab(b.dataset.tab)));
-
-  function boot() {
-    const mask = document.querySelector('.login-mask');
-    if (mask) mask.remove();
-    render();
+  async function authorize() {
+    const config = await fetch('/api/feishu/session', { cache: 'no-store' }).then(r => r.json());
+    if (!config.app_id || !config.authorize_url) throw new Error('飞书登录服务未配置，请联系管理员');
+    const nonce = M.oauthState(crypto); sessionStorage.setItem('tr_oauth_state', nonce);
+    sessionStorage.setItem('tr_oauth_route', location.hash || '#/groups');
+    const url = new URL(config.authorize_url); url.searchParams.set('state', nonce); location.assign(url.href);
   }
-  login();
+  async function login() {
+    const q = new URLSearchParams(location.search);
+    if (q.has('code') || q.has('error')) {
+      const valid = M.consumeOAuthState(sessionStorage, q.get('state'));
+      const saved = sessionStorage.getItem('tr_oauth_route'); sessionStorage.removeItem('tr_oauth_route');
+      history.replaceState(null, '', '/app/' + (saved?.startsWith('#/') ? saved : '#/groups'));
+      if (!valid) throw new Error('授权 state 校验失败，请重新通过飞书登录');
+      if (!q.get('code') || q.has('error')) throw new Error('飞书授权未完成，请重新登录');
+      const response = await fetch('/api/feishu/session', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ code: q.get('code') }) });
+      const data = await response.json();
+      if (!response.ok || !data.token) throw new Error(data.error || '飞书登录失败，请重新授权');
+      token = data.token; user = data.user; localStorage.setItem('tr_token', token); cache.clear();
+    }
+    if (!token) return loginMask('Token 群排名', '使用飞书账号查看群榜和个人用量');
+    ready = true; document.querySelector('.login-mask')?.remove(); await render();
+  }
+  login().catch(error => loginMask('登录失败', error.message));
 })();

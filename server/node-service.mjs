@@ -104,6 +104,7 @@ const STATIC_ALLOW = [
   // 飞书网页应用（复刻小程序界面）：/app/ 入口与其静态资源
   /^\/app\/$/,
   /^\/app\/[\w-]+\.(?:html|css|js|svg|png)$/,
+  /^\/app\/assets\/badges\/(?:tiers\/)?[\w-]+\.png$/,
 ];
 function staticFile(pathname) {
   if (!STATIC_ALLOW.some((re) => re.test(pathname))) return null;
