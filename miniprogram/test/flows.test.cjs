@@ -356,7 +356,7 @@ test('已有历史同步的用户即使今日零用量或没有群，也不回�
   });
   await p.load();
   assert.equal(p.data.hasReported, true); assert.equal(p.data.connState, 'unknown');
-  assert.equal(p.data.usage.summary.tokens, 0); assert.equal(p.data.myGroups.length, 0);
+  assert.equal(p.data.usage, undefined); assert.equal(p.data.myGroups.length, 0);
 });
 
 test('无来源群的接入成功入口打开本人用量', () => {
@@ -447,7 +447,7 @@ test('群榜触底加载 50/50/23 人，重复点击合并，末页停止且不�
   assert.equal(calls[1].force, true); assert.equal(calls[1].snapshot, 'a'.repeat(64));
   finish(pagedBoard(50)); await more; assert.equal(p.data.entries.length, 100);
   await p.onReachBottom(); assert.equal(p.data.entries.length, 123); assert.equal(p.data.hasMore, false);
-  await p.onReachBottom(); assert.equal(calls.length, 3); assert.equal(posters, 1);
+  await p.onReachBottom(); assert.equal(calls.length, 3); assert.equal(posters, 0);
   assert.equal(p.data.me.rank, 123);
   assert.equal(p.data.entries.filter(e => e.isMe).length, 1);
   assert.equal(p.data.entries[122].isMe, true);
@@ -693,18 +693,28 @@ test('普通网络故障不会被误判成需要重新登录', async () => {
   assert.equal(logins, 0);
 });
 
-test('没有群或群列表失败时仍能查看自己的用量，并分享所选周期', async () => {
-  const { p, navigation } = page('index', { myRankings: async () => { throw new Error('群列表暂不可用'); } });
-  await p.load();
-  assert.equal(p.data.usage.exact, '12,000'); assert.match(p.data.error, /群列表/);
+test('群榜列表失败保留同步状态与重试，切周期也不请求个人用量或分享', async () => {
+  let usageCalls = 0, shareCalls = 0;
+  const { p, navigation } = page('index', {
+    ensureLogin: async () => ({ user_id: 1, last_report_at: 1 }),
+    myRankings: async () => { throw new Error('群列表暂不可用'); },
+    myUsage: async () => { usageCalls++; return usageData(); }, createShare: async () => { shareCalls++; },
+  });
+  await p.load(); assert.match(p.data.error, /群列表/); assert.equal(p.data.hasReported, true);
   await p.switchPeriod({ currentTarget: { dataset: { key: 'week' } } });
-  assert.equal(p.data.usage.periodLabel, '近7天');
-  p.goShare(); assert.equal(navigation[0][1], '/pages/share/share?period=week');
+  assert.equal(p.data.period, 'week'); assert.equal(usageCalls, 0); assert.equal(shareCalls, 0);
+  assert.equal(p.onShareAppMessage().path, '/pages/group/group?enter=1');
+  p.goConnect(); assert.equal(navigation[0][1], '/pages/connect/connect');
 });
 
-test('用量加载失败不伪装为零，群列表仍能正常显示', async () => {
-  const { p } = page('index', { myUsage: async () => { throw new Error('用量网络失败'); } });
-  await p.load(); assert.equal(p.data.usage, null); assert.match(p.data.usageError, /用量网络失败/);
+test('群榜不依赖个人用量读取，直接展示列表与未接入状态', async () => {
+  let usageCalls = 0;
+  const { p } = page('index', {
+    myUsage: async () => { usageCalls++; throw new Error('用量网络失败'); },
+    myRankings: async () => ({ groups: [{ id: 'g1', name: '本群', members: 2, my_tokens: 100 }] }),
+  });
+  await p.load(); assert.equal(usageCalls, 0); assert.equal(p.data.usage, undefined);
+  assert.equal(p.data.myGroups[0].name, '本群'); assert.equal(p.data.hasReported, false);
   assert.equal(p.data.error, ''); assert.equal(p.data.loading, false);
 });
 
@@ -914,13 +924,15 @@ test('个人卡片指向作者记录，小程序码加载不携带作者或主�
 });
 
 test('没有历史不创建公开记录；重载失败也不能复用上次的分享链接', async () => {
-  let created=0,fail=false;
-  const {p,api}=page('share',{createShare:async()=>{created++;return {id:'a'.repeat(24),user:{},usage:usageData()};},
-    myUsage:async()=>{if(fail)throw new Error('断网');return {...usageData(),has_history:false};}});
-  p.onLoad({});await p.onShow();await p.onReady();assert.equal(created,0);assert.equal(p.data.shareId,'');
-  api.myUsage=async()=>usageData();p._canvasReady=false;await p.load();assert.ok(p.data.shareId);
-  api.myUsage=async()=>{throw new Error('断网');};await p.load();
-  assert.equal(p.data.shareId,'');assert.equal(p._snapshot,null);assert.equal(p.onShareAppMessage().path,'/pages/index/index');
+  let created=0,mode='empty';
+  const {p}=page('share',{createShare:async()=>{
+    if(mode==='empty'){const error=Error('没有历史');error.code='NO_USAGE';throw error;}
+    if(mode==='fail')throw Error('断网');
+    created++;return{id:'a'.repeat(24),user:{},usage:usageData()};
+  },myUsage:async()=>{throw Error('分享不应再预读用量');}});
+  p.onLoad({});await p.onShow();await p.onReady();assert.equal(created,0);assert.equal(p.data.shareId,'');assert.equal(p.data.error,'');
+  mode='ready';p._canvasReady=false;await p.load();assert.ok(p.data.shareId);
+  mode='fail';await p.load();assert.equal(p.data.shareId,'');assert.equal(p._snapshot,null);assert.equal(p.onShareAppMessage().path,'/pages/index/index');
 });
 
 test('取消公开后返回页面不会重新开放记录，用户明确重新生成后才恢复', async () => {
@@ -994,10 +1006,10 @@ test('启动时监听新版本，下载完成后提示并应用更新', () => {
   const manager = { onUpdateReady: fn => { ready = fn; }, applyUpdate: () => applied++ };
   vm.runInNewContext(fs.readFileSync(path.join(root, 'app.js'), 'utf8'), {
     App: v => app = v, wx: { getUpdateManager: () => manager, showModal: o => modal = o },
-    require: id => id === './utils/api' ? { accountState: () => '' } : id === './utils/connect-prompt' ? { arm: () => armed++ } : id === './utils/privacy-notice' ? { arm: () => armed++ } : id === './utils/update-prompt' ? { arm: () => armed++ } : require(id) });
+    require: id => id === './utils/api' ? { accountState: () => '' } : ['./utils/connect-prompt','./utils/privacy-notice','./utils/update-prompt','./utils/achievement-prompt'].includes(id) ? { arm: () => armed++ } : require(id) });
   app.onLaunch.call(app); ready(); assert.equal(modal.showCancel, false);
   modal.complete(); assert.equal(applied, 1);
-  app.onShow.call(app); app.onShow.call(app); assert.equal(armed, 6);
+  app.onShow.call(app); app.onShow.call(app); assert.equal(armed, 8);
 });
 
 test('未接入成员先看内容，不弹接入提示；主动点击才进入设备选择页', async () => {
@@ -1183,29 +1195,27 @@ test('首次复制接入命令先说明上传内容与开源；确认后复制�
   p.onHide();
 });
 
-test('打开小程序就弹自定义隐私与开源说明，可复制仓库地址；接入提醒等它关闭后再弹；不再提示后不弹', async () => {
+test('首次原生隐私说明完成后再显示接入提醒，知道了仅关闭本次，不再提示后不再弹', async () => {
   require(path.join(root, 'utils/modal-queue.js'))._reset();
   require(path.join(root, 'utils/connect-prompt.js'))._reset();
   const notice = require(path.join(root, 'utils/privacy-notice.js'));
   const prompt = require(path.join(root, 'utils/connect-prompt.js'));
-  const store = new Map(), modals = [], clips = [], toasts = [];
-  const wx = { getStorageSync: k => store.get(k) || '', setStorageSync: (k, v) => store.set(k, v), showModal: o => modals.push(o),
-    setClipboardData: o => { clips.push(o.data); o.success && o.success(); }, showToast: o => toasts.push(o.title) };
+  const store = new Map(), modals = [];
+  const wx = { getStorageSync: k => store.get(k) || '', setStorageSync: (k, v) => store.set(k, v), showModal: o => modals.push(o) };
   let def; vm.runInNewContext(fs.readFileSync(path.join(root, 'components/privacy-notice/index.js'), 'utf8'),
     { Component: d => def = d, wx, require: id => require(path.join(root, 'components/privacy-notice', id)) });
   const c = { ...def, ...def.methods, data: { ...def.data }, setData(p) { Object.assign(this.data, p); } };
-  const wxml = fs.readFileSync(path.join(root, 'components/privacy-notice/index.wxml'), 'utf8');
-  assert.match(wxml, /不会收集上传/); assert.match(wxml, /不再提示/); assert.equal(c.data.repo, 'github.com/xmasdong/tokenrank');
-  notice.arm(); def.pageLifetimes.show.call(c); assert.equal(c.data.visible, true);
-  def.pageLifetimes.show.call(c); // same launch: not claimed twice
-  c.copyRepo(); assert.equal(clips.at(-1), 'https://github.com/xmasdong/tokenrank'); assert.match(toasts.at(-1), /已复制/);
+  notice.arm(); def.pageLifetimes.show.call(c); def.pageLifetimes.show.call(c);
+  assert.equal(modals.length, 1); assert.equal(modals[0].confirmText, '知道了'); assert.equal(modals[0].cancelText, '不再提示');
+  assert.match(modals[0].content, /不会收集上传/); assert.match(modals[0].content, /github.com\/xmasdong\/tokenrank/);
   prompt.arm(); prompt.maybePrompt(wx, { user: { user_id: 1 }, hasReported: false, joined: true }, () => {});
-  assert.equal(modals.length, 0);
-  c.close({ currentTarget: { dataset: { never: '0' } } }); assert.equal(c.data.visible, false);
-  assert.equal(modals.length, 1); assert.equal(modals[0].title, '还没有接入电脑'); modals[0].complete({});
-  notice.arm(); def.pageLifetimes.show.call(c); assert.equal(c.data.visible, true);
-  c.close({ currentTarget: { dataset: { never: '1' } } });
-  notice.arm(); def.pageLifetimes.show.call(c); assert.equal(c.data.visible, false);
+  assert.equal(modals.length, 1);
+  modals[0].success({ confirm: true, cancel: false }); assert.equal(modals.length, 1);
+  modals[0].complete({}); assert.equal(modals.length, 2); assert.equal(modals[1].title, '还没有接入电脑'); modals[1].complete({});
+  assert.equal(store.has(notice.KEY), false);
+  notice.arm(); def.pageLifetimes.show.call(c); assert.equal(modals.length, 3);
+  modals[2].success({ confirm: false, cancel: true }); modals[2].complete({}); assert.equal(store.get(notice.KEY), 1);
+  notice.arm(); def.pageLifetimes.show.call(c); assert.equal(modals.length, 3);
 });
 
 test('所有弹窗按钮文字不超过 4 个字（微信 showModal 超长会直接不弹）', () => {
@@ -1234,7 +1244,7 @@ test('新增排行榜类型生成真码海报和封面，点开仍是作者的�
   exports[0].options.success({ tempFilePath: 'ranking.png' }); await flush();
   assert.equal(exports[1].height, 800);
   exports[1].options.success({ tempFilePath: 'ranking-cover.png' }); await drawing;
-  assert.deepEqual(calls, [['week', 'usage']]);
+  assert.deepEqual(calls, [['week', 'ranking']]);
   const card = p.onShareAppMessage();
   assert.equal(card.path, '/pages/record/record?id=' + 'd'.repeat(24));
   assert.equal(card.imageUrl, 'ranking-cover.png'); assert.match(card.title, /作者.*2.58 亿.*52/);
@@ -1311,8 +1321,8 @@ test('电脑端同步程序版本低于服务端发布版本时自动提示，�
   queue._reset(); prompt._reset();
 });
 
-test('首页与我的原生按钮直接打开本人的公开记录，不经过模板选择页', async () => {
-  for (const name of ['index', 'profile']) {
+test('我的原生按钮直接打开本人的公开记录，不经过模板选择页', async () => {
+  for (const name of ['profile']) {
     const { p, navigation } = page(name);
     await p.load(); await flush();
     assert.equal(p.data.quickShareReady, true, name);
@@ -1575,6 +1585,21 @@ test('日历日期进入对应自然周，切换月份的旧响应与离开后�
   p.goWeekly();assert.match(navigation.at(-1)[1],/week=2026-08-31/);
   const third=p.load();await flush();p.onHide();pending[2](data('2026-08'));await third;assert.equal(p.data.report,null);
 });
+test('热力格跨月点选、原生日期选择和前后日切换只更新详情，不额外调用接口',async()=>{
+ const from='2026-08-03',daily=Array.from({length:91},(_,i)=>({day:new Date(Date.parse(from+'T00:00:00Z')+i*86400000).toISOString().slice(0,10),reported:i<90,tokens:10,requests:1,outside:i===90,future:i===90}));
+ let reads=0;const {p}=page('calendar',{calendar:async()=>{reads++;return {month:'2026-10',today:'2026-10-31',daily:[],summary:{tokens:0,reported_days:0},heatmap:{from,to:'2026-10-31',end:'2026-11-01',daily,summary:{tokens:900,reported_days:90,active_days:90}}};}});
+ p.onLoad({});await p.onShow();assert.equal(p.data.selected.day,'2026-10-31');assert.equal(p.data.canNext,false);
+ p.selectDay({currentTarget:{dataset:{day:'2026-09-30'}}});assert.equal(p.data.selected.day,'2026-09-30');
+ p.stepDay({currentTarget:{dataset:{delta:'1'}}});assert.equal(p.data.selected.day,'2026-10-01');p.pickDate({detail:{value:from}});assert.equal(p.data.canPrevious,false);
+ p.stepDay({currentTarget:{dataset:{delta:'-1'}}});p.pickDate({detail:{value:'2026-11-01'}});assert.equal(p.data.selected.day,from);assert.equal(reads,1);
+});
+test('日历显示内容即时应用并记住；勾选和重新打开不额外请求数据',async()=>{
+ let reads=0;const raw={month:'2026-10',today:'2026-10-31',daily:[{day:'2026-10-01',reported:true,tokens:10,requests:1}],summary:{tokens:10,reported_days:1,active_days:1}};
+ const {p}=page('calendar',{peekCalendar:()=>raw,calendar:async()=>{reads++;return raw;}});p.onLoad({});await p.onShow();const report=p.data.report;
+ p.changeDisplay({detail:{value:['device','model','cost']}});assert.equal(p.data.display.tokens,false);assert.equal(p.data.display.cost,true);assert.equal(p.data.report,report);assert.equal(p.insightImageOptions().display.cost,true);
+ p.onLoad({});assert.equal(p.data.display.cost,true);p.onHide();await p.onShow();assert.equal(reads,0);
+ p.changeDisplay({detail:{value:[]}});assert.ok(Object.values(p.data.display).every(v=>v===false));
+});
 test('周报先准备真实记录，切换群复用周报不重取数据，快照变更仅强制刷新一次',async()=>{
   let loads=0,shares=0,stale=false;const payloads=[];
   const {p}=page('weekly',{weekly:async()=>{loads++;return historyWeek();},createWeeklyShare:async data=>{payloads.push(data);shares++;if(stale){const e=new Error('changed');e.statusCode=409;throw e;}return {id:'a'.repeat(24),style:'weekly',user:{nickname:'原作者'},usage:{...historyWeek(),...(data.group_id?{group_standing:{name:'本群',rank:2,participants:3}}:{})}};}});
@@ -1636,4 +1661,15 @@ test('接入页轮询收到真实首次上报后才询问，零用量无需额�
  let reported=false;const modals=[];const {p,navigation}=page('connect',{ackReminderPrompt:async()=>({acknowledged:true}),getConnect:async()=>({user_id:101,token:'private-token',last_report_at:reported?1:null,reminder_prompt_eligible:reported,reminder_kinds:['daily']})},{showModal:o=>modals.push(o)});
  await p.onShow();assert.equal(modals.length,0);reported=true;await p.load({silent:true});assert.equal(modals.length,1);assert.equal(p.data.hasReported,true);assert.equal(modals[0].title,'电脑已接入');
  await p.load({silent:true});assert.equal(modals.length,1);modals[0].success({confirm:true});assert.equal(navigation[0][1],'/pages/reminders/reminders?from=first');p.onHide();modals[0].complete({});await p.load({silent:true});assert.equal(modals.length,1);queue._reset();prompt._reset();
+});
+
+test('群榜进入与翻页不预生成长图，首次预览才绘制并复用；离页后不弹迟到预览',async()=>{
+ const previews=[];let draws=0,finish;
+ const {p}=page('group',{}, {previewImage:o=>previews.push(o.urls[0])});
+ p.buildPoster=async()=>{draws++;p.setData({posterPath:'group-poster.png'});};
+ p.onLoad({g:'a',from:'mine'});await p.onShow();p.onReady();await flush();assert.equal(draws,0);
+ await p.previewPoster();assert.equal(draws,1);assert.deepEqual(previews,['group-poster.png']);
+ await p.previewPoster();assert.equal(draws,1);
+ p.setData({posterPath:''});p.buildPoster=()=>new Promise(resolve=>finish=()=>{p.setData({posterPath:'late.png'});resolve();});
+ const preview=p.previewPoster();p.onHide();finish();await preview;assert.equal(previews.length,2);
 });

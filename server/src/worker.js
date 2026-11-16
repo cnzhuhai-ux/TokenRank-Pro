@@ -1,11 +1,14 @@
+import { loadGroupInsights } from './group-insights.js';
+import { rankingsOverview } from './rankings.js';
+import { analyticsBundle } from './analytics-bundle.js';
 import {
   hexToken, groupId, beijingDay, beijingDaysAgo as daysAgo, sanitizeName, sanitizeGroupName,
   jsonError, bearerToken,
 } from './lib.js';
 import { storeTotalReport } from './report.js';
-import { usageWindow, buildUsage, buildActivity } from './usage.js';
+import { USAGE_PERIODS, usageWindow, buildUsage, buildActivity } from './usage.js';
 import { shareCode } from './wx-code.js';
-import { readShare, createShare, groupShareStanding } from './shares.js';
+import { readShare, createShare, groupShareStanding, saveShare } from './shares.js';
 import { profileBody, parseAvatar, avatarResponse } from './avatar.js';
 import { deleteAccount } from './account.js';
 import { heartbeat, syncHealth } from './sync-health.js';
@@ -20,6 +23,7 @@ import { listSubscriptions, createSubscription, updateSubscription, deleteSubscr
 import { createTopup, updateTopup, deleteTopup } from './topups.js';
 import { feishu } from './feishu.js';
 import { createFeishuWebService } from './feishu-web.js';
+import { loadAchievements, claimAchievements, achievementShare, prepareAchievementDisplay, confirmAchievementDisplay, releaseAchievementDisplay } from './achievements.js';
 
 /**
  * 「Token 群排名」Cloudflare Worker。
@@ -92,16 +96,22 @@ export default {
   async scheduled(event, env, ctx) { ctx.waitUntil(runReminders(env)); },
   async fetch(request, env, ctx) {
     if (request.method === 'OPTIONS') return new Response(null, { status: 204, headers: corsHeaders(request, env) });
+    const started = performance.now();
+    const timed = response => {
+      const headers = new Headers(response.headers);
+      headers.set('Server-Timing', `app;dur=${(performance.now()-started).toFixed(1)}`);
+      return new Response(response.body,{status:response.status,headers});
+    };
     const url = new URL(request.url);
     const path = url.pathname.replace(/\/+$/, '') || '/';
     try {
-      return await route(request, env, url, path, ctx) ?? jsonError(404, 'not found');
+      return timed(await route(request, env, url, path, ctx) ?? jsonError(404, 'not found'));
     } catch (err) {
       // Database guards also reject requests authenticated just before deletion.
-      if (err?.message?.includes('ACCOUNT_NOT_FOUND')) return Response.json({ error: '账号已注销，请重新登录', code: 'ACCOUNT_DELETED' }, { status: 410, headers: corsHeaders(request, env) });
-      if (err?.message?.includes('GROUP_NOT_FOUND')) return new Response(JSON.stringify({ error: '群榜已变化，请重新进入' }), { status: 409, headers: { ...corsHeaders(request, env), 'content-type': 'application/json' } });
+      if (err?.message?.includes('ACCOUNT_NOT_FOUND')) return timed(Response.json({ error: '账号已注销，请重新登录', code: 'ACCOUNT_DELETED' }, { status: 410, headers: corsHeaders(request, env) }));
+      if (err?.message?.includes('GROUP_NOT_FOUND')) return timed(new Response(JSON.stringify({ error: '群榜已变化，请重新进入' }), { status: 409, headers: { ...corsHeaders(request, env), 'content-type': 'application/json' } }));
       console.error('unhandled:', err?.message);
-      return Response.json({ error: 'internal error' }, { status: 500, headers: corsHeaders(request, env) });
+      return timed(Response.json({ error: 'internal error' }, { status: 500, headers: corsHeaders(request, env) }));
     }
   },
 };
@@ -143,6 +153,18 @@ async function route(request, env, url, path, ctx) {
     await env.DB.prepare('INSERT INTO mp_sessions (token, user_id, expires_at) VALUES (?1, ?2, ?3)')
       .bind(token, user.id, Date.now() + MP_SESSION_TTL_MS).run();
     return withCors(Response.json({ token, user: await publicUser(env, user.id, userOrigin(env, request)) }));
+  }
+
+  if (/^\/api\/my\/achievements(?:\/(claim|prepare|confirm|release))?$/.test(path)) {
+    const user = await sessionUser(request, env);
+    if (!user) return withCors(jsonError(401, '请先登录'));
+    if (user.disabled_at) return withCors(jsonError(403, '账号已停用'));
+    if (method === 'POST' && path.endsWith('/prepare')) return withCors(await prepareAchievementDisplay(env,user.id));
+    if (method === 'POST' && path.endsWith('/confirm')) return withCors(await confirmAchievementDisplay(env,user.id,await readJson(request)));
+    if (method === 'POST' && path.endsWith('/release')) return withCors(await releaseAchievementDisplay(env,user.id,await readJson(request)));
+    if (path.endsWith('/claim') && method === 'POST') return withCors(await claimAchievements(env,user.id));
+    if (path === '/api/my/achievements' && method === 'GET') return withCors(Response.json((await loadAchievements(env,user.id)).data));
+    return withCors(jsonError(405,'method not allowed'));
   }
 
   const subscriptionPath = path.match(/^\/api\/subscriptions(?:\/([a-f0-9]{32}))?$/);
@@ -231,6 +253,11 @@ async function route(request, env, url, path, ctx) {
       if (!ready && await env.DB.prepare('SELECT 1 AS found FROM daily_stats WHERE user_id=?1 LIMIT 1').bind(user.id).first())
         return withCors(jsonError(409, '请先在电脑更新同步程序，以查看含缓存的总用量'));
     }
+    if (url.searchParams.get('bundle') === '1' && !query.tool) {
+      const bundle=await analyticsBundle(env,{scope:mine?'mine':'public',userId:user?.id,...query});
+      if (!mine) for (const data of Object.values(bundle)) data.access=insightPolicy(env,'community_audience');
+      return withCors(Response.json(bundle));
+    }
     const rows = await analyticsRows(env, { scope: mine ? 'mine' : 'public', userId: user?.id, ...query });
     return withCors(Response.json({ ...aggregateAnalytics(rows).data,
       ...(mine ? {} : { access: insightPolicy(env, 'community_audience') }) }));
@@ -246,6 +273,36 @@ async function route(request, env, url, path, ctx) {
     return withCors(await communityAudience(env, { ...query, name, offset, snapshot }, userOrigin(env, request)));
   }
 
+  if (method === 'GET' && ['/api/my/overview','/api/my/groups-overview'].includes(path)) {
+    const user = await sessionUser(request, env);
+    if (!user) return withCors(jsonError(401,'请先登录'));
+    if (user.disabled_at) return withCors(jsonError(403,'账号已停用'));
+    const profileTask = publicUser(env,user.id,userOrigin(env,request));
+    if (path.endsWith('/groups-overview')) {
+      const [profile,rankings] = await Promise.all([profileTask,rankingsOverview(env,user,url.searchParams.get('period'))]);
+      return withCors(Response.json({user:profile,rankings}));
+    }
+    const [profile,response] = await Promise.all([profileTask,myUsage(request,env,url,null,user)]), data = await response.json();
+    return withCors(Response.json({user:profile,...(response.ok ? {usage:data} : {usage:null,usage_error:{...data,statusCode:response.status}})}));
+  }
+  if (method === 'GET' && /^\/api\/groups\/[a-z0-9]+\/page$/.test(path)) {
+    const user = await sessionUser(request, env);
+    if (!user) return withCors(jsonError(401,'请先登录'));
+    if (user.disabled_at) return withCors(jsonError(403,'账号已停用'));
+    const id = path.split('/')[3], response = await groupInfo(request,env,'/api/groups/'+id,user);
+    if (!response.ok) return withCors(response);
+    const group = await response.json(), profileTask = publicUser(env,user.id,userOrigin(env,request));
+    if (!group.joined || !completeProfile(user)) return withCors(Response.json({user:await profileTask,group,board:null,insights:null}));
+    const boardUrl = new URL(request.url);boardUrl.searchParams.set('scope','group');boardUrl.searchParams.set('id',id);
+    const [profile,boardResponse,analysis] = await Promise.all([profileTask,leaderboard(request,env,boardUrl,{user,group}), (async()=>{
+      try { const loaded=await loadGroupInsights(env,user.id,id,usageWindow(url.searchParams.get('period')).period,Date.now(),group);
+        return loaded instanceof Response ? {insights:null,insights_error:(await loaded.json()).error} : {insights:loaded.report,insights_error:''};
+      } catch { return {insights:null,insights_error:'群数据暂不可用，请重试'}; }
+    })()]);
+    if (!boardResponse.ok) return withCors(boardResponse);
+    return withCors(Response.json({user:profile,group,board:await boardResponse.json(),...analysis}));
+  }
+
   // ---- 小程序身份 ----
   if (method === 'POST' && path === '/api/wx/session') return withCors(await wxSession(request, env));
   if (method === 'GET' && path === '/api/wx/share-code') {
@@ -257,17 +314,24 @@ async function route(request, env, url, path, ctx) {
     const user = await sessionUser(request, env);
     if (!user) return withCors(jsonError(401, '请先登录'));
     const body = await readJson(request);
-    const usageUrl = new URL(request.url); usageUrl.searchParams.set('period', body?.period || 'day');
+    let milestone = null;
+    if (body?.style === 'milestone') {
+      if (user.disabled_at) return withCors(jsonError(403,'账号已停用'));
+      milestone = await achievementShare(env,user.id,body);
+      if (milestone instanceof Response) return withCors(milestone);
+    }
+    const usageUrl = new URL(request.url); usageUrl.searchParams.set('period', milestone ? 'all' : body?.period || 'day');
     if (body?.style === 'daily' && !validDay(body.day)) return withCors(jsonError(400,'日报分享日期无效'));
     const result = body?.style === 'daily' ? await dailyReport(env,user.id,body.day)
-      : body?.style === 'weekly' ? await weeklyReport(env, user.id, body.week) : await myUsage(request, env, usageUrl);
+      : body?.style === 'weekly' ? await weeklyReport(env, user.id, body.week) : await myUsage(request, env, usageUrl, null, user);
     if (!result.ok) return withCors(result);
     const usage = await result.json();
     if (body?.style === 'weekly' && body.week_snapshot !== usage.snapshot)
       return withCors(Response.json({ error: '周报数据已有更新，请刷新后重新分享', code: 'WEEK_CHANGED' }, { status: 409 }));
     if (body?.style === 'daily' && body.day_snapshot !== usage.snapshot)
       return withCors(Response.json({ error: '日报数据已有更新，请刷新后重新分享', code: 'DAY_CHANGED' }, { status: 409 }));
-    if (!usage.has_history) return withCors(jsonError(400, '先同步一份用量，再生成分享记录'));
+    if (!usage.has_history && !milestone) return withCors(Response.json({error:'先同步一份用量，再生成分享记录',code:'NO_USAGE'},{status:400}));
+    if (milestone) usage.milestone = milestone;
     if (body?.group_id !== undefined) {
       if (typeof body.group_id !== 'string' || !body.group_id || body.group_id.length > 128)
         return withCors(jsonError(400, '群榜参数无效'));
@@ -275,8 +339,20 @@ async function route(request, env, url, path, ctx) {
       if (group instanceof Response) return withCors(group);
       usage.group_standing = group;
     }
-    return withCors(await createShare(env, await publicUser(env, user.id, userOrigin(env, request)), usage,
-      ['receipt', 'tools', 'weekly', 'daily'].includes(body?.style) ? body.style : 'usage'));
+    let ranking=null;
+    if (body?.include_ranking === true) {
+      if (body.style && body.style !== 'usage') return withCors(jsonError(400,'排行榜分享类型无效'));
+      const boardUrl = new URL(request.url);boardUrl.searchParams.set('scope','global');boardUrl.searchParams.set('period',usage.period);
+      const response=await leaderboard(request,env,boardUrl,{user});if (!response.ok) return withCors(response);
+      ranking=await response.json();
+      if (usage.standing.rank != null && (ranking.me?.rank !== usage.standing.rank || ranking.me?.tokens !== usage.summary.tokens))
+        return withCors(jsonError(409,'榜单已有更新，请重新生成'));
+      ranking.entries=ranking.entries.slice(0,5);
+    }
+    const response=await createShare(env,await publicUser(env,user.id,userOrigin(env,request)),usage,
+      ['receipt','tools','weekly','daily','milestone'].includes(body?.style) ? body.style : 'usage');
+    if (!ranking || !response.ok) return withCors(response);
+    return withCors(Response.json({...await response.json(),ranking}));
   }
   if (method === 'POST' && /^\/api\/shares\/[0-9a-f]{24}\/compare$/.test(path)) {
     const user = await sessionUser(request, env);
@@ -286,9 +362,10 @@ async function route(request, env, url, path, ctx) {
     if (!source) return withCors(jsonError(404, '分享记录已失效或已被取消'));
     const owner = await env.DB.prepare('SELECT user_id FROM usage_shares WHERE id=?1').bind(source.id).first();
     if (owner?.user_id === user.id) return withCors(Response.json({ error: '这是你自己的用量记录', code: 'SELF_COMPARISON' }, { status: 409 }));
+    if (!source.usage) return withCors(jsonError(400,'群数据不能用于个人 PK'));
     if (source.usage.token_basis !== 'upstream_total' || source.usage.timezone !== 'Asia/Shanghai')
       return withCors(Response.json({ error: '这份记录的统计口径较早，请使用新分享卡对比', code: 'INCOMPATIBLE_USAGE' }, { status: 409 }));
-    if (!['day', 'week', 'month', 'all'].includes(source.usage.period) ||
+    if (!USAGE_PERIODS.includes(source.usage.period) ||
       !/^\d{4}-\d{2}-\d{2}$/.test(source.usage.from) || !/^\d{4}-\d{2}-\d{2}$/.test(source.usage.to) ||
       source.usage.from > source.usage.to || source.usage.to > beijingDay())
       return withCors(jsonError(400, '这份记录的日期范围无效'));
@@ -341,6 +418,18 @@ async function route(request, env, url, path, ctx) {
   if (method === 'POST' && /^\/api\/groups\/[a-z0-9]+\/rename$/.test(path)) return withCors(await renameGroup(request, env, path));
   if (method === 'POST' && /^\/api\/groups\/[a-z0-9]+\/visibility$/.test(path)) return withCors(await setGroupVisibility(request, env, path));
   if (method === 'GET' && path === '/api/groups/mine') return withCors(await myGroups(request, env));
+  if (['GET','POST'].includes(method) && /^\/api\/groups\/[a-z0-9]+\/insights(?:\/share)?$/.test(path)) {
+    const user=await sessionUser(request,env);
+    if (!user) return withCors(jsonError(401,'请先登录'));
+    const sharing=path.endsWith('/share');
+    if ((sharing && method!=='POST') || (!sharing && method!=='GET')) return withCors(jsonError(405,'method not allowed'));
+    const body=sharing ? await readJson(request) : null;
+    const loaded=await loadGroupInsights(env,user.id,path.split('/')[3],sharing ? body?.period : url.searchParams.get('period') || 'day');
+    if (loaded instanceof Response) return withCors(loaded);
+    if (!sharing) return withCors(Response.json(loaded.report));
+    if (!body?.snapshot || body.snapshot !== loaded.report.snapshot) return withCors(jsonError(409,'群数据已更新，请刷新后再分享'));
+    return withCors(await saveShare(env,user.id,{style:'group-insights',report:loaded.report,_group:loaded.guard}));
+  }
   if (method === 'GET' && path.startsWith('/api/groups/')) return withCors(await groupInfo(request, env, path));
 
   // ---- 榜单 ----
@@ -414,9 +503,9 @@ async function sessionUser(request, env) {
 }
 
 async function publicUser(env, userId, origin = '') {
-  const u = await env.DB.prepare(`SELECT u.id, u.nickname, u.avatar_path, u.avatar_url, u.rank_hidden,
+  const [u,health] = await Promise.all([env.DB.prepare(`SELECT u.id, u.nickname, u.avatar_path, u.avatar_url, u.rank_hidden,
     c.user_id AS connected_user_id, c.last_report_at,p.awaiting_first_report,p.prompt_seen_at FROM users u
-    LEFT JOIN connect_tokens c ON c.user_id=u.id LEFT JOIN reminder_preferences p ON p.user_id=u.id WHERE u.id=?1`).bind(userId).first();
+    LEFT JOIN connect_tokens c ON c.user_id=u.id LEFT JOIN reminder_preferences p ON p.user_id=u.id WHERE u.id=?1`).bind(userId).first(),syncHealth(env,userId)]);
   if (!u) throw new Error('ACCOUNT_NOT_FOUND');
   return {
     user_id: u.id,
@@ -428,7 +517,7 @@ async function publicUser(env, userId, origin = '') {
     // 接入状态三态的依据：connected=有码；last_report_at=数据确实到达过
     last_report_at: u.last_report_at ?? null,
     rank_hidden: !!u.rank_hidden,
-    sync_health: await syncHealth(env, userId),
+    sync_health: health,
   };
 }
 
@@ -708,23 +797,18 @@ async function myGroups(request, env) {
   return Response.json({ groups: rows.results });
 }
 
-async function groupInfo(request, env, path) {
-  const id = path.split('/')[3];
-  if (!id || path.split('/').length !== 4) return null; // 交给 404
-  const user = await sessionUser(request, env);
-  const group = await env.DB.prepare('SELECT id, name, owner_user_id, created_at FROM rank_groups WHERE id = ?1').bind(id).first();
-  if (!group) return jsonError(404, '群不存在或已解散');
-  const cnt = await env.DB.prepare('SELECT COUNT(*) AS c FROM rank_group_members WHERE group_id = ?1').bind(id).first();
-  let joined = null, myHidden = false;
-  if (user) {
-    const m = await env.DB.prepare('SELECT hidden FROM rank_group_members WHERE group_id = ?1 AND user_id = ?2').bind(id, user.id).first();
-    joined = !!m;
-    myHidden = !!m?.hidden;
-  }
-  const named = group.name !== DEFAULT_GROUP_NAME;
-  const canRename = !!user && (group.owner_user_id === user.id || (joined === true && !named));
-  return Response.json({ id: group.id, name: group.name, members: cnt.c, created_at: group.created_at, joined,
-    owner_id: group.owner_user_id, named, can_rename: canRename, my_hidden: myHidden });
+async function groupInfo(request, env, path, actor = null) {
+  const id=path.split('/')[3];if(!id || path.split('/').length!==4)return null;
+  const user=actor || await sessionUser(request,env);
+  const group=await env.DB.prepare(`SELECT g.id,g.name,g.owner_user_id,g.created_at,
+    (SELECT COUNT(*) FROM rank_group_members WHERE group_id=g.id) AS members,
+    (SELECT hidden FROM rank_group_members WHERE group_id=g.id AND user_id=?2) AS my_hidden,
+    EXISTS(SELECT 1 FROM rank_group_members WHERE group_id=g.id AND user_id=?2) AS joined
+    FROM rank_groups g WHERE g.id=?1`).bind(id,user?.id ?? null).first();
+  if(!group)return jsonError(404,'群不存在或已解散');
+  const joined=user ? !!group.joined : null,named=group.name!==DEFAULT_GROUP_NAME;
+  return Response.json({id:group.id,name:group.name,members:group.members,created_at:group.created_at,joined,
+    owner_id:group.owner_user_id,named,can_rename:!!user && (group.owner_user_id===user.id || (joined && !named)),my_hidden:!!group.my_hidden});
 }
 
 // ================= 榜单 =================
@@ -734,36 +818,34 @@ async function groupInfo(request, env, path) {
  * 可选 Authorization: Bearer <会话token> → 响应带 me（我的排名，50 名外也能查到）
  * 群榜和广场榜每页 50 人；续页携带 offset 与首屏 snapshot，数据变化返回 409，避免拼接不同排名。
  */
-async function leaderboard(request, env, url) {
+async function leaderboard(request, env, url, context = {}) {
   const scope = url.searchParams.get('scope') === 'group' ? 'group' : 'global';
   const groupIdParam = String(url.searchParams.get('id') ?? '').trim();
-  const period = ['day', 'week', 'month', 'all'].includes(url.searchParams.get('period')) ? url.searchParams.get('period') : 'day';
+  const period = usageWindow(url.searchParams.get('period')).period;
   const offsetText = url.searchParams.get('offset') || '0';
   const offset = Number(offsetText);
   const previousSnapshot = url.searchParams.get('snapshot') || '';
   if ((!/^\d{1,9}$/.test(offsetText) || !Number.isSafeInteger(offset) ||
     (offset > 0 && !/^[a-f0-9]{64}$/.test(previousSnapshot)))) return jsonError(400, '分页参数无效，请刷新榜单');
 
-  const session = await sessionUser(request, env);
+  const session = context.user || await sessionUser(request, env);
   let group = null;
   if (scope === 'group') {
     if (!groupIdParam) return jsonError(400, 'scope=group 需要 id 参数');
-    group = await env.DB.prepare(`SELECT id, name,
+    group = context.group || await env.DB.prepare(`SELECT id, name,
       (SELECT COUNT(*) FROM rank_group_members WHERE group_id = ?1) AS members
       FROM rank_groups WHERE id = ?1`).bind(groupIdParam).first();
     if (!group) return jsonError(404, '群不存在或已解散');
     const viewer = session;
     if (!viewer) return jsonError(401, '请先登录');
-    const member = await env.DB.prepare('SELECT 1 AS joined FROM rank_group_members WHERE group_id=?1 AND user_id=?2').bind(group.id,viewer.id).first();
+    const member = context.group?.joined ? true : await env.DB.prepare('SELECT 1 AS joined FROM rank_group_members WHERE group_id=?1 AND user_id=?2').bind(group.id,viewer.id).first();
     if (!member) return jsonError(403, '请从微信群卡片进入并确认加入后查看本群排名');
     if (!completeProfile(viewer)) return profileRequired();
   }
 
   const today = beijingDay();
-  const [from, to] = period === 'day' ? [today, today]
-    : period === 'week' ? [daysAgo(6, Date.now()), today]
-    : period === 'month' ? [daysAgo(29, Date.now()), today]
-    : ['0000-01-01', '9999-12-31'];
+  const range = usageWindow(period);
+  const from = range.from, to = period === 'all' ? '9999-12-31' : range.to;
 
   const memberFilter = scope === 'group' ? ` AND ds.user_id IN (${groupMembers('?3')})` : '';
   const binds = scope === 'group' ? [from, to, group.id] : [from, to];
@@ -893,8 +975,8 @@ async function leaderboard(request, env, url) {
 
 // ================= 杂项 =================
 
-async function myUsage(request, env, url, sharedRange = null) {
-  const user = await sessionUser(request, env);
+async function myUsage(request, env, url, sharedRange = null, actor = null) {
+  const user = actor || await sessionUser(request, env);
   if (!user) return jsonError(401, '请先登录');
   const initialized = await env.DB.prepare('SELECT 1 AS ready FROM usage_sync_state WHERE user_id=?1').bind(user.id).first();
   if (!initialized) {
@@ -908,15 +990,14 @@ async function myUsage(request, env, url, sharedRange = null) {
   const rowsTask = env.DB.prepare(`SELECT day, tokens, input_tokens, output_tokens, requests, cache_read, cache_write,
     models_json, tools_json, updated_at, cost_json, credits_json FROM ranked_usage
     WHERE user_id = ?1 AND day >= ?2 AND day <= ?3 ORDER BY day`).bind(user.id, readFrom, range.to).all();
-  const historyTask = env.DB.prepare(`SELECT COUNT(*) AS days, SUM(tokens) AS tokens,
-    COALESCE(SUM(COALESCE(json_extract(credits_json,'$.total'),0)),0) AS credits,
-    MIN(day) AS first_day, MAX(updated_at) AS updated_at FROM ranked_usage
-    WHERE user_id = ?1 AND day <= ?2 AND (tokens > 0 OR requests > 0 OR COALESCE(json_extract(credits_json,'$.total'),0) > 0)`).bind(user.id, range.to).first();
-  const activityTask = env.DB.prepare(`SELECT day, tokens, requests,
+  const activityTask = env.DB.prepare(`SELECT day, tokens, requests, updated_at,
     COALESCE(json_extract(credits_json,'$.total'),0) AS credits FROM ranked_usage WHERE user_id = ?1 AND day <= ?2 ORDER BY day`)
     .bind(user.id, range.to).all();
-  const [rows, history, activityRows] = await Promise.all([rowsTask, historyTask, activityTask]);
-  const usage = buildUsage(rows.results, range.period, now);
+  const [rows, activityRows] = await Promise.all([rowsTask, activityTask]);
+  const activeRows = activityRows.results.filter(row => row.tokens > 0 || row.requests > 0 || row.credits > 0);
+  const history = { credits:Math.round(activeRows.reduce((n,r)=>n+(r.credits || 0),0)*1e6)/1e6, days:activeRows.length,tokens:activeRows.reduce((n,r)=>n+r.tokens,0),first_day:activeRows[0]?.day || null,
+    updated_at:activeRows.reduce((n,r)=>Math.max(n,r.updated_at || 0),0) || null };
+  const usage = buildUsage(rows.results, range.period, now, sharedRange);
   if (sharedRange) { usage.from = range.from; usage.to = range.to; }
   const ranking = await env.DB.prepare(`SELECT COUNT(*) AS participants,
     SUM(CASE WHEN total > ?3 OR (total = ?3 AND user_id < ?4) THEN 1 ELSE 0 END) AS ahead
@@ -938,56 +1019,7 @@ async function myUsage(request, env, url, sharedRange = null) {
 async function myRankings(request, env, url) {
   const user = await sessionUser(request, env);
   if (!user) return jsonError(401, '请先登录');
-  const period = ['day', 'week', 'month', 'all'].includes(url.searchParams.get('period')) ? url.searchParams.get('period') : 'day';
-
-  const today = beijingDay();
-  const [from, to] = period === 'day' ? [today, today]
-    : period === 'week' ? [daysAgo(6, Date.now()), today]
-    : period === 'month' ? [daysAgo(29, Date.now()), today]
-    : ['0000-01-01', '9999-12-31'];
-
-  const groupsTask = env.DB.prepare(`
-    SELECT g.id, g.name, mm.hidden AS my_hidden,
-           (SELECT COUNT(*) FROM rank_group_members m WHERE m.group_id = g.id) AS members
-    FROM rank_groups g
-    JOIN rank_group_members mm ON mm.group_id = g.id AND mm.user_id = ?1
-    ORDER BY g.created_at DESC LIMIT 50`).bind(user.id).all();
-
-  // 广场排名：全量有序表（社区规模几百人，一次取齐）
-  const allTask = env.DB.prepare(`SELECT ds.user_id AS uid, SUM(ds.tokens) AS t FROM public_usage ds WHERE ds.day >= ?1 AND ds.day <= ?2 GROUP BY ds.user_id HAVING t > 0 ORDER BY t DESC, uid ASC`).bind(from, to).all();
-  const mineTask = env.DB.prepare(`SELECT SUM(tokens) AS t FROM ranked_usage WHERE user_id = ?1 AND day >= ?2 AND day <= ?3`).bind(user.id, from, to).first();
-  const mineCreditsTask = env.DB.prepare(`SELECT COALESCE(SUM(COALESCE(json_extract(credits_json,'$.total'),0)),0) AS c FROM ranked_usage WHERE user_id = ?1 AND day >= ?2 AND day <= ?3`).bind(user.id, from, to).first();
-  const [groups, allRows, mine, mineCredits] = await Promise.all([groupsTask, allTask, mineTask, mineCreditsTask]);
-  const gmap = new Map();
-  let grk = 0;
-  for (const r of allRows.results) gmap.set(r.uid, ++grk);
-  const myTokens = mine?.t || 0;
-  const myCredits = Math.round((Number(mineCredits?.c) || 0) * 1e6) / 1e6;
-
-  const out = [];
-  let maxUpd = 0;
-  for (let offset = 0; offset < groups.results.length; offset += 5) {
-    const chunk = await Promise.all(groups.results.slice(offset, offset + 5).map(async g => {
-      const [up, ahead] = await Promise.all([
-        env.DB.prepare(`SELECT MAX(updated_at) AS ts FROM public_usage ds WHERE ds.day >= ?2 AND ds.day <= ?3 AND ds.user_id IN (${groupMembers('?1')})`).bind(g.id, from, to).first(),
-        env.DB.prepare(`SELECT COUNT(*) AS c FROM (SELECT ds.user_id, SUM(ds.tokens) AS t FROM public_usage ds WHERE ds.day >= ?2 AND ds.day <= ?3 AND ds.user_id IN (${groupMembers('?1')}) GROUP BY ds.user_id HAVING t > ?4 OR (t = ?4 AND ds.user_id < ?5))`).bind(g.id, from, to, myTokens, user.id).first(),
-      ]);
-      return { id: g.id, name: g.name, members: g.members,
-        profile_required: !completeProfile(user),
-        my_rank: myTokens > 0 && !user.rank_hidden && !g.my_hidden ? ahead.c + 1 : null, my_tokens: myTokens,
-        my_credits: myCredits,
-        rank_hidden: !!user.rank_hidden, group_hidden: !!g.my_hidden,
-        global_rank: gmap.get(user.id) ?? null, updated_at: up.ts };
-    }));
-    out.push(...chunk);
-    for (const g of chunk) if (g.updated_at > maxUpd) maxUpd = g.updated_at;
-  }
-  return Response.json({
-    period,
-    groups: out,
-    global: { rank: gmap.get(user.id) ?? null, tokens: myTokens, credits: myCredits },
-    updated_at: maxUpd || null,
-  });
+  return Response.json(await rankingsOverview(env,user,url.searchParams.get('period')));
 }
 
 async function readJson(request, maxBytes = MAX_REPORT_BODY) {

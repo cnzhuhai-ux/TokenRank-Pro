@@ -9,6 +9,10 @@ const rankingPosterHeight = data => RANKING_HEIGHT - (5 - Math.max(1, Math.min(5
 
 function rankingRange(period, day) {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(day || '')) return '';
+  if (period === 'last_month') {
+    const to = new Date(Date.parse(day.slice(0, 7) + '-01T00:00:00Z') - 86400000).toISOString().slice(0, 10);
+    return `${to.slice(0, 7)}-01 — ${to}`;
+  }
   const days = { day: 0, week: 6, month: 29 }[period];
   if (days == null) return '';
   const from = new Date(Date.parse(day + 'T00:00:00Z') - days * 86400000).toISOString().slice(0, 10);
@@ -30,7 +34,7 @@ function personalRanking(record, board) {
 }
 
 function rankingAvatarUrls(data) {
-  return [...new Set([...data.entries.slice(0, 5).map(e => e.avatar_url), data.user?.avatar_url].filter(Boolean))];
+  return [...new Set([...data.entries.slice(0, 5).map(e => e.avatar_url), data.user?.avatar_url || data.me?.avatar_url].filter(Boolean))];
 }
 
 function drawRankingPoster(ctx, { data, cover = false, codeImage, avatarImages = {}, previewOnly = false }) {
@@ -113,7 +117,7 @@ function drawRankingPoster(ctx, { data, cover = false, codeImage, avatarImages =
   rows.forEach((entry, i) => row(entry, start + i * rowH, rowH));
   if (!rows.length) text('本周期暂无排名', L, start + 90, 32, C.soft);
   const ownY = start + (cover ? shown : Math.max(1, rows.length)) * rowH + 12, ownH = cover ? 142 : 160;
-  row({ ...(data.me || {}), nickname: data.user?.nickname || '我', avatar_url: data.user?.avatar_url }, ownY, ownH, true, cover ? 750 : R);
+  row({ ...(data.me || {}), nickname: data.user?.nickname || data.me?.nickname || '我', avatar_url: data.user?.avatar_url || data.me?.avatar_url }, ownY, ownH, true, cover ? 750 : R);
   const codeSize = cover ? 160 : 252, codeX = R - codeSize, codeY = cover ? ownY - 6 : ownY + ownH + 38;
   drawCodeBadge(ctx, codeImage, codeX, codeY, codeSize);
   if (!codeImage) text('小程序码区域', codeX + codeSize / 2, codeY + codeSize / 2 + 8, 20, C.soft, codeSize, 'center');
@@ -125,4 +129,4 @@ function drawRankingPoster(ctx, { data, cover = false, codeImage, avatarImages =
   text(data.shortNote || '含缓存 · 北京时间', L, H - 26, cover ? 20 : 24, C.soft, cover ? 720 : 620);
 }
 
-module.exports = { RANKING_WIDTH, RANKING_HEIGHT, RANKING_COVER_HEIGHT, rankingPosterHeight, personalRanking, rankingAvatarUrls, drawRankingPoster };
+module.exports = { RANKING_WIDTH, RANKING_HEIGHT, RANKING_COVER_HEIGHT, rankingPosterHeight, personalRanking, rankingAvatarUrls, rankingRange, drawRankingPoster };

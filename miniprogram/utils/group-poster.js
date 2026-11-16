@@ -1,6 +1,7 @@
 /** Group codes open the app; joining a real WeChat group still requires its in-chat card. */
 const { drawCodeBadge } = require('./share-code');
-function drawGroupPoster(ctx, { data, cover = false, codeImage, previewOnly = false }) {
+const { rankingRange } = require('./ranking-poster');
+function drawGroupPoster(ctx, { data, cover = false, codeImage, avatarImages = {}, previewOnly = false }) {
   // Chat covers already open the app when tapped; only saved posters carry the mini program code.
   if (!cover && !codeImage && !previewOnly) throw new Error('小程序码尚未就绪，请重试');
   const W = 750, H = cover ? 600 : 1150, L = 46, R = 704;
@@ -14,7 +15,8 @@ function drawGroupPoster(ctx, { data, cover = false, codeImage, previewOnly = fa
     ctx.fillText(chars.join(''),x,y);
   };
   const rule=y=>{ctx.fillStyle=C.rule;ctx.fillRect(L,y,R-L,1);};
-  const period={day:'今日',week:'近7天',month:'近30天'}[data.period]||'今日';
+  const period={day:'今日',week:'近7天',month:'近30天',last_month:'上个月'}[data.period]||'今日';
+  const basis=data.period==='last_month' ? rankingRange(data.period,data.day) + ' · 北京时间' : '含缓存总用量 · 北京时间自然日';
   ctx.fillStyle=C.paper;ctx.fillRect(0,0,W,H);
   text('Token 群排名',L,cover?40:52,20);text(`${data.members} 人已加入 · ${period}`,R,cover?40:52,20,C.soft,420,'right');
   text(data.name||'本群 Token 排名',L,cover?88:120,cover?35:42,C.ink,658,'left',serif);
@@ -27,9 +29,15 @@ function drawGroupPoster(ctx, { data, cover = false, codeImage, previewOnly = fa
   rows.forEach((e,i)=>{
     const y=start+i*gap;
     text(String(e.rank).padStart(2,'0'),L,y,cover?28:34,C.accent,65);
-    text(e.nickname||'AI 玩家',L+65,y,cover?24:28,C.ink,cover?255:280);
+    const size=cover?42:54, x=L+60, top=y-size+8;
+    ctx.save();ctx.beginPath();ctx.arc(x+size/2,top+size/2,size/2,0,Math.PI*2);ctx.clip();
+    const image=avatarImages[e.avatar_url];
+    if(image)ctx.drawImage(image,x,top,size,size);
+    else{ctx.fillStyle='#EDEDED';ctx.fillRect(x,top,size,size);text([...(e.nickname||'群友')][0],x+size/2,top+size*.68,size*.43,C.soft,size,'center');}
+    ctx.restore();
+    text(e.nickname||'AI 玩家',x+size+14,y,cover?24:28,C.ink,cover?190:215);
     text(e.tokens_fmt,R,y,cover?29:34,e.rank===1?C.accent:C.ink,270,'right');
-    text(`${e.requests} 次调用`,L+65,y+28,18,C.soft,330);
+    if(e.top_model)text(e.top_model,L+(cover?116:128),y+28,18,C.soft,310);
     text('Tokens',R,y+28,17,C.soft,150,'right');
     if(i<rows.length-1)rule(y+(cover?44:62));
   });
@@ -38,7 +46,7 @@ function drawGroupPoster(ctx, { data, cover = false, codeImage, previewOnly = fa
     rule(428);
     text(data.me?`我的群内排名 #${data.me.rank}`:'我的群内排名 —',L,494,28,C.ink,400,'left',serif);
     if(data.me)text(`${data.me.tokens_fmt} Tokens`,R,494,28,C.accent,240,'right');
-    text('含缓存总用量 · 北京时间自然日',L,H-22,16,C.soft,330);
+    text(basis,L,H-22,16,C.soft,330);
     text(countNote,R,H-22,16,C.soft,320,'right');
     return;
   }
@@ -50,6 +58,6 @@ function drawGroupPoster(ctx, { data, cover = false, codeImage, previewOnly = fa
   text('入群请点击群内卡片',L,footer+(cover?156:185),cover?20:21,C.soft,cover?450:390);
   drawCodeBadge(ctx,codeImage,qx,qy,size);
   if(!codeImage) {text('小程序码区域',qx+size/2,qy+size/2-5,18,C.soft,size-20,'center');text('预览不含真实码',qx+size/2,qy+size/2+24,17,C.soft,size-16,'center');}
-  text('含缓存总用量 · 北京时间自然日',L,H-16,16,C.soft);
+  text(basis,L,H-16,16,C.soft);
 }
 module.exports={drawGroupPoster};

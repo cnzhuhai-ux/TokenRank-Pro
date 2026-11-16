@@ -55,8 +55,9 @@ test('页面标记：tokens 在上、Credits 在下，统计位成对出现', ()
   assert.ok(profile.indexOf('hero-number num-font">{{usage.value}}') < profile.indexOf('credits-number'));
   assert.match(profile, /Credits 计费工具/);
   const home = read('pages', 'index', 'index.wxml');
-  assert.ok(home.indexOf('own-number num-font') < home.indexOf('own-credits'));
-  assert.match(home, /credits_fmt/);
+  // 上游首页仅加载群概览，个人 Token / Credits 大数字保留在“我的”页。
+  assert.doesNotMatch(home, /own-usage/);
+  assert.match(home, /tokens_fmt[\s\S]*credits_fmt/);
   const board = read('templates', 'leaderboard.wxml');
   assert.match(board, /class="lb-alt">{{item\.alt_view}}/);
   assert.match(board, /me\.alt_view/);

@@ -1,4 +1,4 @@
-import { usageWindow } from './usage.js';
+import { USAGE_PERIODS, usageWindow } from './usage.js';
 import { beijingDaysAgo, jsonError } from './lib.js';
 import { insightPolicy } from './insight-access.js';
 import { toolModelRows } from './tool-models.js';
@@ -11,9 +11,8 @@ const byTokens = (a, b) => b.tokens - a.tokens || a.name.localeCompare(b.name);
 export async function analyticsRows(env, { scope, userId = null, period, dimension, tool = '', trend = true, now = Date.now() }) {
   if (tool) return toolModelRows(env, { scope, userId, period, tool, trend, now });
   const range = usageWindow(period, now), view = scope === 'mine' ? 'ranked_usage' : 'public_usage';
-  const column = dimension === 'models' ? 'models_json' : 'tools_json';
-  // Credits 分项按维度取：工具维度读 credits_json.tools，模型维度读 credits_json.models
-  const creditPath = dimension === 'models' ? '$.models' : '$.tools';
+  const both=dimension==='both';
+  const column=both ? "(CASE WHEN dim.dimension='models' THEN ds.models_json ELSE ds.tools_json END)" : 'ds.'+(dimension==='models'?'models_json':'tools_json');
   const where = `ds.day>=?1 AND ds.day<=?2 AND (?3 IS NULL OR ds.user_id=?3)
     AND (?3 IS NOT NULL OR ds.user_id IN (SELECT user_id FROM ${view} WHERE day>=?4 AND day<=?2
       GROUP BY user_id HAVING SUM(tokens)>0 OR SUM(COALESCE(json_extract(credits_json,'$.total'),0))>0))`;
@@ -25,40 +24,40 @@ export async function analyticsRows(env, { scope, userId = null, period, dimensi
   const pair = `CASE WHEN je.type='array' THEN je.value ELSE '[]' END`;
   const detailWhere = `json_type(${pair},'$[0]')='text' AND LENGTH(json_extract(${pair},'$[0]'))>0
     AND json_type(${pair},'$[1]') IN ('integer','real') AND json_extract(${pair},'$[1]')>0`;
-  const detailSource = `${view} ds, json_each(CASE WHEN json_valid(ds.${column}) THEN
-    CASE WHEN json_type(ds.${column})='array' THEN ds.${column} ELSE '[]' END ELSE '[]' END) je`;
+  const detailSource = `${view} ds${both ? ",(SELECT 'tools' AS dimension UNION ALL SELECT 'models') dim" : ''}, json_each(CASE WHEN json_valid(${column}) THEN
+    CASE WHEN json_type(${column})='array' THEN ${column} ELSE '[]' END ELSE '[]' END) je`;
   // Credits 分项来自 credits_json：工具维度读 $.tools，模型维度读 $.models（旧上报没有模型分项时为空）
-  const creditSource = `${view} ds, json_each(CASE WHEN json_type(ds.credits_json)='object' THEN ds.credits_json ELSE '{}' END, '${creditPath}') je`;
-  const withCredits = dimension === 'tools' || dimension === 'models';
-  const trendDays = period === 'day' || period === 'week' ? 7 : 30;
-  const trendFrom = beijingDaysAgo(trendDays - 1, now);
+  const dimensions = both ? ",(SELECT 'tools' AS dimension UNION ALL SELECT 'models') dim" : '';
+  const creditPath = both ? "(CASE WHEN dim.dimension='models' THEN '$.models' ELSE '$.tools' END)" : (dimension === 'models' ? "'$.models'" : "'$.tools'");
+  const creditSource = `${view} ds${dimensions}, json_each(CASE WHEN json_type(ds.credits_json)='object' THEN ds.credits_json ELSE '{}' END, ${creditPath}) je`;
+  const trendDays = range.trendDays;
+  const trendFrom = beijingDaysAgo(trendDays - 1, Date.parse(range.to + 'T12:00:00+08:00'));
   const statements = [
     env.DB.prepare(`SELECT ds.user_id AS uid, ${totals},
       COUNT(CASE WHEN tokens>0 OR requests>0 THEN 1 END) AS active_days,
       MIN(CASE WHEN tokens>0 OR requests>0 THEN day END) AS first_day
       FROM ${view} ds WHERE ${where} GROUP BY ds.user_id`).bind(...values(range.from)),
-    env.DB.prepare(`SELECT ds.user_id AS uid, json_extract(${pair},'$[0]') AS name,
-      SUM(json_extract(${pair},'$[1]')) AS tokens FROM ${detailSource}
-      WHERE ${where} AND ${detailWhere} GROUP BY ds.user_id,name`).bind(...values(range.from)),
-    ...(trend ? [env.DB.prepare(`SELECT ds.user_id AS uid, ds.day, SUM(tokens) AS tokens, SUM(requests) AS requests,
-      SUM(COALESCE(json_extract(ds.credits_json,'$.total'),0)) AS credits
+    env.DB.prepare(`SELECT ds.user_id AS uid${both ? ',dim.dimension AS dimension' : ''}, json_extract(${pair},'$[0]') AS name,
+      SUM(json_extract(${pair},'$[1]')) AS tokens, NULL AS credits FROM ${detailSource}
+      WHERE ${where} AND ${detailWhere} GROUP BY ds.user_id,name${both ? ',dim.dimension' : ''}
+      UNION ALL SELECT ds.user_id AS uid${both ? ',dim.dimension AS dimension' : ''},json_extract(${pair},'$[0]') AS name,
+      0 AS tokens,SUM(json_extract(${pair},'$[1]')) AS credits FROM ${creditSource}
+      WHERE ${where} AND ${detailWhere} GROUP BY ds.user_id,name${both ? ',dim.dimension' : ''}`).bind(...values(range.from)),
+    ...(trend ? [env.DB.prepare(`SELECT ds.user_id AS uid, ds.day, SUM(tokens) AS tokens, SUM(requests) AS requests, SUM(COALESCE(json_extract(ds.credits_json,'$.total'),0)) AS credits
       FROM ${view} ds WHERE ${where} GROUP BY ds.user_id,ds.day`).bind(...values(trendFrom, trendFrom)),
-      env.DB.prepare(`SELECT ds.user_id AS uid,ds.day,json_extract(${pair},'$[0]') AS name,
-        SUM(json_extract(${pair},'$[1]')) AS tokens FROM ${detailSource}
-        WHERE ${where} AND ${detailWhere} GROUP BY ds.user_id,ds.day,name`).bind(...values(trendFrom, trendFrom))] : []),
-    ...(withCredits ? [env.DB.prepare(`SELECT ds.user_id AS uid, json_extract(${pair},'$[0]') AS name,
-      SUM(json_extract(${pair},'$[1]')) AS credits FROM ${creditSource}
-      WHERE ${where} AND ${detailWhere} GROUP BY ds.user_id,name`).bind(...values(range.from))] : []),
-    ...(withCredits && trend ? [env.DB.prepare(`SELECT ds.user_id AS uid, ds.day, json_extract(${pair},'$[0]') AS name,
-      SUM(json_extract(${pair},'$[1]')) AS credits FROM ${creditSource}
-      WHERE ${where} AND ${detailWhere} GROUP BY ds.user_id,ds.day,name`).bind(...values(trendFrom, trendFrom))] : []),
+      env.DB.prepare(`SELECT ds.user_id AS uid,ds.day${both ? ',dim.dimension AS dimension' : ''},json_extract(${pair},'$[0]') AS name,
+        SUM(json_extract(${pair},'$[1]')) AS tokens, NULL AS credits FROM ${detailSource}
+        WHERE ${where} AND ${detailWhere} GROUP BY ds.user_id,ds.day,name${both ? ',dim.dimension' : ''}
+        UNION ALL SELECT ds.user_id AS uid,ds.day${both ? ',dim.dimension AS dimension' : ''},json_extract(${pair},'$[0]') AS name,
+        0 AS tokens,SUM(json_extract(${pair},'$[1]')) AS credits FROM ${creditSource}
+        WHERE ${where} AND ${detailWhere} GROUP BY ds.user_id,ds.day,name${both ? ',dim.dimension' : ''}`).bind(...values(trendFrom, trendFrom))] : []),
   ];
   // D1 batch is one transaction: a concurrent five-minute report cannot split
   // the headline, breakdown and trend into different source versions.
-  const [users, details, days = { results: [] }, dayDetails = { results: [] },
-    creditDetails = { results: [] }, dayCreditDetails = { results: [] }] = await env.DB.batch(statements);
-  return { scope, dimension, range, now, trendDays, users: users.results, details: details.results, days: days.results,
-    dayDetails: dayDetails.results, creditDetails: creditDetails.results, dayCreditDetails: dayCreditDetails.results };
+  const [users, details, days = {results:[]}, dayDetails = {results:[]}] = await env.DB.batch(statements);
+  return {scope,dimension,range,now,trendDays,users:users.results,days:days.results,
+    details:details.results.filter(r=>r.credits===null), dayDetails:dayDetails.results.filter(r=>r.credits===null),
+    creditDetails:details.results.filter(r=>r.credits!==null),dayCreditDetails:dayDetails.results.filter(r=>r.credits!==null)};
 }
 
 export function aggregateAnalytics(rows) {
@@ -161,7 +160,7 @@ export function aggregateAnalytics(rows) {
     }
   }
   const daily = Array.from({ length: trendDays }, (_, i) => {
-    const day = beijingDaysAgo(trendDays - 1 - i, now), value = dayMap.get(day);
+    const day = beijingDaysAgo(trendDays - 1 - i, Date.parse(range.to + 'T12:00:00+08:00')), value = dayMap.get(day);
     return value ? { day, tokens: value.tokens, requests: value.requests, credits: round6(value.credits), reported: true, reported_users: value.reported_users,
       ...(rows.tool ? { details_complete: !rows.incompleteDays.has(day) } : {}),
       parts: [...value.parts].map(([name, tokens]) => ({ name, tokens, ...(creditsAttributed ? { credits: round6(value.creditParts.get(name) || 0) } : {}) })) }
@@ -207,6 +206,6 @@ export async function communityAudience(env, query, origin) {
 export function analyticsQuery(url) {
   const period = url.searchParams.get('period') || 'day', dimension = url.searchParams.get('dimension') || 'tools';
   const tool = url.searchParams.get('tool') || '';
-  return ['day','week','month','all'].includes(period) && ['tools','models'].includes(dimension) &&
+  return USAGE_PERIODS.includes(period) && ['tools','models'].includes(dimension) &&
     (!tool || (dimension === 'models' && tool.trim() && tool.length <= 60)) ? { period, dimension, ...(tool ? { tool } : {}) } : null;
 }

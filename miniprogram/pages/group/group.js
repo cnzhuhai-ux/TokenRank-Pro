@@ -1,4 +1,5 @@
 const api = require('../../utils/api');
+const { presentGroupInsights } = require('../../utils/group-insights');
 const reminderPrompt = require('../../utils/reminder-prompt');
 const { quickShare } = require('../../utils/quick-share');
 const { drawAchievementPoster, ACHIEVEMENT_HEIGHT } = require('../../utils/achievement-poster');
@@ -17,7 +18,7 @@ Page({
     this._continueProfile = true;
     if (this._visible) return this.continueProfile(user);
   } }),
-  data: { periods: flow.PERIODS, period: 'day', id: '', name: '', joined: null,
+  data: { insights: null, insightsLoading: false, insightsError: '', periods: flow.PERIODS, period: 'day', id: '', name: '', joined: null,
     user: null, members: 0, entries: [], me: null, loading: true, error: '', missing: false,
     total: null, hasMore: false, nextOffset: null, snapshot: '', loadingMore: false, moreError: '',
     nickname: '', avatarUrl: '', avatarDraft: '', saving: false, profileError: '',
@@ -48,7 +49,7 @@ Page({
     if (this._refreshAfterPk && !this._needsResolve) { this._refreshAfterPk = false; return this.init({ force: true }); }
     return this._needsResolve ? this.tryEnterGroup() : this.init();
   },
-  onReady() { this.buildQuickCover(); if (this._quickRecord) this.buildPoster(); },
+  onReady() { this.buildQuickCover(); },
   onHide() {
     this.clearQuickShare();
     this._visible = false;
@@ -173,7 +174,6 @@ Page({
     if (this.data.hasReported || lb.me) {
       this.prepareQuickShare({ groupId: this.data.id, stamp: `${lb.snapshot || lb.updated_at}:${lb.me?.tokens}:${this.data.name}` });
     } else this.clearQuickShare();
-    if (changed || !this.data.posterPath) this.buildPoster();
     this.promptConnect();
   },
   promptConnect() {
@@ -210,6 +210,7 @@ Page({
       this.showInfo(cachedUser, cachedInfo);
       if (!flow.hasProfile(cachedUser)) { this.beginProfile(cachedUser, 'member'); return; }
       this.showBoard(cachedBoard);
+      this.loadInsights(options);
       return;
     }
     this.clearQuickShare();
@@ -220,6 +221,16 @@ Page({
     try {
       await api.ensureSession();
       if (requestId !== this._requestId) return;
+      if (api.groupPage) {
+        const result=await api.groupPage(this.data.id,period,options);if(requestId!==this._requestId)return;
+        this.showInfo(result.user,result.group);
+        if(!result.group.joined){this.setData({loading:false,entries:[]});return;}
+        if(!flow.hasProfile(result.user)){this.beginProfile(result.user,'member');return;}
+        this.showBoard(result.board);
+        if(result.insights)this.setData({insights:presentGroupInsights(result.insights),insightsLoading:false,insightsError:''});
+        else this.setData({insights:null,insightsLoading:false,insightsError:result.insights_error || '群数据暂不可用，请重试'});
+        return;
+      }
       // Membership already confirmed by the card entry: load the board alongside user and group info.
       const board = options.joined === true ? api.fetchLeaderboard({ scope: 'group', id: this.data.id, period }, options) : null;
       board?.catch(() => {});
@@ -231,6 +242,7 @@ Page({
       const lb = await (board || api.fetchLeaderboard({ scope: 'group', id: this.data.id, period }, options));
       if (requestId !== this._requestId) return;
       this.showBoard(lb);
+      this.loadInsights(options);
     } catch (err) {
       if (requestId === this._requestId && err.statusCode === 428) {
         const user = await api.ensureLogin({ force: true }).catch(() => null);
@@ -239,6 +251,18 @@ Page({
       if (requestId === this._requestId) this.setData({ loading: false, error: err.message });
     }
   },
+  async loadInsights(options = {}) {
+    const {id,period}=this.data, request=this._requestId, epoch=api.accountEpoch();
+    const current=()=>this._visible && request===this._requestId && epoch===api.accountEpoch() && !api.accountState();
+    const cached=options.force ? null : api.peekGroupInsights?.(id,period);
+    const stale=!!cached && Number(cached.updated_at || 0)<Number(this._boardSnapshot?.updated_at || 0);
+    if(cached && !stale){this.setData({insights:presentGroupInsights(cached),insightsLoading:false,insightsError:''});return;}
+    this.setData({insights:null,insightsLoading:true,insightsError:''});
+    try { const result=await api.groupInsights(id,period,{...options,force:options.force===true || stale}); if(current())this.setData({insights:presentGroupInsights(result),insightsLoading:false}); }
+    catch(error){if(current())this.setData({insightsLoading:false,insightsError:error.statusCode>=500 ? '暂时无法汇总本群用量，请重试' : error.message || '群数据暂不可用'});}
+  },
+  retryInsights(){return this.loadInsights({force:true});},
+  openGroupReport(){wx.navigateTo({url:'/pages/group-report/group-report?g='+encodeURIComponent(this.data.id)+'&period='+this.data.period});},
   async loadMore() {
     if (!this._visible || this.data.enterState !== 'ready' || this.data.joined !== true || this.data.loading || this.data.loadingMore ||
       !this.data.hasMore || !this.data.snapshot) return;
@@ -298,7 +322,6 @@ Page({
       },
     });
   },
-  onQuickShareReady() { if (this.data.posterStyle === 'achievement') this.buildPoster(); },
   async buildPoster() {
     if (this.data.posterStyle === 'achievement' && !this._quickRecord) return;
     if (this._posterBusy) { this._posterPending = true; return; }
@@ -310,7 +333,7 @@ Page({
       const node = await new Promise(resolve => wx.createSelectorQuery().in(this)
         .select('#poster').fields({ node: true, size: true }).exec(res => resolve(res && res[0] && res[0].node)));
       if (!node || version !== this._posterVersion) return;
-      const urls = data.posterStyle === 'achievement' ? [data.achievement.user.avatar_url].filter(Boolean) : data.posterStyle === 'ranking' ? rankingAvatarUrls(data) : [];
+      const urls = data.posterStyle === 'achievement' ? [data.achievement.user.avatar_url].filter(Boolean) : rankingAvatarUrls(data);
       const [codeImage, images] = await Promise.all([loadCodeImage(node), Promise.all(urls.map(url => loadAvatarImage(node, url)))]);
       if (version !== this._posterVersion) return;
       const avatarImages = Object.fromEntries(urls.map((url, index) => [url, images[index]]));
@@ -343,12 +366,12 @@ Page({
   drawShareCard(ctx, W, H, codeImage, avatarImages = {}, data = this.data) {
     if (data.posterStyle === 'achievement') drawAchievementPoster(ctx, { ...data.achievement, cover: true, codeImage, avatarImage: avatarImages[data.achievement.user.avatar_url] });
     else if (data.posterStyle === 'ranking') drawRankingPoster(ctx, { data, cover: true, codeImage, avatarImages });
-    else drawGroupPoster(ctx, { data, cover: true, codeImage });
+    else drawGroupPoster(ctx, { data, cover: true, codeImage, avatarImages });
   },
   drawPoster(ctx, W, H, codeImage, avatarImages = {}, data = this.data) {
     if (data.posterStyle === 'achievement') drawAchievementPoster(ctx, { ...data.achievement, codeImage, avatarImage: avatarImages[data.achievement.user.avatar_url] });
     else if (data.posterStyle === 'ranking') drawRankingPoster(ctx, { data, codeImage, avatarImages });
-    else drawGroupPoster(ctx, { data, codeImage });
+    else drawGroupPoster(ctx, { data, codeImage, avatarImages });
   },
   changePosterStyle(e) {
     const index = Number(e.detail.value);
@@ -360,14 +383,16 @@ Page({
     return this.buildPoster();
   },
 
-  previewPoster() {
-    if (this.data.posterPath && !this.data.posterGenerating) wx.previewImage({ urls: [this.data.posterPath] });
+  async previewPoster() {
+    const request=this._requestId,epoch=api.accountEpoch();
+    if(!this.data.posterPath)await this.buildPoster();
+    if(this._visible && request===this._requestId && epoch===api.accountEpoch() && this.data.posterPath)wx.previewImage({ urls: [this.data.posterPath] });
   },
   switchPeriod(e) {
     const period = e.currentTarget.dataset.key;
     if (period === this.data.period) return;
     this.clearQuickShare();
-    this.setData({ period });
+    this.setData({ period, insights: null, insightsError: '' });
     return this.init();
   },
   goConnect() { wx.navigateTo({ url: flow.connectUrl(this.data.id) }); },
