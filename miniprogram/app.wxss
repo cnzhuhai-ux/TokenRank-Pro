@@ -14,6 +14,15 @@ page {
   --danger-active: #E04545;
   --separator: #EDEDED;
   --separator-strong: #DDDDDD;
+  --space-page: 16px;
+  --space-section: 24px;
+  --font-title: 22px;
+  --font-heading: 17px;
+  --font-body: 15px;
+  --font-detail: 14px;
+  --font-caption: 12px;
+  --touch-size: 44px;
+  --button-size: 48px;
   background: var(--surface);
   color: var(--text);
   font-family: -apple-system, "PingFang SC", "Helvetica Neue", sans-serif;
@@ -23,14 +32,27 @@ page {
 .display { font-weight: 600; }
 .num-font { font-family: -apple-system, "PingFang SC", "Helvetica Neue", sans-serif; font-variant-numeric: tabular-nums; }
 
-/* 所有周期与分享类型使用同款等分标签。 */
+/* 页面内保留一组内容导航，周期和统计口径使用带标签的筛选。 */
 .tabs { display: flex; gap: 0; padding: 0; background: var(--surface); border-bottom: 1rpx solid var(--separator); }
-.tab { position: relative; display: flex; flex: 1; align-items: center; justify-content: center; min-width: 0; min-height: 44px; box-sizing: border-box; padding: 0 4px; margin: 0; color: var(--text-secondary); font-size: 15px; font-weight: 400; }
+.tab { position: relative; display: flex; flex: 1; align-items: center; justify-content: center; min-width: 0; min-height: var(--touch-size); box-sizing: border-box; padding: 0 4px; margin: 0; border-radius: 0; background: transparent; color: var(--text-secondary); font-size: var(--font-body); font-weight: 400; line-height: 1.5; }
+.tab::after { content: none; border: none; }
+.tab:active { background: var(--surface-muted); }
 .tab-active { color: var(--text); font-weight: 500; }
-.tab-active::after { content: ""; position: absolute; bottom: 0; left: 50%; width: 28px; height: 2px; margin-left: -14px; background: var(--primary); }
-.section-divider { border-top: 1rpx solid var(--separator); margin: 0 16px; }
+.tab-active::after { content: ""; position: absolute; top: auto; right: auto; bottom: 0; left: 50%; width: 28px; height: 2px; margin-left: -14px; border-radius: 0; background: var(--primary); transform: none; }
+.filter-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 16px; padding: 4px var(--space-page); border-bottom: 1rpx solid var(--separator); }
+.filter-bar picker { min-width: 0; }
+.filter-control { display: flex; align-items: center; gap: 8px; min-height: var(--touch-size); box-sizing: border-box; color: var(--text); font-size: var(--font-detail); }
+.filter-label { color: var(--text-secondary); font-size: var(--font-caption); }
+.filter-value { font-weight: 500; }
+.filter-chevron { color: var(--text-muted); font-size: 12px; }
+.filter-actions { display: flex; flex-wrap: wrap; margin-left: auto; }
+.filter-action { display: flex; align-items: center; justify-content: center; min-height: var(--touch-size); margin: 0; padding: 0 12px; border-radius: 0; background: transparent; color: var(--text-secondary); font-size: var(--font-detail); font-weight: 400; line-height: 1.5; }
+.filter-action::after { border: none; }
+.filter-action:active { background: var(--surface-muted); }
+.filter-action-selected { color: var(--text); background: var(--surface-muted); border-radius: 4px; font-weight: 500; }
+.section-divider { border-top: 1rpx solid var(--separator); margin: 0 var(--space-page); }
 
-.btn { display: flex; align-items: center; justify-content: center; box-sizing: border-box; min-height: 48px; padding: 10px 16px; border-radius: 6px; font-size: 16px; font-weight: 500; line-height: 1.5; text-align: center; letter-spacing: 0; }
+.btn { display: flex; align-items: center; justify-content: center; box-sizing: border-box; min-height: var(--button-size); padding: 10px 16px; border-radius: 6px; font-size: var(--font-heading); font-weight: 500; line-height: 1.5; text-align: center; letter-spacing: 0; }
 .btn::after { border: none; }
 .btn-primary { background: var(--primary); color: #FFFFFF; }
 .btn-primary:active { background: var(--primary-active); }
@@ -56,3 +78,12 @@ page {
 .data-share-actions button::after { border:0; }
 .data-share-actions button[disabled] { color:var(--text-muted); }
 .data-share-actions>text { margin-right:auto; color:var(--text-muted); font-size:12px; }
+
+.inline-status, .inline-error { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; min-height: var(--touch-size); box-sizing: border-box; padding: 8px var(--space-page); color: var(--text-secondary); background: var(--surface-muted); font-size: var(--font-caption); line-height: 1.7; }
+.inline-error { color: var(--danger); }
+.inline-error > text { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.inline-error button { display: flex; align-items: center; justify-content: center; min-width: var(--touch-size); min-height: var(--touch-size); margin: -8px 0 -8px auto; padding: 0 8px; background: transparent; color: var(--link); font-size: var(--font-detail); font-weight: 400; line-height: 1.5; }
+.inline-error button::after { border: none; }
+.loading-indicator { display: inline-block; flex: none; width: 14px; height: 14px; box-sizing: border-box; border: 2px solid var(--separator-strong); border-top-color: var(--primary); border-radius: 50%; animation: loading-rotate .8s linear infinite; }
+.state-loading { display: flex; align-items: center; justify-content: center; gap: 10px; }
+@keyframes loading-rotate { to { transform: rotate(360deg); } }

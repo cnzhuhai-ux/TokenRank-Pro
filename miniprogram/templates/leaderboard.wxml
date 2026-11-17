@@ -9,13 +9,13 @@
       <view wx:if="{{item.top_model}}" class="lb-model">{{item.top_model}}</view>
       <view wx:if="{{item.alt_view}}" class="lb-alt">{{item.alt_view}}</view>
     </view>
-    <view wx:if="{{item.credits_view}}" class="lb-value"><text class="lb-number">{{item.credits_view}}</text><text class="lb-unit">Credits</text></view>
+    <view wx:if="{{item.credits_view}}" class="lb-value lb-value-credits"><text class="lb-number">{{item.credits_view}}</text><text class="lb-unit">Credits</text></view>
     <view wx:else class="lb-value"><text class="lb-number">{{item.tokens_value}}</text><text wx:if="{{item.tokens_unit}}" class="lb-unit">{{item.tokens_unit}}</text></view>
   </view>
 </template>
 
 <template name="leaderboard-me">
-  <button class="lb-self" bindtap="goMine" aria-label="{{rankLabel}}，{{me ? '第 ' + me.rank + ' 名，' + me.tokens_fmt + ' tokens' : emptyLabel}}，查看我的用量">
+  <button class="lb-self" bindtap="goMine" aria-label="{{rankLabel}}，{{me ? '第 ' + me.rank + ' 名，' + (me.credits_view ? me.credits_view + ' Credits' : me.tokens_fmt + ' tokens') : emptyLabel}}，查看我的用量">
     <text class="lb-rank">{{me ? me.rank : '—'}}</text>
     <image wx:if="{{user.avatar_url}}" class="lb-avatar" src="{{user.avatar_url}}" mode="aspectFill" />
     <view wx:else class="lb-avatar rank-avatar-ph">我</view>
@@ -23,6 +23,6 @@
       <view class="lb-name-line"><text class="lb-name">{{user.nickname || '我'}}</text><text class="lb-me-tag">我</text></view>
       <view class="lb-self-note">{{me ? rankLabel : emptyLabel}}<text wx:if="{{me && showGlobal && me.global_rank}}"> · 全站 {{me.global_rank}}</text><text wx:if="{{me && me.alt_view}}"> · {{me.alt_view}}</text><text wx:if="{{me && me.top_model}}"> · {{me.top_model}}</text></view>
     </view>
-    <view wx:if="{{me}}" class="lb-value"><block wx:if="{{me.credits_view}}"><text class="lb-number">{{me.credits_view}}</text><text class="lb-unit">Credits</text></block><block wx:else><text class="lb-number">{{me.tokens_value}}</text><text wx:if="{{me.tokens_unit}}" class="lb-unit">{{me.tokens_unit}}</text></block></view>
+    <view wx:if="{{me}}" class="lb-value {{me.credits_view ? 'lb-value-credits' : ''}}"><block wx:if="{{me.credits_view}}"><text class="lb-number">{{me.credits_view}}</text><text class="lb-unit">Credits</text></block><block wx:else><text class="lb-number">{{me.tokens_value}}</text><text wx:if="{{me.tokens_unit}}" class="lb-unit">{{me.tokens_unit}}</text></block></view>
   </button>
 </template>

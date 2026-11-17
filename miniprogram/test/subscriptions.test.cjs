@@ -67,6 +67,39 @@ test('表单校验名称、价格、自定义天数和开始日期；停用时�
   assert.equal(S.formFromItem(item(), today).price, '200');
 });
 
+test('表单错误带首错 field 与全部字段，兼容 error；价格、天数和日期边界不变', () => {
+  const today = '2026-10-21', form = { ...S.formFromItem(null, today), name: 'Claude', price: '20' };
+  const invalid = S.bodyFromForm({ ...form, name: ' ', price: '0', cycle: 'custom', custom_days: '3651', start_day: '2026-10-22' }, today);
+  assert.deepEqual(invalid, { error: '请填写服务名称', field: 'name', errors: { name: '请填写服务名称', price: '请填写有效的价格', custom_days: '自定义周期为 1 到 3650 天', start_day: '开始日期不能晚于今天' } });
+  for (const price of ['', ' ', 'abc', 'Infinity', '0', '-1', '1000000.01']) {
+    const result = S.bodyFromForm({ ...form, price }, today);
+    assert.equal(result.field, 'price'); assert.equal(result.body, undefined); assert.equal(result.error, '请填写有效的价格');
+  }
+  assert.equal(S.bodyFromForm({ ...form, price: '1000000' }, today).body.price, 1000000);
+  assert.equal(S.bodyFromForm({ ...form, price: '1.235', currency: 'JPY' }, today).body.price, 1.24);
+  for (const custom_days of ['', '0', '1.5', '3651']) assert.equal(S.bodyFromForm({ ...form, cycle: 'custom', custom_days }, today).field, 'custom_days');
+  for (const custom_days of ['1', '3650']) assert.equal(S.bodyFromForm({ ...form, cycle: 'custom', custom_days }, today).body.custom_days, Number(custom_days));
+  for (const start_day of ['', '2026-10-22']) assert.equal(S.bodyFromForm({ ...form, start_day }, today).field, 'start_day');
+  const body = S.bodyFromForm({ ...form, status: 'cancelled', ended_day: '2026-10-20', api_key: true, notes: '  备注  ' }, today).body;
+  assert.equal(body.ended_day, '2026-10-20'); assert.equal(body.start_day, today); assert.equal(body.api_key, true); assert.equal(body.notes, '备注');
+});
+
+test('充值错误带 amount/day 字段，校准零余额和原币金额边界不变', () => {
+  const today = '2026-10-21', form = S.topupForm(null, today);
+  assert.deepEqual(S.topupBody({ ...form, day: '2026-10-22' }, 'deepseek', today), {
+    error: '请填写有效的充值金额', field: 'amount', errors: { amount: '请填写有效的充值金额', day: '日期不能晚于今天' },
+  });
+  for (const amount of ['', ' ', 'abc', 'Infinity', '-1', '0', '0.009', '1000000000.01']) assert.equal(S.topupBody({ ...form, amount }, 'deepseek', today).field, 'amount');
+  for (const kind of ['topup', 'balance']) for (const amount of ['0.01', '1000000000']) {
+    const result = S.topupBody({ ...form, kind, amount, currency: 'USD' }, 'deepseek', today);
+    assert.equal(result.body.amount, Number(amount)); assert.equal(result.body.currency, 'USD');
+  }
+  assert.equal(S.topupBody({ ...form, kind: 'balance', amount: '0' }, 'deepseek', today).body.amount, 0);
+  assert.equal(S.topupBody({ ...form, kind: 'balance', amount: '-0.01' }, 'deepseek', today).field, 'amount');
+  assert.equal(S.topupBody({ ...form, amount: '1.235', currency: 'JPY' }, 'deepseek', today).body.amount, 1.24);
+  for (const day of ['', '2026-10-22']) assert.equal(S.topupBody({ ...form, amount: '1', day }, 'deepseek', today).field, 'day');
+});
+
 function cacheFixture() {
   const calls = [], store = new Map([['session_token', 'session'], ['account_known', true]]), module = { exports: {} };
   const wx = { getStorageSync: k => store.get(k), setStorageSync: (k, v) => store.set(k, v), removeStorageSync: k => store.delete(k), clearStorageSync: () => store.clear(), request: o => calls.push(o) };
@@ -96,8 +129,9 @@ function pageFixture(file, api) {
   const wx = { navigateTo: o => navigation.push(o.url), navigateBack: () => navigation.push('back'), showToast() {}, stopPullDownRefresh() {}, setNavigationBarTitle() {},
     showModal: o => modals.push(o), showActionSheet: o => sheets.push(o), enableAlertBeforeUnload: o => guards.push(o.message), disableAlertBeforeUnload: () => guards.push('off') };
   vm.runInNewContext(fs.readFileSync(path.join(__dirname, '../pages', file), 'utf8'), { require: id => id.endsWith('/api') ? api : S, wx, Page: o => definition = o, Date });
-  const p = { ...definition, data: JSON.parse(JSON.stringify(definition.data)), setData(patch) {
-    for (const [k, v] of Object.entries(patch)) { const keys = k.split('.'); let o = this.data; while (keys.length > 1) o = o[keys.shift()]; o[keys[0]] = v; } } };
+  const p = { ...definition, data: JSON.parse(JSON.stringify(definition.data)), setData(patch, done) {
+    for (const [k, v] of Object.entries(patch)) { const keys = k.split('.'); let o = this.data; while (keys.length > 1) o = o[keys.shift()]; o[keys[0]] = v; }
+    if (done) done(); } };
   return { p, navigation, modals, sheets, guards };
 }
 const baseApi = (extra = {}) => ({ accountEpoch: () => 0, accountState: () => '', ensureSession: async () => {}, peekSubscriptions: () => null, ...extra });

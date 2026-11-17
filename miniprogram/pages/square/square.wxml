@@ -1,10 +1,14 @@
 <import src="../../templates/leaderboard.wxml" />
 <view class="page">
-  <view class="tabs"><view wx:for="{{periods}}" wx:key="key" class="tab {{period === item.key ? 'tab-active' : ''}}" data-key="{{item.key}}" bindtap="switchPeriod">{{item.label}}</view></view>
-  <view class="tabs"><view class="tab {{mode === 'ranking' ? 'tab-active' : ''}}" data-key="ranking" bindtap="switchMode">总榜</view><view class="tab {{mode === 'tools' ? 'tab-active' : ''}}" data-key="tools" bindtap="switchMode">工具</view><view class="tab {{mode === 'models' ? 'tab-active' : ''}}" data-key="models" bindtap="switchMode">模型</view></view>
-  <view wx:if="{{mode === 'ranking'}}" class="tabs"><view class="tab {{metric !== 'credits' ? 'tab-active' : ''}}" data-key="tokens" bindtap="switchMetric">Token 榜</view><view class="tab {{metric === 'credits' ? 'tab-active' : ''}}" data-key="credits" bindtap="switchMetric">Credits 榜</view></view>
+  <view class="tabs" aria-role="tablist" aria-label="广场内容"><button class="tab {{mode === 'ranking' ? 'tab-active' : ''}}" aria-role="tab" aria-selected="{{mode === 'ranking'}}" data-key="ranking" bindtap="switchMode">总榜</button><button class="tab {{mode === 'tools' ? 'tab-active' : ''}}" aria-role="tab" aria-selected="{{mode === 'tools'}}" data-key="tools" bindtap="switchMode">工具</button><button class="tab {{mode === 'models' ? 'tab-active' : ''}}" aria-role="tab" aria-selected="{{mode === 'models'}}" data-key="models" bindtap="switchMode">模型</button></view>
+  <view class="filter-bar">
+    <picker range="{{periods}}" range-key="label" value="{{periodIndex}}" bindchange="pickPeriod" aria-label="选择统计周期，当前{{periods[periodIndex].label}}"><view class="filter-control"><text class="filter-label">周期</text><text class="filter-value">{{periods[periodIndex].label}}</text><text class="filter-chevron" aria-hidden="true">▾</text></view></picker>
+    <view wx:if="{{mode === 'ranking'}}" class="filter-actions" aria-label="排名口径"><button class="filter-action {{metric !== 'credits' ? 'filter-action-selected' : ''}}" aria-pressed="{{metric !== 'credits'}}" data-key="tokens" bindtap="switchMetric">Token</button><button class="filter-action {{metric === 'credits' ? 'filter-action-selected' : ''}}" aria-pressed="{{metric === 'credits'}}" data-key="credits" bindtap="switchMetric">Credits</button></view>
+  </view>
   <button class="trends-entry" bindtap="goTrends"><text>工具／模型趋势榜</text><text aria-hidden="true">›</text></button>
-  <view wx:if="{{loading}}" class="hint">加载中…</view>
+  <view wx:if="{{refreshing}}" class="inline-status" aria-role="status"><view class="loading-indicator" aria-hidden="true"></view><text>正在更新…</text></view>
+  <view wx:elif="{{refreshError}}" class="inline-error" aria-role="alert"><text>{{refreshError}} · 当前显示上次结果</text><button bindtap="refresh">重试</button></view>
+  <view wx:if="{{loading}}" class="hint state-loading" aria-role="status"><view class="loading-indicator" aria-hidden="true"></view><text>正在加载…</text></view>
   <view wx:elif="{{error}}" class="hint"><view class="hint-sub">{{error}}</view><button class="btn btn-ghost retry" bindtap="load">重新加载</button></view>
   <view wx:elif="{{mode !== 'ranking' && insights}}" class="insights">
     <view class="insight-heading"><text>{{mode === 'models' ? '模型' : '工具'}}使用分布</text><button class="insight-link" bindtap="goAnalysis">完整分析</button></view>
@@ -16,7 +20,7 @@
   </view>
   <view wx:elif="{{!entries.length}}" class="hint"><view class="hint-title display">本周期暂无用量</view><view class="hint-sub">可以切换到其他周期。</view><view class="hint-link" bindtap="goConnect">接入电脑</view></view>
   <block wx:else>
-    <view class="lb-table-head"><text>全站排名<text wx:if="{{total !== null}}"> · {{total}} 人</text></text><text>Token 用量</text></view>
+    <view class="lb-table-head"><text>全站排名<text wx:if="{{total !== null}}"> · {{total}} 人</text></text><text>{{metric === 'credits' ? 'Credits 用量' : 'Token 用量'}}</text></view>
     <template is="leaderboard-row" wx:for="{{entries}}" wx:key="rank" data="{{item}}" />
     <view class="pagination">
       <view wx:if="{{moreError}}" class="pagination-error">{{moreError}}</view>

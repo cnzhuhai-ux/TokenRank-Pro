@@ -1,69 +1,133 @@
 <import src="../../templates/profile-editor.wxml" />
 <view class="page">
-  <view class="tabs period-tabs"><view wx:for="{{periods}}" wx:key="key" class="tab {{period === item.key ? 'tab-active' : ''}}" data-key="{{item.key}}" bindtap="switchPeriod">{{item.label}}</view></view>
+  <view class="tabs period-tabs" aria-label="用量统计周期">
+    <button wx:for="{{periods}}" wx:key="key" class="tab {{period === item.key ? 'tab-active' : ''}}" data-key="{{item.key}}" bindtap="switchPeriod" aria-label="{{item.label + (period === item.key ? '，已选中' : '，切换周期')}}">{{item.label}}</button>
+  </view>
   <view wx:if="{{loading || usageLoading}}" class="loading-state"><view class="sk loading-number"></view><view class="note">加载中…</view></view>
-  <view wx:elif="{{error || usageError}}" class="error-note">{{error || usageError}}<button class="btn btn-ghost" bindtap="load">重新加载</button></view>
-  <block wx:elif="{{usage}}">
-    <view class="usage-hero">
-      <view class="hero-label">{{usage.periodLabel}} · {{usage.basisLabel}}</view>
-      <view class="hero-number num-font">{{usage.value}}<text class="hero-unit">{{usage.unit}}</text><text class="hero-tail">tokens</text></view>
-      <view class="exact num-font">{{usage.exact}} tokens</view>
-      <view wx:if="{{usage.creditsDisplay.available}}" class="hero-number num-font credits-number">{{usage.creditsDisplay.value}}<text wx:if="{{usage.creditsDisplay.unit}}" class="hero-unit">{{usage.creditsDisplay.unit}}</text><text class="hero-tail">Credits</text></view>
-      <view class="range">{{usage.range}} · {{usage.timezoneLabel}}<text wx:if="{{usage.syncText}}"> · 同步于 {{usage.syncText}}</text></view>
-      <view class="note" wx:if="{{usage.costDisplay.available}}">API 等值估算 <text class="num-font">${{usage.costDisplay.amount}}</text> USD<text wx:if="{{usage.costDisplay.note}}"> · {{usage.costDisplay.note}}</text></view>
-      <view class="note" wx:if="{{usage.creditsDisplay.available}}">Credits 计费工具（{{usage.creditsDisplay.note || 'Qoder 等'}}）<text wx:if="{{usage.creditsDisplay.unit}}"> · 合计 {{usage.creditsDisplay.formatted}} Credits</text></view>
-      <view wx:if="{{usage.has_history}}" class="usage-share">
-        <view class="share-actions">
-          <button class="btn btn-primary" open-type="share" aria-label="转发我的用量" disabled="{{!quickShareReady}}">{{quickSharePreparing ? '准备中' : '转发用量'}}</button>
-          <button class="btn btn-ghost" bindtap="goShare">分享图片</button>
-        </view>
-        <view wx:if="{{quickShareError}}" class="share-feedback"><text>{{quickShareError}}</text><button class="text-button" bindtap="retryQuickShare">重试</button></view>
+  <view wx:elif="{{error || usageError}}" class="error-note">{{error || usageError}}<button class="btn btn-ghost" bindtap="load" aria-label="重新加载个人用量">重新加载</button></view>
+  <view wx:elif="{{usage}}" class="usage-hero">
+    <view class="hero-label">{{usage.periodLabel}} · {{usage.basisLabel}}</view>
+    <view class="hero-number num-font">{{usage.value}}<text class="hero-unit">{{usage.unit}}</text><text class="hero-tail">tokens</text></view>
+    <view class="exact num-font" user-select="true">{{usage.exact}} tokens</view>
+    <view wx:if="{{usage.creditsDisplay.available}}" class="credits-summary">
+      <view class="hero-number num-font credits-number">{{usage.creditsDisplay.value}}<text wx:if="{{usage.creditsDisplay.unit}}" class="hero-unit">{{usage.creditsDisplay.unit}}</text><text class="hero-tail">Credits</text></view>
+      <view class="credits-note">Credits 计费工具（{{usage.creditsDisplay.note || 'Qoder 等'}}）<text wx:if="{{usage.credits.status === 'partial'}}"> · 部分记录缺少积分数据</text></view>
+      <view class="credits-note" user-select="true">合计 {{usage.creditsExact}} Credits</view>
+    </view>
+    <view class="range">{{usage.range}} · {{usage.timezoneLabel}}<text wx:if="{{usage.syncText}}"> · 同步于 {{usage.syncText}}</text></view>
+    <view class="cost-note" wx:if="{{usage.costDisplay.available}}">API 等值估算 <text class="num-font">${{usage.costDisplay.amount}}</text> USD<text wx:if="{{usage.costDisplay.note}}"> · {{usage.costDisplay.note}}</text></view>
+    <view class="metrics">
+      <view class="metric"><text class="metric-label">调用次数</text><text class="metric-value num-font">{{usage.requestsText}}</text></view>
+      <view wx:if="{{period !== 'day'}}" class="metric"><text class="metric-label">活跃天数</text><text class="metric-value num-font">{{usage.summary.active_days}}<text class="metric-unit"> 天</text></text></view>
+    </view>
+    <view wx:if="{{usage.has_history}}" class="usage-share">
+      <view class="share-actions">
+        <button class="btn btn-primary" open-type="share" aria-label="转发我的用量" disabled="{{!quickShareReady}}">{{quickSharePreparing ? '准备中' : '转发用量'}}</button>
+        <button class="btn btn-ghost" bindtap="goShare" aria-label="制作我的用量分享图片">分享图片</button>
       </view>
-      <view class="metrics"><view class="metric"><view class="metric-value num-font">{{usage.requestsText}}</view><view class="metric-label">调用次数</view></view><view wx:if="{{period !== 'day'}}" class="metric metric-secondary"><view class="metric-value num-font">{{usage.summary.active_days}}<text class="metric-unit"> 天</text></view><view class="metric-label">活跃天数</view></view></view>
-      <view wx:if="{{!usage.has_history && !hasReported}}" class="first-report"><view>还没有接入电脑。</view><button class="btn btn-primary" bindtap="goConnect">接入电脑</button></view>
-      <view wx:if="{{period === 'last_month' && !usage.reported_days}}" class="note">上个月没有同步记录。</view><view wx:elif="{{usage.has_history && !usage.summary.tokens}}" class="note">这个周期没有用量。</view>
+      <view wx:if="{{quickShareError}}" class="share-feedback"><text>{{quickShareError}}</text><button class="text-button" bindtap="retryQuickShare" aria-label="重新准备我的用量分享">重试</button></view>
     </view>
-    <view class="history-entries"><button bindtap="goAchievements">我的成就<text aria-hidden="true">›</text></button><button bindtap="goDaily">昨日用量日报<text aria-hidden="true">›</text></button><button bindtap="goCalendar">使用日历<text aria-hidden="true">›</text></button><button bindtap="goWeekly">个人周报<text aria-hidden="true">›</text></button></view>
+    <view wx:if="{{period === 'last_month' && !usage.reported_days}}" class="note">上个月没有同步记录。</view>
+    <view wx:elif="{{usage.has_history && !usage.summary.tokens}}" class="note">这个周期没有用量。</view>
+  </view>
+
+  <view class="connection-section">
+    <view class="connection-copy"><view class="section-title">电脑接入</view><view class="sync-text">{{connText || '登录后查看接入状态'}}</view></view>
+    <button class="btn {{hasReported ? 'btn-ghost' : 'btn-primary'}}" bindtap="goConnect" aria-label="{{hasReported ? '查看电脑接入设置与同步状态' : '接入电脑'}}">{{hasReported ? '接入设置' : '接入电脑'}}</button>
+  </view>
+  <view class="history-entries" aria-label="常用入口">
+    <button bindtap="goAchievements" aria-label="查看我的成就"><text class="entry-label">我的成就</text><text class="menu-arrow" aria-hidden="true">›</text></button>
+    <button bindtap="goDaily" aria-label="查看昨日用量日报"><text class="entry-label">昨日用量日报</text><text class="menu-arrow" aria-hidden="true">›</text></button>
+    <button bindtap="goCalendar" aria-label="查看使用日历"><text class="entry-label">使用日历</text><text class="menu-arrow" aria-hidden="true">›</text></button>
+    <button bindtap="goWeekly" aria-label="查看个人周报"><text class="entry-label">个人周报</text><text class="menu-arrow" aria-hidden="true">›</text></button>
+  </view>
+
+  <view class="section profile-section">
+    <button class="section-toggle" data-section="profileExpanded" bindtap="toggleSection" disabled="{{!user || saving || privacyBusy}}" aria-expanded="{{profileExpanded}}" aria-label="{{'头像和昵称，' + (profileComplete ? '资料已完善，' : '待完善，') + (profileExpanded ? '收起编辑' : '展开编辑')}}">
+      <view class="section-copy"><view class="section-title">头像和昵称</view><view class="section-meta">{{user ? (profileComplete ? (user.nickname || '已完善') : '待完善 · 参与群榜前需设置') : '登录后可编辑'}}</view></view>
+      <text class="section-action" aria-hidden="true">{{profileExpanded ? '收起' : (profileComplete ? '编辑' : '完善')}}</text>
+    </button>
+    <view wx:if="{{profileExpanded}}" class="section-content profile-content">
+      <template is="profile-editor" data="{{user, nickname, avatarUrl, saving, nicknameReady, nicknameFocus, privacyBusy, avatarNative, profileError}}" />
+    </view>
+  </view>
+
+  <block wx:if="{{usage && !loading && !usageLoading && !error && !usageError}}">
     <view class="section trend-section">
-      <view class="section-head"><text class="section-title display">用量走势</text><text class="section-meta">{{period === 'last_month' ? '上个月每日用量' : '最近 ' + usage.trend_days + ' 天'}}</text></view>
-      <view class="chart-caption">{{selectedDay ? selectedDay.day + ' · ' + selectedDay.exact + ' tokens' : '点柱条查看当天数值'}}<text wx:if="{{!selectedDay}}">峰值 {{usage.peakText}}</text></view>
-      <view class="chart"><view wx:for="{{usage.daily}}" wx:key="day" class="bar-slot {{(selectedDay ? selectedDay.day === item.day : index === usage.daily.length - 1) ? 'bar-selected' : ''}}" data-index="{{index}}" bindtap="selectDay"><view class="bar {{item.tokens ? '' : 'bar-zero'}}" style="height:{{item.height}}%;"></view></view></view>
-      <view class="axis"><text>{{usage.daily[0].label}}</text><text>{{usage.daily[usage.daily.length - 1].label}}</text></view>
+      <button class="section-toggle" data-section="trendExpanded" bindtap="toggleSection" aria-expanded="{{trendExpanded}}" aria-label="{{'用量走势，' + (trendExpanded ? '收起' : '展开')}}">
+        <view class="section-copy"><view class="section-title">用量走势</view><view class="section-meta">{{period === 'last_month' ? '上个月每日用量' : '最近 ' + usage.trend_days + ' 天'}}</view></view>
+        <text class="section-action" aria-hidden="true">{{trendExpanded ? '收起' : '展开'}}</text>
+      </button>
+      <view wx:if="{{trendExpanded}}" class="section-content">
+        <block wx:if="{{usage.daily.length}}">
+          <view class="date-stepper">
+            <button class="date-step" data-delta="-1" bindtap="stepDay" disabled="{{!canPrevious}}" aria-label="查看前一天的用量">前一天</button>
+            <picker class="date-picker" mode="date" value="{{selectedDay.day}}" start="{{trendStart}}" end="{{trendEnd}}" bindchange="pickDate" aria-label="{{'选择用量日期，当前 ' + selectedDay.day}}">
+              <view class="date-picker-label"><text class="num-font">{{selectedDay.day}}</text><text class="date-picker-hint">选择日期</text></view>
+            </picker>
+            <button class="date-step" data-delta="1" bindtap="stepDay" disabled="{{!canNext}}" aria-label="查看后一天的用量">后一天</button>
+          </view>
+          <view class="selected-day" aria-live="polite">
+            <text class="selected-day-label">{{selectedDay.day}}</text>
+            <view wx:if="{{selectedDay.valueAvailable}}" class="selected-day-number num-font" user-select="true">{{selectedDay.exact}}<text class="selected-day-unit"> tokens</text></view>
+            <view wx:else class="selected-day-status">{{selectedDay.statusText}}</view>
+            <view wx:if="{{selectedDay.valueAvailable && selectedDay.statusText}}" class="section-meta">{{selectedDay.statusText}}</view>
+          </view>
+          <view class="chart-caption"><text>每日 Token · {{usage.basisLabel}}</text><text>峰值 {{usage.peakText}}</text></view>
+          <view class="chart" aria-hidden="true">
+            <view wx:for="{{usage.daily}}" wx:key="day" class="bar-slot {{selectedDay.day === item.day ? 'bar-selected' : ''}}">
+              <view wx:if="{{item.valueAvailable}}" class="bar {{item.tokens ? '' : 'bar-zero'}}" style="height:{{item.height}}%;"></view>
+            </view>
+          </view>
+          <view class="axis"><text>{{usage.daily[0].label}}</text><text>{{usage.daily[usage.daily.length - 1].label}}</text></view>
+          <view class="note">使用上方日期选择器查看数值；未同步或同步状态未确认的日期留空。</view>
+        </block>
+        <view wx:else class="note">暂无每日趋势数据。</view>
+      </view>
     </view>
+
     <view class="section">
-      <view class="section-head"><text class="section-title display">工具与模型</text><button class="text-button" bindtap="goAnalysis">数据分析</button></view>
-      <view class="note" wx:if="{{!usage.summary.tokens}}">这个周期没有明细</view>
-      <block wx:else>
-        <view class="breakdown-label">使用工具<button class="text-button tools-share" bindtap="goTools">分享工具偏好</button></view>
-        <view wx:for="{{usage.tools}}" wx:key="name" class="detail-row" wx:if="{{expanded || 5 > index}}"><view class="detail-head"><text class="detail-name">{{item.name}}</text><text class="detail-number">{{item.formatted}} · {{item.percent}}%</text></view><view class="track"><view style="width:{{item.percent}}%;" class="fill tool-fill"></view></view></view>
-        <view class="breakdown-label model-label">使用模型</view>
-        <view wx:for="{{usage.models}}" wx:key="name" class="detail-row" wx:if="{{expanded || 5 > index}}"><view class="detail-head"><text class="detail-name">{{item.name}}</text><text class="detail-number">{{item.formatted}} · {{item.percent}}%</text></view><view class="track"><view style="width:{{item.percent}}%;" class="fill"></view></view></view>
-        <button wx:if="{{usage.models.length > 5 || usage.tools.length > 5}}" class="text-button" bindtap="toggleDetails">{{expanded ? '收起' : '展开全部'}}</button>
-        <view class="note">无法分类的用量计入“其他 / 未分类”。</view>
-      </block>
-      <view class="cache-row"><text>输入（不含缓存）</text><text>{{usage.inputText}} tokens</text></view>
-      <view class="cache-row"><text>输出</text><text>{{usage.outputText}} tokens</text></view>
-      <view class="cache-row"><text>缓存读取</text><text>{{usage.cacheReadText}} tokens</text></view>
-      <view class="cache-row"><text>缓存写入</text><text>{{usage.cacheWriteText}} tokens</text></view>
-      <view class="note">{{usage.basisNote}}按{{usage.timezoneLabel}}自然日统计。</view>
+      <button class="section-toggle" data-section="breakdownExpanded" bindtap="toggleSection" aria-expanded="{{breakdownExpanded}}" aria-label="{{'工具与模型，' + usage.tools.length + ' 种工具，' + usage.models.length + ' 种模型，' + (breakdownExpanded ? '收起' : '展开')}}">
+        <view class="section-copy"><view class="section-title">工具与模型</view><view class="section-meta">{{usage.tools.length}} 种工具 · {{usage.models.length}} 种模型</view></view>
+        <text class="section-action" aria-hidden="true">{{breakdownExpanded ? '收起' : '展开'}}</text>
+      </button>
+      <view wx:if="{{breakdownExpanded}}" class="section-content">
+        <view class="analysis-entry"><button class="text-button" bindtap="goAnalysis" aria-label="查看当前周期的个人数据分析">数据分析</button></view>
+        <view class="note" wx:if="{{!usage.summary.tokens}}">这个周期没有明细</view>
+        <block wx:else>
+          <view class="breakdown-heading"><text class="breakdown-label">使用工具</text><button class="text-button tools-share" bindtap="goTools" aria-label="分享当前周期的工具偏好">分享工具偏好</button></view>
+          <view wx:for="{{usage.tools}}" wx:key="name" class="detail-row" wx:if="{{expanded || 5 > index}}"><view class="detail-head"><text class="detail-name">{{item.name}}</text><text class="detail-number num-font">{{item.formatted}} · {{item.percent}}%</text></view><view class="track"><view style="width:{{item.percent}}%;" class="fill tool-fill"></view></view></view>
+          <view class="breakdown-label model-label">使用模型</view>
+          <view wx:for="{{usage.models}}" wx:key="name" class="detail-row" wx:if="{{expanded || 5 > index}}"><view class="detail-head"><text class="detail-name">{{item.name}}</text><text class="detail-number num-font">{{item.formatted}} · {{item.percent}}%</text></view><view class="track"><view style="width:{{item.percent}}%;" class="fill"></view></view></view>
+          <button wx:if="{{usage.models.length > 5 || usage.tools.length > 5}}" class="text-button all-details" bindtap="toggleDetails" aria-expanded="{{expanded}}" aria-label="{{expanded ? '收起工具和模型明细，分别保留前五项' : '展开全部工具和模型明细'}}">{{expanded ? '收起至前 5 项' : '展开全部工具与模型'}}</button>
+          <view class="note">无法分类的用量计入“其他 / 未分类”。</view>
+        </block>
+      </view>
+    </view>
+
+    <view class="section">
+      <button class="section-toggle" data-section="cacheExpanded" bindtap="toggleSection" aria-expanded="{{cacheExpanded}}" aria-label="{{'输入、输出与缓存明细，' + (cacheExpanded ? '收起' : '展开')}}">
+        <view class="section-copy"><view class="section-title">输入、输出与缓存</view><view class="section-meta">{{usage.basisLabel}}</view></view>
+        <text class="section-action" aria-hidden="true">{{cacheExpanded ? '收起' : '展开'}}</text>
+      </button>
+      <view wx:if="{{cacheExpanded}}" class="section-content cache-content">
+        <view class="cache-row"><text>输入（不含缓存）</text><text class="num-font">{{usage.inputText}} tokens</text></view>
+        <view class="cache-row"><text>输出</text><text class="num-font">{{usage.outputText}} tokens</text></view>
+        <view class="cache-row"><text>缓存读取</text><text class="num-font">{{usage.cacheReadText}} tokens</text></view>
+        <view class="cache-row"><text>缓存写入</text><text class="num-font">{{usage.cacheWriteText}} tokens</text></view>
+        <view class="note">{{usage.basisNote}}按{{usage.timezoneLabel}}自然日统计。</view>
+      </view>
     </view>
   </block>
+
   <view class="account-section">
-    <view class="section-title display">电脑接入</view><view class="sync-text">{{connText || '登录后查看接入状态'}}</view>
-    <button class="btn btn-ghost" bindtap="goConnect">{{hasReported ? '接入设置' : '接入电脑'}}</button>
-  </view>
-  <view class="account-section">
-    <view class="ranking-row"><view class="section-title display">参与排名</view><switch checked="{{!(user && user.rank_hidden)}}" disabled="{{!user || rankingSaving}}" color="#07C160" bindchange="toggleRanking" /></view>
+    <view class="ranking-row"><view class="section-title">参与排名</view><switch checked="{{!(user && user.rank_hidden)}}" disabled="{{!user || rankingSaving}}" color="#07C160" bindchange="toggleRanking" aria-label="参与广场和群榜排名" /></view>
     <view class="sync-text">{{user && user.rank_hidden ? '已关闭：你的用量只有自己能看到，广场和群榜都不显示你。' : '关掉后，你的用量只有自己能看到，广场和群榜都不显示你。'}}</view>
   </view>
-  <view class="account-section">
-    <view class="section-title display">头像和昵称</view>
-    <template is="profile-editor" data="{{user, nickname, avatarUrl, saving, nicknameReady, nicknameFocus, privacyBusy, avatarNative, profileError}}" />
-  </view>
-  <view class="menu-item" bindtap="goGroups"><text>我的群榜</text><text class="menu-arrow" aria-hidden="true">›</text></view>
-  <view class="menu-item" bindtap="goReminders"><text>消息提醒</text><text class="menu-arrow" aria-hidden="true">›</text></view>
-  <view class="menu-item" bindtap="goAbout"><text>使用说明</text><text class="menu-arrow" aria-hidden="true">›</text></view>
-  <view class="menu-item account-delete" bindtap="goAccount"><text>注销账号</text><text class="menu-arrow" aria-hidden="true">›</text></view>
+  <button class="menu-item" bindtap="goGroups" aria-label="查看我的群榜"><text>我的群榜</text><text class="menu-arrow" aria-hidden="true">›</text></button>
+  <button class="menu-item" bindtap="goReminders" aria-label="设置消息提醒"><text>消息提醒</text><text class="menu-arrow" aria-hidden="true">›</text></button>
+  <button class="menu-item" bindtap="goAbout" aria-label="查看使用说明"><text>使用说明</text><text class="menu-arrow" aria-hidden="true">›</text></button>
+  <button class="menu-item account-delete" bindtap="goAccount" aria-label="管理账号注销"><text>注销账号</text><text class="menu-arrow" aria-hidden="true">›</text></button>
 </view>
 <canvas type="2d" id="quickShareCanvas" class="export-canvas"></canvas>
 <privacy-notice />

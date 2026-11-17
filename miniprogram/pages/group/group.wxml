@@ -3,17 +3,18 @@
 <view class="page">
   <view wx:if="{{missing}}" class="hint">
     <view class="hint-title display">请从微信群打开</view><view class="hint-sub">群榜需要从群里的卡片进入。</view>
-    <button class="btn btn-primary hero-cta" open-type="share">分享到微信群</button><view class="hint-link" bindtap="goHome">我的群榜</view>
+    <button class="btn btn-primary hero-cta" open-type="share">分享到微信群</button><button class="hint-link" bindtap="goHome">我的群榜</button>
   </view>
-  <view wx:elif="{{enterState === 'idle' || enterState === 'resolving'}}" class="hint"><view class="hint-title display">正在识别微信群</view><view class="hint-sub">请稍候…</view></view>
+  <view wx:elif="{{enterState === 'idle' || enterState === 'resolving'}}" class="hint state-loading" aria-role="status" aria-label="正在识别微信群"><view class="loading-indicator"></view><view class="hint-title display">正在识别微信群</view><view class="hint-sub">请稍候</view></view>
   <view wx:elif="{{enterState === 'confirm'}}" class="hint join-prompt">
     <view wx:if="{{sourceName && (!groupExists || sourceName !== name)}}" class="source-note">这张卡片来自「{{sourceName}}」，这里是你当前所在群的排名。</view>
-    <view class="hint-title display">加入本群排名？</view>
+    <view class="hint-title display">加入本群排名</view>
     <view class="join-name">{{name}}</view>
     <view class="hint-sub">{{groupExists ? members + ' 人已加入' : '本群还没有榜单，加入后创建'}}</view>
-    <input wx:if="{{!groupExists}}" class="name-input" maxlength="100" value="{{draftName}}" bindinput="onDraftName" placeholder="给群榜起个名字，建议填微信群名" placeholder-class="name-ph" disabled="{{joining}}" />
+    <input wx:if="{{!groupExists}}" class="name-input" maxlength="100" value="{{draftName}}" bindinput="onDraftName" placeholder="给群榜起个名字，建议填微信群名" placeholder-class="name-ph" disabled="{{joining}}" aria-label="群榜名称" />
     <view class="hint-sub">加入前需要设置头像和昵称。</view>
-    <button class="btn btn-primary hero-cta" bindtap="confirmJoin" loading="{{joining}}" disabled="{{joining}}">{{joining ? '正在加入' : '加入本群排名'}}</button>
+    <view wx:if="{{joining}}" class="inline-status" aria-role="status"><view class="loading-indicator"></view><text>正在加入本群</text></view>
+    <button class="btn btn-primary hero-cta" bindtap="confirmJoin" disabled="{{joining}}">{{joining ? '正在加入' : '加入本群排名'}}</button>
     <button class="btn btn-ghost hero-share" bindtap="cancelJoin" disabled="{{joining}}">暂不加入</button>
   </view>
   <view wx:elif="{{enterState === 'profile'}}" class="profile-gate">
@@ -30,62 +31,69 @@
     <button class="btn btn-ghost hero-share" bindtap="goSquare">看广场榜</button>
   </view>
   <view wx:elif="{{enterState === 'failed'}}" class="hint">
-    <view class="hint-title display">没有识别到微信群</view><view class="hint-sub">{{enterError}}</view>
+    <view class="hint-title display">没有识别到微信群</view><view class="hint-sub inline-error">{{enterError}}</view>
     <button class="btn btn-primary hero-cta" bindtap="tryEnterGroup">重新识别</button>
-    <button class="btn btn-ghost hero-share" open-type="share">重新分享</button><view class="hint-link" bindtap="goHome">我的群榜</view>
+    <button class="btn btn-ghost hero-share" open-type="share">重新分享</button><button class="hint-link" bindtap="goHome">我的群榜</button>
   </view>
   <block wx:else>
     <view class="hero">
       <view wx:if="{{sourceName && joined === true && sourceName !== name}}" class="source-note">这张卡片来自「{{sourceName}}」，这里是本群的排名。</view>
       <view class="hero-top">
-        <view class="hero-text"><view class="hero-name">{{name || '本群排名'}}</view><view class="hero-sub">{{members}} 人已加入<text wx:if="{{total !== null && !loading && !error}}"> · 本周期 {{total}} 人上榜</text></view></view>
-        <button class="rename-btn" wx:if="{{canRename && named}}" bindtap="rename">改名</button>
+        <view class="hero-text"><view class="hero-name">{{name || '本群排名'}}</view><view class="hero-sub">{{members}} 人已加入<text wx:if="{{total !== null && boardReady}}"> · 本周期 {{total}} 人上榜</text></view></view>
+        <button wx:if="{{joined === true && boardReady}}" class="overview-shortcut" bindtap="scrollToInsights" aria-label="查看下方本群分析">本群分析</button>
+        <button class="rename-btn" wx:if="{{canRename && named}}" bindtap="rename" disabled="{{loading || refreshing}}">改名</button>
       </view>
-      <view wx:if="{{joined === true && !named && canRename}}" class="name-prompt"><text>这个群榜还没起名字</text><button class="name-prompt-btn" bindtap="rename">起名</button></view>
-      <button wx:if="{{joined === true && user && hasReported}}" class="sync-strip status-{{connState}}" bindtap="goConnect" aria-label="查看电脑同步状态">
-        <view class="sync-main status-line"><view class="status-dot"></view><text class="sync-text">{{connText}}</text></view>
-        <text class="sync-action">同步设置</text>
+      <view wx:if="{{joined === true && !named && canRename}}" class="name-prompt"><text>这个群榜还没起名字</text><button class="name-prompt-btn" bindtap="rename" disabled="{{loading || refreshing}}">起名</button></view>
+      <button wx:if="{{joined === true && user}}" class="sync-strip status-{{connState}}" bindtap="goConnect" aria-label="{{hasReported ? '查看电脑同步状态' : '接入电脑'}}">
+        <view class="sync-main status-line"><view class="status-dot"></view><text class="sync-text">{{hasReported ? connText : '还没有接入电脑'}}</text></view>
+        <text class="sync-action">{{hasReported ? '同步设置' : '接入电脑'}}</text>
       </button>
-      <view wx:elif="{{joined === true && user}}" class="quick-connect"><view class="quick-copy"><view class="quick-title">还没有接入电脑</view><view class="quick-note">接入后显示你的用量，也可以关掉排名只自己看。</view></view><button class="btn btn-primary quick-connect-btn" bindtap="goConnect">接入</button></view>
       <view wx:elif="{{joined === false}}" class="connection-panel"><view class="hero-tip">从群里的卡片进入后可以加入本群排名。</view><button class="btn btn-primary hero-cta" bindtap="tryEnterGroup">识别本群</button></view>
     </view>
-    <view class="tabs" wx:if="{{joined === true}}"><view wx:for="{{periods}}" wx:key="key" class="tab {{period === item.key ? 'tab-active' : ''}}" data-key="{{item.key}}" bindtap="switchPeriod">{{item.label}}</view></view>
-    <view wx:if="{{joined === true}}" class="group-overview">
-      <view class="overview-heading"><text>本群用量</text><button class="overview-link" bindtap="openGroupReport">分析与分享 ›</button></view>
-      <block wx:if="{{insights}}">
-        <view class="overview-metrics"><view><view class="overview-value">{{insights.amount.value}}<text class="overview-unit">{{insights.amount.unit}}</text></view><view class="overview-label">Tokens · 含缓存</view></view><view><view class="overview-value">{{insights.costText}}</view><view class="overview-label">{{insights.costLabel}} · USD</view></view><view><view class="overview-value">{{insights.summary.active_users}}<text class="overview-unit">人</text></view><view class="overview-label">活跃 / {{members}} 人加入</view></view></view>
-        <view class="overview-preference"><text class="overview-preference-label">用量最多的工具</text><text class="overview-preference-value">{{insights.topTool}}</text></view><view class="overview-preference"><text class="overview-preference-label">用量最多的模型</text><text class="overview-preference-value">{{insights.topModel}}</text></view>
-        <view class="overview-note" wx:if="{{insights.costNote}}">{{insights.costNote}}</view>
-      </block>
-      <view wx:elif="{{insightsLoading}}" class="overview-note">正在汇总本群用量…</view>
-      <view wx:else class="overview-note">{{insightsError || '群数据暂不可用'}}<button class="overview-link" bindtap="retryInsights">重试</button></view>
-    </view>
-    <view wx:if="{{loading}}" class="hint hint-sm">正在加载本群榜单…</view>
-    <view wx:elif="{{error}}" class="hint hint-sm"><view class="hint-sub">{{error}}</view><button class="btn btn-ghost hero-cta" bindtap="load">重新加载</button></view>
-    <block wx:elif="{{joined === true}}">
-      <view wx:if="{{!entries.length}}" class="hint hint-sm"><view class="hint-title display">本周期暂无用量</view><view class="hint-sub">成员同步用量后会显示在这里。</view></view>
+    <view class="tabs" wx:if="{{joined === true}}"><button wx:for="{{periods}}" wx:key="key" class="tab {{period === item.key ? 'tab-active' : ''}}" data-key="{{item.key}}" bindtap="switchPeriod" aria-label="{{item.label + (period === item.key ? '，已选中' : '')}}">{{item.label}}</button></view>
+    <view wx:if="{{loading}}" class="hint hint-sm state-loading" aria-role="status"><view class="loading-indicator"></view><view>正在加载本群榜单</view></view>
+    <view wx:elif="{{error}}" class="hint hint-sm"><view class="hint-title display">暂时无法查看本群排名</view><view class="hint-sub inline-error">{{error}}</view><button class="btn btn-primary hero-cta" bindtap="load">重新加载</button></view>
+    <block wx:elif="{{joined === true && boardReady}}">
+      <view wx:if="{{!entries.length}}" class="hint hint-sm"><view class="hint-title display">本周期暂无用量</view><view class="hint-sub">成员同步用量后会显示在这里。</view><button wx:if="{{!hasReported}}" class="btn btn-ghost hero-cta" bindtap="goConnect">接入电脑</button></view>
       <block wx:else>
         <view wx:if="{{total > (me ? 1 : 0)}}" class="pk-hint">点头像，和 TA PK</view>
         <view class="lb-table-head"><text>群排名</text><text>Token 用量</text></view>
         <template is="leaderboard-row" wx:for="{{entries}}" wx:key="rank" data="{{item, pkEnabled: true}}" />
         <view class="pagination">
-          <view wx:if="{{moreError}}" class="pagination-error">{{moreError}}</view>
-          <button wx:if="{{hasMore}}" class="load-more" bindtap="loadMore" loading="{{loadingMore}}" disabled="{{loadingMore}}">{{loadingMore ? '正在加载…' : moreError ? '重新加载' : '加载更多'}}<text wx:if="{{!loadingMore}}"> · {{entries.length}} / {{total}}</text></button>
+          <view wx:if="{{moreError}}" class="pagination-error inline-error">{{moreError}}</view>
+          <view wx:if="{{loadingMore}}" class="inline-status" aria-role="status"><view class="loading-indicator"></view><text>正在加载更多成员</text></view>
+          <button wx:if="{{hasMore}}" class="btn btn-ghost load-more" bindtap="loadMore" disabled="{{loadingMore || refreshing || refreshError}}">{{loadingMore ? '正在加载' : moreError ? '重新加载' : '加载更多'}}<text wx:if="{{!loadingMore}}"> · {{entries.length}} / {{total}}</text></button>
           <view wx:elif="{{total !== null}}" class="pagination-end">共 {{total}} 人</view>
         </view>
       </block>
     </block>
-    <view class="board-meta" wx:if="{{joined === true && !loading && !error}}"><text>{{updated_fmt ? '榜单更新于 ' + updated_fmt : '等待首次上报'}}</text><text>含缓存 · 北京时间</text></view>
-    <view wx:if="{{joined === true && user}}" class="visibility-row"><text>在本群显示我的排名</text><switch checked="{{!myHidden}}" disabled="{{visibilitySaving}}" color="#07C160" bindchange="toggleGroupVisibility" /></view>
+    <view class="board-meta" wx:if="{{joined === true && boardReady}}"><text>{{updated_fmt ? '榜单更新于 ' + updated_fmt : '等待首次上报'}}</text><text>含缓存 · 北京时间</text></view>
+    <view wx:if="{{joined === true && boardReady}}" class="board-refresh">
+      <view wx:if="{{refreshing}}" class="inline-status" aria-role="status"><view class="loading-indicator"></view><text>正在刷新榜单</text></view>
+      <view wx:elif="{{refreshError}}" class="inline-error refresh-failed"><view class="refresh-copy"><text>刷新未完成，显示上次结果</text><text class="refresh-detail">{{refreshError}}</text></view><button class="overview-link" bindtap="load">重试</button></view>
+      <button wx:else class="overview-link refresh-action" bindtap="load">刷新榜单</button>
+    </view>
+    <view wx:if="{{joined === true && boardReady}}" id="group-overview" class="group-overview">
+      <view class="overview-heading"><text>本群用量</text><button class="overview-link" bindtap="openGroupReport" disabled="{{refreshing || refreshError}}">分析与分享</button></view>
+      <block wx:if="{{insights}}">
+        <view class="overview-metrics"><view class="overview-metric"><view class="overview-value">{{insights.amount.value}}<text class="overview-unit">{{insights.amount.unit}}</text></view><view class="overview-label">Tokens · 含缓存</view></view><view class="overview-metric"><view class="overview-value">{{insights.costText}}</view><view class="overview-label">{{insights.costLabel}} · USD</view></view><view class="overview-metric"><view class="overview-value">{{insights.summary.active_users}}<text class="overview-unit">人</text></view><view class="overview-label">活跃 / {{members}} 人加入</view></view></view>
+        <view class="overview-preference"><text class="overview-preference-label">用量最多的工具</text><text class="overview-preference-value">{{insights.topTool}}</text></view><view class="overview-preference"><text class="overview-preference-label">用量最多的模型</text><text class="overview-preference-value">{{insights.topModel}}</text></view>
+        <view class="overview-note" wx:if="{{insights.costNote}}">{{insights.costNote}}</view>
+      </block>
+      <view wx:if="{{insightsLoading && !refreshing && !loadingMore}}" class="inline-status overview-status" aria-role="status"><view class="loading-indicator"></view><text>正在汇总本群用量</text></view>
+      <view wx:elif="{{!insights && (refreshing || refreshError)}}" class="overview-note">{{refreshing ? '正在更新本群用量' : '刷新后可查看本群用量'}}</view>
+      <view wx:elif="{{!insightsLoading && (insightsError || !insights)}}" class="inline-error overview-status"><text>{{insightsError || '群数据暂不可用'}}</text><button class="overview-link" bindtap="retryInsights" disabled="{{refreshing || refreshError}}">重试</button></view>
+    </view>
+    <view wx:if="{{joined === true && user && boardReady}}" class="visibility-row"><text>在本群显示我的排名</text><switch checked="{{!myHidden}}" disabled="{{visibilitySaving || refreshing || refreshError}}" color="#07C160" bindchange="toggleGroupVisibility" aria-label="在本群显示我的排名" /></view>
     <view class="board-tools">
-      <picker wx:if="{{joined === true}}" class="poster-style-picker" range="{{posterStyles}}" value="{{posterStyleIndex}}" bindchange="changePosterStyle"><view class="poster-style-label">分享图：{{posterStyles[posterStyleIndex]}}</view></picker>
-      <button wx:if="{{joined === true}}" class="text-action" bindtap="previewPoster" disabled="{{loading || posterGenerating || (posterStyle === 'achievement' && !quickShareReady)}}">{{posterGenerating ? '生成中…' : posterError ? '重新生成图片' : '预览图片'}}</button>
-      <button wx:if="{{joined === true && posterStyle !== 'achievement'}}" class="text-action" open-type="share" data-kind="board">转发完整榜单</button>
+      <picker wx:if="{{joined === true && boardReady}}" class="poster-style-picker" range="{{posterStyles}}" value="{{posterStyleIndex}}" bindchange="changePosterStyle" disabled="{{refreshing || refreshError}}"><view class="poster-style-label">分享图：{{posterStyles[posterStyleIndex]}}</view></picker>
+      <button wx:if="{{joined === true && boardReady}}" class="text-action" bindtap="previewPoster" disabled="{{loading || refreshing || refreshError || posterGenerating || (posterStyle === 'achievement' && !quickShareReady)}}">{{posterGenerating ? '生成中' : posterError ? '重新生成图片' : '预览图片'}}</button>
+      <button wx:if="{{joined === true && boardReady && posterStyle !== 'achievement'}}" class="text-action" open-type="share" data-kind="board" disabled="{{refreshing || refreshError}}">转发完整榜单</button>
       <button wx:if="{{joined === true && quickShareError}}" class="text-action" bindtap="retryQuickShare">转发重试</button>
       <button class="text-action other-groups" bindtap="goHome">我的群榜</button>
     </view>
-    <view wx:if="{{joined === true && posterError}}" class="poster-note">{{posterError}}</view>
-    <view wx:if="{{joined === true && quickShareError}}" class="poster-note">{{quickShareError}}</view>
+    <view wx:if="{{joined === true && posterError}}" class="poster-note inline-error">{{posterError}}</view>
+    <view wx:if="{{joined === true && quickShareError}}" class="poster-note inline-error">{{quickShareError}}</view>
     <view wx:if="{{joined === true}}" class="share-note">成绩卡展示本次用量与群内名次。</view>
     <view wx:if="{{joined === true}}" class="lb-own-dock share-dock">
       <template is="leaderboard-me" data="{{me, user, rankLabel: '我的群内排名', showGlobal: true, emptyLabel: loading ? '加载中…' : error ? '暂时无法获取' : user && user.rank_hidden ? '已关闭排名' : myHidden ? '已在本群隐藏' : hasReported ? '本周期未上榜' : '接入电脑后上榜'}}" />

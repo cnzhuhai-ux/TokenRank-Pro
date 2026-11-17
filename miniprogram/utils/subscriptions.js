@@ -160,17 +160,25 @@ function formFromItem(item, today, currency = 'USD') {
     ended_day: item.ended_day || '', notes: item.notes || '', api_key: !!item.api_key };
 }
 
+// Keep the first error for existing callers and expose every invalid field for inline feedback.
+function formErrors(errors) {
+  const field = Object.keys(errors)[0];
+  return field ? { error: errors[field], field, errors } : null;
+}
+
 function bodyFromForm(form, today) {
-  const name = String(form.name || '').trim();
-  if (!name) return { error: '请填写服务名称' };
+  const errors = {}, name = String(form.name || '').trim();
+  if (!name) errors.name = '请填写服务名称';
   const price = Number(String(form.price).trim());
-  if (!String(form.price).trim() || !Number.isFinite(price) || price <= 0 || price > 1_000_000) return { error: '请填写有效的价格' };
+  if (!String(form.price).trim() || !Number.isFinite(price) || price <= 0 || price > 1_000_000) errors.price = '请填写有效的价格';
   let customDays = null;
   if (form.cycle === 'custom') {
     customDays = Number(form.custom_days);
-    if (!Number.isInteger(customDays) || customDays < 1 || customDays > 3650) return { error: '自定义周期为 1 到 3650 天' };
+    if (!Number.isInteger(customDays) || customDays < 1 || customDays > 3650) errors.custom_days = '自定义周期为 1 到 3650 天';
   }
-  if (!form.start_day || form.start_day > today) return { error: '开始日期不能晚于今天' };
+  if (!form.start_day || form.start_day > today) errors.start_day = '开始日期不能晚于今天';
+  const invalid = formErrors(errors);
+  if (invalid) return invalid;
   const body = { name, plan: String(form.plan || '').trim() || null, price: Math.round(price * 100) / 100, currency: form.currency,
     cycle: form.cycle, custom_days: customDays, start_day: form.start_day, status: form.status, notes: String(form.notes || '').trim() || null,
     api_key: !!form.api_key };
@@ -183,10 +191,12 @@ function topupForm(record, today, currency = 'CNY') {
     : { kind: 'topup', amount: '', currency, day: today, notes: '' };
 }
 function topupBody(form, vendor, today) {
-  const amount = Number(String(form.amount).trim());
+  const errors = {}, amount = Number(String(form.amount).trim());
   const min = form.kind === 'topup' ? 0.01 : 0;
-  if (!String(form.amount).trim() || !Number.isFinite(amount) || amount < min || amount > 1_000_000_000) return { error: form.kind === 'topup' ? '请填写有效的充值金额' : '请填写有效的余额' };
-  if (!form.day || form.day > today) return { error: '日期不能晚于今天' };
+  if (!String(form.amount).trim() || !Number.isFinite(amount) || amount < min || amount > 1_000_000_000) errors.amount = form.kind === 'topup' ? '请填写有效的充值金额' : '请填写有效的余额';
+  if (!form.day || form.day > today) errors.day = '日期不能晚于今天';
+  const invalid = formErrors(errors);
+  if (invalid) return invalid;
   return { body: { vendor, kind: form.kind, amount: Math.round(amount * 100) / 100, currency: form.currency, day: form.day, notes: String(form.notes || '').trim() || null } };
 }
 
