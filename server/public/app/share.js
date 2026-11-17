@@ -14,7 +14,7 @@
   function baseUrl() { const url = new URL(config.baseUrl || '/app/', root.location?.href || 'http://localhost/app/'); url.hash = ''; url.search = ''; if (url.pathname === '/') url.pathname = '/app/'; if (!/^https?:$/.test(url.protocol)) throw new Error('分享地址必须是网页链接'); return url; }
   function link(value) { const url = baseUrl(); url.hash = '/share/' + idOf(value); return url.href; }
   async function nativeRequest(path, options = {}, publicRead = false) {
-    const response = await root.fetch(config.resolvePath ? config.resolvePath(path) : path, { method: options.method || 'GET', headers: { Accept: 'application/json', ...(options.body ? { 'Content-Type': 'application/json' } : {}) }, credentials: publicRead ? 'omit' : 'same-origin', cache: 'no-store', ...(options.body ? { body: JSON.stringify(options.body) } : {}) });
+    const response = await root.fetch(path, { method: options.method || 'GET', headers: { Accept: 'application/json', ...(options.body ? { 'Content-Type': 'application/json' } : {}) }, credentials: publicRead ? 'omit' : 'same-origin', cache: 'no-store', ...(options.body ? { body: JSON.stringify(options.body) } : {}) });
     let data; try { data = await response.json(); } catch { data = {}; }
     if (!response.ok) throw Object.assign(new Error(data.error || (response.status === 404 ? '分享记录已失效或已被取消，请重新生成' : `请求失败（${response.status}），请稍后再试`)), { status: response.status, statusCode: response.status, code: data.code });
     return data;

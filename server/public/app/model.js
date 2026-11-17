@@ -96,8 +96,7 @@
   function badgeArt(badge) {
     if (!arts.includes(badge?.art)) return '';
     const stage = stages[badge.family], index = stage?.[0] === badge.art ? stage[1].indexOf(badge.threshold) + 1 : 0;
-    const path = '/app/assets/badges/' + (index && index !== stage[2] ? 'tiers/' + badge.art + '-' + index : badge.art) + '.png';
-    return globalThis.TokenRankAuth?.path ? globalThis.TokenRankAuth.path(path) : path;
+    return '/app/assets/badges/' + (index && index !== stage[2] ? 'tiers/' + badge.art + '-' + index : badge.art) + '.png';
   }
   function consumeOAuthState(storage, returned) {
     const expected = storage.getItem('tr_oauth_state');

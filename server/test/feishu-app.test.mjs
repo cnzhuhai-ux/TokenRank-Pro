@@ -6,9 +6,6 @@ const source = readFileSync(new URL('../public/app/model.js', import.meta.url), 
 const context = { module: { exports: {} }, URL, URLSearchParams, Date, Map, Set, Uint8Array };
 vm.runInNewContext(source, context);
 const M = context.module.exports;
-const authContext = { module: { exports: {} }, URL, Uint8Array, Date };
-vm.runInNewContext(readFileSync(new URL('../public/app/auth.js', import.meta.url), 'utf8'), authContext);
-const Auth = authContext.module.exports;
 const deferred = () => { let resolve, reject; const promise = new Promise((a,b) => { resolve=a; reject=b; }); return { promise, resolve, reject }; };
 
 test('route validates deep links, dates, metrics and last_month and preserves parent context', () => {
@@ -124,7 +121,6 @@ function appHarness({ responses = {}, fetcher } = {}) {
   const document = { hidden: false, querySelector: node, querySelectorAll: () => [], body: node('body') };
   class Form { constructor(form) { this.values = Object.entries(form?.values || {}); } set(k, v) { this.values.push([k,v]); } [Symbol.iterator]() { return this.values[Symbol.iterator](); } }
   const ctx = { window: { TokenRankModel: M, TokenRankShare: { configure() {} } }, document, localStorage: { getItem: k => storage.get(k) ?? null, setItem: (k,v) => storage.set(k,v), removeItem: k => storage.delete(k) }, sessionStorage: {}, location: { origin: 'http://local', hash: '#/settings' }, history: {}, URL, URLSearchParams, Date, Map, Set, FormData: Form, console, setTimeout, clearTimeout, requestAnimationFrame: fn => fn(), matchMedia: () => ({ matches: false }), addEventListener() {}, crypto: { getRandomValues: a => a.fill(7) }, fetch: async (path, options) => { calls.push({path, ...options}); if (fetcher) return fetcher(path, options); return { ok: true, json: async () => responses[path] || {} }; } };
-  ctx.window.TokenRankAuth = Auth.create({ ...ctx, location: { ...ctx.location, href: 'http://local/app/' } });
   let app = readFileSync(new URL('../public/app/app.js', import.meta.url), 'utf8');
   app = app.replace("  login().catch(error => loginMask('登录失败', error.message));", `  window.testApp = { request, read, cache, mutate, settings, email, subscriptions, reminders, playBadge, releaseDisplay, hero, analysisBlock, current: () => current, setToken: v => {token=v;}, setLease: v => {displayLease=v;}, setAlive: fn => {current=fn;}, setRoute: r => {route=r;} }; current=()=>true; route={name:'me',period:'week',dimension:'tools'};`);
   vm.runInNewContext(app, ctx);
@@ -224,8 +220,7 @@ test('topup form posts a real zero balance and preserves vendor and currency', a
 test('web integration wires sharing, two-phase achievements and Windows installation', () => {
   const app = readFileSync(new URL('../public/app/app.js', import.meta.url), 'utf8');
   const html = readFileSync(new URL('../public/app/index.html', import.meta.url), 'utf8');
-  assert.ok(html.indexOf('./auth.js') < html.indexOf('./app.js'));
-  assert.ok(html.indexOf('./model.js') < html.indexOf('./app.js'));
+  assert.ok(html.indexOf('/app/model.js') < html.indexOf('/app/app.js'));
   for (const action of ['prepare', 'confirm', 'release']) assert.ok(app.includes('/api/my/achievements/' + action));
   assert.doesNotMatch(app, /achievements\/claim/);
   assert.ok(app.includes('await image.decode()'));
@@ -233,7 +228,7 @@ test('web integration wires sharing, two-phase achievements and Windows installa
   assert.ok(app.includes("options.show_amount = !!$('#share-amount')?.checked"));
   assert.match(app, /install_command_windows/); assert.match(app, /Windows PowerShell/);
   assert.doesNotMatch(app, /onclick="return false"|分享图片/);
-  assert.match(app, /await A.login/); assert.match(app, /A.path\(path\)/);
+  assert.match(app, /consumeOAuthState/); assert.match(app, /crypto/);
   assert.match(app, /\/api\/my\/overview/); assert.match(app, /\/api\/my\/groups-overview/);
   assert.match(app, /\/api\/my\/analysis\?period=/); assert.match(app, /&bundle=1/);
 });
