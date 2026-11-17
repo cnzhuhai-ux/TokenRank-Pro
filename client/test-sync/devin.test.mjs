@@ -5,7 +5,7 @@ import { mkdtempSync, mkdirSync, rmSync, realpathSync, existsSync, readFileSync,
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { DatabaseSync } from 'node:sqlite';
-import { collectDevinDays, discoverDevinDbs } from '../sync/devin.js';
+import { collectDevinDays, discoverDevinDbs, discoverDevinSessionDirs } from '../sync/devin.js';
 import { mergeOortDays } from '../sync/oort.js';
 import { batches, sync } from '../sync/report.js';
 import { writeConfig } from '../sync/config.js';
@@ -72,6 +72,27 @@ function fixture(t, name = 'cli') {
   return { root, db };
 }
 const read = (paths) => collectDevinDays({ paths, log: (m) => { throw new Error(m); } });
+
+function jsonlFixture(t) {
+  const root = mkdtempSync(join(tmpdir(), 'devin-jsonl-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const sessions = join(root, 'sessions');
+  mkdirSync(sessions);
+  return { root, sessions };
+}
+function nodeRecord({ at = UTC_NOON, nodeId = 1, ...message } = {}) {
+  return { kind: 'node', at, node: { id: nodeId, parent_id: null, metadata: {},
+    message: JSON.parse(messageJson(message)) } };
+}
+function jsonlSession(sessions, id, records, { model = 'session-fallback', meta } = {}) {
+  const dir = join(sessions, id);
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, 'meta.json'), meta ?? JSON.stringify({ id, model }));
+  const log = join(dir, 'log.jsonl');
+  writeFileSync(log, records.map(r => typeof r === 'string' ? r : JSON.stringify(r)).join('\n') + '\n');
+  return { dir, log };
+}
+const readJsonl = (sessions, options = {}) => collectDevinDays({ paths: [], sessionDirs: [sessions], ...options });
 
 test('Devin captures per-request usage, dedups forest nodes and attributes model', t => {
   const { db } = fixture(t);
@@ -427,6 +448,14 @@ test('sync merges Devin supplemental days into the upstream report without netwo
   addMessage(devinDb, { sessionId: 'sess-d', nodeId: 1, messageId: 'dm-1', model: 'swe-1-6-slow',
     created: Math.floor(Date.parse('2026-11-14T09:31:00Z') / 1000),
     metadataCreated: '2026-11-14T09:31:00.000000000Z', metrics: metrics(100, 20, 300, 50) });
+  const { log: newLog, dir: newSession } = jsonlSession(join(devinDir, 'sessions'), 'sess-d', [
+    // 同一旧请求迁移为 JSONL 后只计一次，新请求也须进入上传报文。
+    nodeRecord({ messageId: 'dm-1', model: 'swe-1-6-slow',
+      metadataCreated: '2026-11-14T09:31:00Z', metrics: metrics(100, 20, 300, 50) }),
+    nodeRecord({ messageId: 'dm-new', model: 'swe-1-6-slow',
+      metadataCreated: '2026-11-14T10:00:00Z', metrics: metrics(10, 20, 30, 40) }),
+  ]);
+  const newLogBefore = readFileSync(newLog), newMetaBefore = readFileSync(join(newSession, 'meta.json'));
 
   const dir = join(root, 'sync-cfg');
   writeConfig({ token: 'a'.repeat(32), server: 'https://fixture.example.com', device_id: 'fixture-device',
@@ -438,6 +467,8 @@ test('sync merges Devin supplemental days into the upstream report without netwo
     fetcher: () => { calls += 1; throw new Error('unexpected network'); } });
   assert.equal(calls, 0);
   assert.deepEqual(readFileSync(configFile), configBefore);
+  assert.deepEqual(readFileSync(newLog), newLogBefore);
+  assert.deepEqual(readFileSync(join(newSession, 'meta.json')), newMetaBefore);
   assert.equal(result.dryRun, true);
   const days = result.reports.flatMap((r) => r.days);
   assert.equal(days.length, 1);
@@ -445,11 +476,11 @@ test('sync merges Devin supplemental days into the upstream report without netwo
   assert.deepEqual({ day: day.day, tokens: day.tokens, input_tokens: day.input_tokens,
     output_tokens: day.output_tokens, cache_read: day.cache_read, cache_write: day.cache_write,
     requests: day.requests, tools: day.tools, models: day.models, tool_models: day.tool_models }, {
-    day: '2026-11-14', tokens: 1470, input_tokens: 700, output_tokens: 120,
-    cache_read: 600, cache_write: 50, requests: 2,
-    tools: [['codex', 1000], ['Devin', 470]],
-    models: [['gpt-x', 1000], ['swe-1-6-slow', 470]],
-    tool_models: [['codex', 'gpt-x', 1000], ['Devin', 'swe-1-6-slow', 470]],
+    day: '2026-11-14', tokens: 1570, input_tokens: 710, output_tokens: 140,
+    cache_read: 630, cache_write: 90, requests: 3,
+    tools: [['codex', 1000], ['Devin', 570]],
+    models: [['gpt-x', 1000], ['swe-1-6-slow', 570]],
+    tool_models: [['codex', 'gpt-x', 1000], ['Devin', 'swe-1-6-slow', 570]],
   });
 });
 
@@ -499,4 +530,129 @@ test('Devin skips malformed node timestamps and future completion days', t => {
   addMessage(db, { nodeId: 4, messageId: 'valid', metrics: metrics() });
   const days = read([db]);
   assert.deepEqual(days.map(d => [d.day, d.tokens, d.requests]), [['2026-11-13', 200, 1]]);
+});
+
+test('Devin JSONL captures four components, model switches and session fallback', t => {
+  const { sessions } = jsonlFixture(t);
+  jsonlSession(sessions, 'sess-new', [
+    nodeRecord({ messageId: 'first', model: 'model-a', metrics: metrics(10, 20, 30, 40) }),
+    nodeRecord({ messageId: 'second', model: 'model-b', metrics: metrics(1, 2, 3, 4) }),
+    nodeRecord({ messageId: 'fallback', model: ' \u0000 ', metrics: metrics(1, 1, 1, 1) }),
+  ], { model: 'session-model' });
+  const [day] = readJsonl(sessions);
+  assert.deepEqual([day.tokens, day.input_tokens, day.output_tokens, day.cache_read, day.cache_write,
+    day.requests], [114, 12, 23, 34, 45, 3]);
+  assert.deepEqual(day.models, [['model-a', 100], ['model-b', 10], ['session-model', 4]]);
+  assert.deepEqual(day.tool_models,
+    [['Devin', 'model-a', 100], ['Devin', 'model-b', 10], ['Devin', 'session-model', 4]]);
+});
+
+test('Devin discovers JSONL sessions without SQLite in all supported layouts', t => {
+  const { root } = jsonlFixture(t);
+  const layouts = [
+    join(root, 'AppData', 'Roaming', 'Devin', 'cli', 'sessions'),
+    join(root, 'AppData', 'Local', 'devin', 'cli-federal', 'sessions'),
+    join(root, '.local', 'share', 'devin', 'cli', 'sessions'),
+    join(root, 'Library', 'Application Support', 'Devin', 'cli', 'sessions'),
+    join(root, '.config', 'devin', 'cli-federal', 'sessions'),
+  ];
+  for (const [i, dir] of layouts.entries()) {
+    jsonlSession(dir, 'sess-' + i, [nodeRecord({ messageId: 'layout-' + i, metrics: metrics() })]);
+  }
+  const canonical = p => process.platform === 'win32' ? realpathSync(p).toLowerCase() : realpathSync(p);
+  const sorted = paths => paths.map(canonical).sort();
+  for (const [platform, indexes] of [
+    ['win32', [0, 1, 2, 4]], ['darwin', [2, 3, 4]], ['linux', [2, 4]],
+  ]) {
+    assert.deepEqual(sorted(discoverDevinSessionDirs({ home: root, env: {}, platform })),
+      sorted(indexes.map(i => layouts[i])));
+  }
+  const options = { home: root, env: {}, platform: 'win32' };
+  assert.deepEqual(discoverDevinDbs(options), []);
+  const [day] = collectDevinDays(options);
+  assert.deepEqual([day.tokens, day.requests], [800, 4]);
+  assert.deepEqual(collectDevinDays({ ...options, paths: [] }), []);
+});
+
+test('Devin JSONL uses completion time and record time fallback for Beijing days', t => {
+  const { sessions } = jsonlFixture(t);
+  jsonlSession(sessions, 'times', [
+    nodeRecord({ messageId: 'completion', at: UTC_NOON, metrics: metrics(),
+      metadataCreated: new Date(UTC_EVENING * 1000).toISOString() }),
+    nodeRecord({ messageId: 'fallback', at: UTC_NOON, metrics: metrics(), metadataCreated: 'invalid' }),
+    nodeRecord({ messageId: 'milliseconds', at: UTC_EVENING * 1000, metrics: metrics(), metadataCreated: false }),
+    nodeRecord({ messageId: 'future', at: UTC_NOON, metrics: metrics(), metadataCreated: '2099-01-01T00:00:00Z' }),
+  ]);
+  assert.deepEqual(readJsonl(sessions).map(d => [d.day, d.tokens, d.requests]),
+    [['2026-11-13', 200, 1], ['2026-11-14', 400, 2]]);
+});
+
+test('Devin JSONL and migrated SQLite share request and session-message deduplication', t => {
+  const { db } = fixture(t);
+  const { sessions } = jsonlFixture(t);
+  addSession(db, { id: 'migration', model: 'stale-session-model' });
+  addMessage(db, { sessionId: 'migration', nodeId: 1, messageId: 'db-copy', requestId: 'shared-request',
+    model: 'stale-db-model', metrics: metrics() });
+  addMessage(db, { sessionId: 'migration', nodeId: 2, messageId: 'fallback-shared', requestId: null,
+    metrics: metrics() });
+  addMessage(db, { sessionId: 'migration', nodeId: 3, messageId: 'db-only', model: 'old-history', metrics: metrics() });
+  jsonlSession(sessions, 'migration', [
+    nodeRecord({ messageId: 'new-copy', requestId: 'shared-request', model: 'new-model', metrics: metrics() }),
+    nodeRecord({ messageId: 'duplicate-node', requestId: 'shared-request', model: 'new-model', metrics: metrics() }),
+    nodeRecord({ messageId: 'fallback-shared', requestId: null, model: 'new-model', metrics: metrics() }),
+    nodeRecord({ messageId: 'fallback-shared', requestId: null, model: 'new-model', metrics: metrics() }),
+    nodeRecord({ requestId: 'request-only', model: 'new-model', metrics: metrics() }),
+  ]);
+  const [day] = collectDevinDays({ paths: [db], sessionDirs: [sessions, sessions] });
+  assert.deepEqual([day.tokens, day.requests], [800, 4]);
+  assert.deepEqual(day.models, [['new-model', 600], ['old-history', 200]]);
+});
+
+test('Devin JSONL tolerates bad lines, bad metadata and partial writes without modifying files', t => {
+  const { sessions } = jsonlFixture(t);
+  const { log, dir } = jsonlSession(sessions, 'bad-meta', [
+    'invalid secret conversation payload',
+    null,
+    { kind: 'other', node: nodeRecord({ messageId: 'not-node', metrics: metrics() }).node },
+    nodeRecord({ messageId: 'user', role: 'user', metrics: metrics() }),
+    nodeRecord({ messageId: 'zero', metrics: metrics(0, 0, 0, 0) }),
+    nodeRecord({ messageId: 'kept', model: 'known-model', metrics: metrics() }),
+    '{"kind":"node","node":',
+  ], { meta: '{invalid metadata containing private text' });
+  // 另一会话损坏不能阻断剩余会话。
+  const broken = join(sessions, 'broken');
+  mkdirSync(join(broken, 'log.jsonl'), { recursive: true });
+  jsonlSession(sessions, 'good', [nodeRecord({ messageId: 'valid', metrics: metrics() })]);
+  const before = readFileSync(log), metaBefore = readFileSync(join(dir, 'meta.json'));
+  const logs = [];
+  const [day] = readJsonl(sessions, { log: m => logs.push(m) });
+  assert.deepEqual([day.tokens, day.requests], [400, 2]);
+  assert.deepEqual(day.models, [['known-model', 200], ['session-fallback', 200]]);
+  assert.deepEqual(readFileSync(log), before);
+  assert.deepEqual(readFileSync(join(dir, 'meta.json')), metaBefore);
+  assert.equal(logs.some(m => /private text|secret conversation/.test(m)), false);
+});
+
+test('Devin JSONL falls back to directory session identity when metadata is missing', t => {
+  const { sessions } = jsonlFixture(t);
+  const { dir } = jsonlSession(sessions, 'no-meta', [
+    nodeRecord({ messageId: 'same', requestId: null, metrics: metrics() }),
+    nodeRecord({ messageId: 'same', requestId: null, metrics: metrics() }),
+  ]);
+  rmSync(join(dir, 'meta.json'));
+  const [day] = readJsonl(sessions);
+  assert.deepEqual([day.tokens, day.requests, day.models], [200, 1, [['unknown', 200]]]);
+});
+
+test('Devin JSONL preserves UTF-8 and large records across read chunks and handles valid final line', t => {
+  const { sessions } = jsonlFixture(t);
+  const first = nodeRecord({ messageId: 'large', model: '模型甲', metrics: metrics() });
+  // 超过 64 KiB 的一行且包含多字节字符；模型字段位于正文之后。
+  first.node.message.content = '填'.repeat(50000);
+  const last = nodeRecord({ messageId: 'last', model: '模型乙', metrics: metrics() });
+  const { log } = jsonlSession(sessions, 'large', []);
+  writeFileSync(log, JSON.stringify(first) + '\n' + JSON.stringify(last));
+  const [day] = readJsonl(sessions);
+  assert.deepEqual([day.tokens, day.requests], [400, 2]);
+  assert.deepEqual(day.models, [['模型甲', 200], ['模型乙', 200]].sort((a, b) => a[0].localeCompare(b[0])));
 });
