@@ -1,6 +1,6 @@
 # TokenRank 独立同步器
 
-v0.2.33 为独立只读适配器，接入原版 [luwill/token-watcher](https://github.com/luwill/token-watcher)。Node.js 22.13+，无第三方运行依赖。
+v0.2.35 为独立只读适配器，接入原版 [luwill/token-watcher](https://github.com/luwill/token-watcher)。Node.js 22.13+，无第三方运行依赖。
 
 更换服务器、接入码或统计库后，会重新全量上传本机保留的历史用量，包含注销后重新接入的情况。上传中断可分批续传；重复执行同一账号的接入命令不会重传未变化的日期。
 
@@ -169,13 +169,21 @@ Qoder（含 QoderWork）的企业网关只在 `usage.credits` 落真实消耗，
 
 金额估算在子进程（cost-worker）里完成，stdout 只承载日桶 JSON；`readDays` 的口径提示与「超出上报协议范围」警告写在子进程 stderr，此前被父进程丢弃，用户永远看不到。0.2.32 起父进程把子进程 stderr 逐行中继给同步日志（`[tokenrank] ` 前缀剥除），诊断信息在 `rank push --dry-run` 与日常同步中均可见。
 
-## Devin 会话库采集（0.2.33）
+## Devin 会话采集（0.2.33，0.2.35 支持 JSONL）
 
 Devin Desktop（原 Windsurf 更名）与 Devin CLI 的本地 agent 会话共用同一份会话库
 `sessions.db`：Desktop 里发起的本地会话由 CLI 内核承载（库中 `backend_type` 为
 `windsurf`），CLI 直连会话也在同一库里，两个入口因此合并为同一展示名 `Devin`。
 0.2.33 起 [`sync/devin.js`](sync/devin.js) 只读该库，从 `message_nodes` 的
 `chat_message` JSON 提取逐请求用量：
+
+0.2.35 同时支持新版 `sessions/<会话>/meta.json` 与 `log.jsonl`。新版 Devin 从
+SQLite 迁移后，旧 `sessions.db` 可能保留但不再更新；采集器会独立发现新会话目录，
+即使没有旧库也能采集。从 `kind=node` 记录的 `node.message.metadata` 提取同样的
+四分量和逐消息模型名，缺失模型退回 `meta.json` 的模型。新日志优先读取，与旧库
+共用请求去重键，迁移的历史不会重复累计；`transcripts` 不作为额外用量源。
+大日志按块逐行读取，以打开时文件大小为边界，新增内容留待下一轮；损坏或未写完的
+JSON 行跳过，其余会话继续采集。升级后的下一轮同步会补传漏采历史，无需清空云端数据。
 
 - **口径**：`metadata.metrics` 四分量（`input_tokens` 不含缓存，与库内
   `context_input_tokens` = input + cache_read + cache_creation 的关系已实测对齐）；

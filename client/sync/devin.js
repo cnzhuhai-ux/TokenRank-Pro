@@ -1,10 +1,12 @@
 /**
  * Devin（Cognition）用量补充采集：Devin Desktop（原 Windsurf 更名）与 Devin CLI 的
- * 本地 agent 会话共用同一份会话库 sessions.db——Desktop 的本地会话由 CLI 内核承载
+ * 本地 agent 会话共用同一份会话存储——Desktop 的本地会话由 CLI 内核承载
  * （backend_type 为 windsurf 的会话就是 Desktop 里发起的），CLI 直连会话也在同一库里，
  * 因此两个入口天然合并为同一展示名 Devin，按 request_id 去重。
  *
- * 逐请求用量在 message_nodes.chat_message（JSON 文本）的 metadata.metrics：
+ * 兼容旧 sessions.db 与新版 sessions/<会话>/{meta.json,log.jsonl}。
+ * 新版用量在 kind=node 的 node.message.metadata.metrics，旧库在
+ * message_nodes.chat_message（JSON 文本）的 metadata.metrics：
  *   - input_tokens / cache_read_tokens / cache_creation_tokens / output_tokens
  *   - input_tokens 不含缓存（库里的 context_input_tokens = 三项输入侧之和，已实测对齐）
  * 模型优先取逐消息 metadata.generation_model（会话中途切换模型时逐消息记录），
@@ -25,10 +27,13 @@
  *
  * 会话库是 CLI 的活动库（带 -wal），只读打开；损坏或非预期结构只跳过并告警，
  * 不中断同步。优先按 metadata.created_at 的完成时间归日，缺失退回节点时间（秒/毫秒）。
+ * 新版 JSONL 以起始文件大小分块只读，容忍未写完的尾行；优先新版并与旧库共享请求去重，
+ * 避免迁移数据重复计数。不采 transcripts。
  */
-import { statSync, realpathSync } from 'node:fs';
-import { join, resolve } from 'node:path';
+import { statSync, realpathSync, readdirSync, readFileSync, openSync, fstatSync, readSync, closeSync } from 'node:fs';
+import { join, resolve, basename } from 'node:path';
 import { homedir } from 'node:os';
+import { StringDecoder } from 'node:string_decoder';
 import { DatabaseSync } from 'node:sqlite';
 import { TOKEN_DETAIL_LIMITS } from './details.js';
 
@@ -45,6 +50,7 @@ const canonical = (path) => {
   return process.platform === 'win32' ? found.toLowerCase() : found;
 };
 const isFile = (path) => { try { return statSync(path).isFile(); } catch { return false; } };
+const isDirectory = (path) => { try { return statSync(path).isDirectory(); } catch { return false; } };
 
 /** 各平台会话库的候选目录：只看已知的安装布局，不做全盘扫描。 */
 function candidateBases({ home, env, platform }) {
@@ -58,13 +64,22 @@ function candidateBases({ home, env, platform }) {
 
 /** 发现本机全部 Devin 会话库（正式版与隔离版），按规范路径去重。 */
 export function discoverDevinDbs({ home = homedir(), env = process.env, platform = process.platform } = {}) {
+  return discoverStorage({ home, env, platform }, 'sessions.db', isFile);
+}
+
+/** 新版存储独立发现：新安装可能从未生成 sessions.db。 */
+export function discoverDevinSessionDirs({ home = homedir(), env = process.env, platform = process.platform } = {}) {
+  return discoverStorage({ home, env, platform }, 'sessions', isDirectory);
+}
+
+function discoverStorage({ home, env, platform }, leaf, exists) {
   const names = platform === 'linux' ? ['devin'] : ['Devin', 'devin'];
   const found = new Set();
   for (const base of candidateBases({ home, env, platform })) {
     for (const name of names) {
       for (const variant of DB_VARIANTS) {
-        const db = join(base, name, variant, 'sessions.db');
-        if (isFile(db)) found.add(canonical(db));
+        const path = join(base, name, variant, leaf);
+        if (exists(path)) found.add(canonical(path));
       }
     }
   }
@@ -95,10 +110,39 @@ function addTo(bucket, { input = 0, output = 0, cacheRead = 0, cacheWrite = 0, t
 const topEntries = (map, limit) => [...map.entries()].filter(([, v]) => v > 0)
   .sort((a, b) => b[1] - a[1] || String(a[0]).localeCompare(String(b[0]))).slice(0, limit);
 
+/** 两种存储使用相同的去重、时间与模型口径。 */
+function consumeUsage(row, seen, buckets) {
+  const today = beijingDayOf(Date.now());
+  const requestId = typeof row.rid === 'string' && row.rid.trim() ? row.rid : null;
+  const messageId = typeof row.mid === 'string' && row.mid ? row.mid : null;
+  const sessionId = typeof row.session_id === 'string' && row.session_id ? row.session_id : null;
+  const key = requestId ? `dv:r:${requestId}`
+    : sessionId && messageId ? `dv:m:${JSON.stringify([sessionId, messageId])}` : null;
+  if (!key || seen.has(key)) return;
+  const input = Number(row.t_input) || 0;
+  const output = Number(row.t_output) || 0;
+  const cacheRead = Number(row.t_cache_read) || 0;
+  const cacheWrite = Number(row.t_cache_write) || 0;
+  if (input + output + cacheRead + cacheWrite <= 0) return;
+  let ts = typeof row.completed_at === 'string' ? Date.parse(row.completed_at) : NaN;
+  if (!Number.isFinite(ts)) {
+    ts = Number(row.created_at) || 0;
+    if (ts > 0 && ts < 1e12) ts *= 1000;
+  }
+  if (!Number.isFinite(ts) || ts <= 0 || ts > 8.64e15 - 8 * 3600000) return;
+  const name = value => typeof value === 'string' ? value.replace(/[\u0000-\u001f\u007f]/g, '').trim() : '';
+  const model = (name(row.gen_model) || name(row.session_model) || 'unknown').slice(0, 60);
+  const day = beijingDayOf(ts);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(day) || day > today) return;
+  seen.add(key);
+  let bucket = buckets.get(day);
+  if (!bucket) { bucket = emptyBucket(day); buckets.set(day, bucket); }
+  addTo(bucket, { input, output, cacheRead, cacheWrite, tool: TOOL_NAMES.devin, model });
+}
+
 /** 逐请求四分量用量：请求优先去重，完成时间优先分日；不读取对话正文。 */
 function readSessionDb(path, seen, buckets, log) {
   let db;
-  const today = beijingDayOf(Date.now());
   try {
     db = new DatabaseSync(path, { readOnly: true });
     db.exec('PRAGMA query_only = ON; PRAGMA busy_timeout = 3000');
@@ -120,31 +164,7 @@ function readSessionDb(path, seen, buckets, log) {
       WHERE json_valid(n.chat_message) AND json_extract(n.chat_message, '$.role') = 'assistant'
       ORDER BY n.row_id`).all();
     for (const row of rows) {
-      const requestId = typeof row.rid === 'string' && row.rid.trim() ? row.rid : null;
-      const messageId = typeof row.mid === 'string' && row.mid ? row.mid : null;
-      const sessionId = typeof row.session_id === 'string' && row.session_id ? row.session_id : null;
-      const key = requestId ? `dv:r:${requestId}`
-        : sessionId && messageId ? `dv:m:${JSON.stringify([sessionId, messageId])}` : null;
-      if (!key || seen.has(key)) continue;
-      const input = Number(row.t_input) || 0;
-      const output = Number(row.t_output) || 0;
-      const cacheRead = Number(row.t_cache_read) || 0;
-      const cacheWrite = Number(row.t_cache_write) || 0;
-      if (input + output + cacheRead + cacheWrite <= 0) continue;
-      let ts = typeof row.completed_at === 'string' ? Date.parse(row.completed_at) : NaN;
-      if (!Number.isFinite(ts)) {
-        ts = Number(row.created_at) || 0;
-        if (ts > 0 && ts < 1e12) ts *= 1000;
-      }
-      if (!Number.isFinite(ts) || ts <= 0 || ts > 8.64e15 - 8 * 3600000) continue;
-      const name = value => typeof value === 'string' ? value.replace(/[\u0000-\u001f\u007f]/g, '').trim() : '';
-      const model = (name(row.gen_model) || name(row.session_model) || 'unknown').slice(0, 60);
-      const day = beijingDayOf(ts);
-      if (!/^\d{4}-\d{2}-\d{2}$/.test(day) || day > today) continue;
-      seen.add(key);
-      let bucket = buckets.get(day);
-      if (!bucket) { bucket = emptyBucket(day); buckets.set(day, bucket); }
-      addTo(bucket, { input, output, cacheRead, cacheWrite, tool: TOOL_NAMES.devin, model });
+      consumeUsage(row, seen, buckets);
     }
   } catch (err) {
     log(`devin 会话库 ${path} 读取失败，已跳过：${err?.message || err}`);
@@ -153,11 +173,77 @@ function readSessionDb(path, seen, buckets, log) {
   }
 }
 
-/** 汇总 Devin Desktop 与 Devin CLI（共用会话库）的逐请求用量，产出与上报协议同构的日行。 */
+/** 对活动日志取有界快照；内存仅保留当前行，不装载整份会话。 */
+function* jsonLines(path) {
+  const fd = openSync(path, 'r');
+  try {
+    const end = fstatSync(fd).size;
+    const chunk = Buffer.allocUnsafe(64 * 1024), decoder = new StringDecoder('utf8');
+    let position = 0, pending = '';
+    while (position < end) {
+      const bytes = readSync(fd, chunk, 0, Math.min(chunk.length, end - position), position);
+      if (!bytes) break;
+      position += bytes;
+      pending += decoder.write(chunk.subarray(0, bytes));
+      let start = 0, index;
+      while ((index = pending.indexOf('\n', start)) !== -1) {
+        const line = pending.slice(start, index);
+        start = index + 1;
+        let value;
+        try { value = JSON.parse(line); } catch { continue; }
+        yield value;
+      }
+      pending = pending.slice(start);
+    }
+    pending += decoder.end();
+    // 有效的无换行尾记录可读取；活跃文件尚未写完的 JSON 留待下次扫描。
+    let value;
+    try { value = JSON.parse(pending); } catch { return; }
+    yield value;
+  } finally { closeSync(fd); }
+}
+
+function readSessionDir(root, seen, buckets, log) {
+  let entries;
+  try { entries = readdirSync(root, { withFileTypes: true }); }
+  catch (err) { log(`devin 会话目录读取失败，已跳过（${err.code || 'READ_FAILED'}）`); return; }
+  for (const entry of entries.sort((a, b) => a.name.localeCompare(b.name))) {
+    if (!entry.isDirectory()) continue;
+    const dir = join(root, entry.name), file = join(dir, 'log.jsonl');
+    let meta = {};
+    try { meta = JSON.parse(readFileSync(join(dir, 'meta.json'), 'utf8')) || {}; }
+    catch {
+      // 元数据可能仍在写入；只记录固定诊断，逐消息模型与目录名仍足以归因。
+      log('devin 会话元数据暂不可读，已回退到逐消息模型与会话目录名');
+    }
+    const sessionId = typeof meta.id === 'string' && meta.id ? meta.id : basename(dir);
+    try {
+      for (const record of jsonLines(file)) {
+        if (record?.kind !== 'node') continue;
+        const node = record.node, message = node?.message;
+        if (message?.role !== 'assistant') continue;
+        const metadata = message.metadata || {}, metrics = metadata.metrics || {};
+        consumeUsage({ session_id: sessionId, mid: message.message_id, rid: metadata.request_id,
+          completed_at: metadata.created_at, created_at: node.metadata?.created_at ?? record.at,
+          t_input: metrics.input_tokens, t_output: metrics.output_tokens,
+          t_cache_read: metrics.cache_read_tokens, t_cache_write: metrics.cache_creation_tokens,
+          gen_model: metadata.generation_model, session_model: meta.model }, seen, buckets);
+      }
+    } catch (err) {
+      // 不包含 JSON 原文/解析异常，避免把会话正文写入日志。
+      log(`devin 会话日志读取失败，已跳过（${err.code || 'READ_FAILED'}）`);
+    }
+  }
+}
+
+/** 汇总 Devin Desktop 与 Devin CLI 两种存储格式的逐请求用量。 */
 export function collectDevinDays({ home = homedir(), env = process.env, platform = process.platform,
-  paths = null, log = () => {} } = {}) {
+  paths = null, sessionDirs = null, log = () => {} } = {}) {
   const dbs = paths || discoverDevinDbs({ home, env, platform });
+  // 显式 paths 沿用隔离行为；调用方可同时提供 sessionDirs 验证迁移合并。
+  const dirs = sessionDirs ?? (paths === null ? discoverDevinSessionDirs({ home, env, platform }) : []);
   const buckets = new Map(), seen = new Set();
+  for (const dir of dirs) readSessionDir(dir, seen, buckets, log);
   for (const path of dbs) readSessionDb(path, seen, buckets, log);
   return [...buckets.values()].sort((a, b) => a.day.localeCompare(b.day)).map((bucket) => ({
     day: bucket.day, tokens: bucket.tokens, input_tokens: bucket.input_tokens, output_tokens: bucket.output_tokens,
