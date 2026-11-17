@@ -11,7 +11,7 @@ function presentEntry(entry, ownRank, metric) {
     ? (Number(entry.tokens) > 0 ? `${tokens_fmt} tokens` : '')
     : (credits ? `${credits} Credits` : '');
   return { ...entry, tokens_fmt, tokens_value: amount.value, tokens_unit: amount.unit,
-    credits_view: metric === 'credits' ? formatCredits(entry.credits) : '', alt_view,
+    credits_view: metric === 'credits' ? credits : '', alt_view,
     requests_text: integer(entry.requests), initial: [...String(entry.nickname || '').trim()][0] || '?',
     rk: { label: String(entry.rank), top3: entry.rank >= 1 && entry.rank <= 3 },
     isMe: ownRank != null && entry.rank === ownRank };

@@ -3,11 +3,10 @@ const { PRESETS, CYCLES, CURRENCIES, STATUSES, symbol, iconFor, planLabel, formF
 const DISPLAY_KEY = 'subscription_display_currency';
 const displayCurrency = () => { try { return CURRENCIES.find(c => c.key === wx.getStorageSync(DISPLAY_KEY))?.key || 'CNY'; } catch { return 'CNY'; } };
 const beijingToday = () => new Date(Date.now() + 8 * 3600000).toISOString().slice(0, 10);
-const FIELDS = ['name', 'price', 'custom_days', 'start_day'];
 Page({
-  data: { id: '', loading: false, error: '', errorField: '', errorAction: '', fieldErrors: {}, busy: false, today: '', form: null,
+  data: { id: '', loading: false, error: '', busy: false, today: '', form: null,
     presets: PRESETS.map(p => ({ key: p.key, name: p.name, icon: p.icon })), cycles: CYCLES, statuses: STATUSES,
-    sheet: null, sheetBusy: false, icon: '', symbol: '$', selected: '', added: 0,
+    sheet: null, icon: '', symbol: '$', selected: '', added: 0,
     currencyLabels: CURRENCIES.map(c => `${c.label} ${c.symbol}`), currencyIndex: 1 },
   withCurrency(currency) { return { symbol: symbol(currency), currencyIndex: Math.max(0, CURRENCIES.findIndex(c => c.key === currency)) }; },
   async onLoad(options = {}) {
@@ -23,44 +22,19 @@ Page({
       if (index >= 0) this.choosePreset({ currentTarget: { dataset: { index } } });
       return;
     }
-    return this.load();
-  },
-  async load(force = false) {
-    if (this.data.loading || !this.data.id || this._epoch !== api.accountEpoch()) return;
-    const epoch = this._epoch;
-    this.setData({ loading: true, error: '', errorField: '', errorAction: '' });
+    this.setData({ loading: true });
     try {
-      const data = (!force && api.peekSubscriptions()) || await api.subscriptions({ force });
-      if (epoch !== api.accountEpoch()) return;
-      const item = (data.items || []).find(i => i.id === this.data.id);
-      if (!item) { this.requestError('这条订阅已不存在，请返回刷新', 'load'); return; }
-      this.setData({ form: formFromItem(item, this.data.today), fieldErrors: {}, icon: iconFor(item.name), ...this.withCurrency(item.currency) });
-    } catch (error) {
-      if (epoch === api.accountEpoch()) this.requestError(error.message || '暂时无法读取订阅', 'load');
-    } finally { if (epoch === api.accountEpoch()) this.setData({ loading: false }); }
+      const data = api.peekSubscriptions() || await api.subscriptions();
+      const item = (data.items || []).find(i => i.id === id);
+      if (this._epoch !== api.accountEpoch()) return;
+      if (!item) { this.setData({ loading: false, error: '这条订阅已不存在，请返回刷新' }); return; }
+      this.setData({ loading: false, form: formFromItem(item, today), icon: iconFor(item.name), ...this.withCurrency(item.currency) });
+    } catch (error) { this.setData({ loading: false, error: error.message || '暂时无法读取订阅' }); }
   },
-  validationPatch(fieldErrors) {
-    const errorField = FIELDS.find(field => fieldErrors[field]) || '';
-    return { fieldErrors, errorField, error: fieldErrors[errorField] || '', errorAction: '' };
-  },
-  changed(patch, done) {
-    if (this.data.busy || this._epoch !== api.accountEpoch()) return;
-    const form = { ...this.data.form };
-    for (const [key, value] of Object.entries(patch)) if (key.startsWith('form.')) form[key.slice(5)] = value;
-    const { errors = {} } = bodyFromForm(form, this.data.today), fieldErrors = {};
-    for (const field of Object.keys(this.data.fieldErrors)) if (errors[field]) fieldErrors[field] = errors[field];
-    // A manually edited template is no longer the selected preset.
-    if (!Object.prototype.hasOwnProperty.call(patch, 'selected') && ['name', 'plan', 'price', 'currency', 'cycle'].some(field => 'form.' + field in patch)) patch.selected = '';
-    this.setData({ ...patch, ...this.validationPatch(fieldErrors) }, done);
+  changed(patch) {
+    if (this.data.busy) return;
+    this.setData({ ...patch, error: '' });
     if (!this._guarded && wx.enableAlertBeforeUnload) { this._guarded = true; wx.enableAlertBeforeUnload({ message: '修改还没保存，确定离开？' }); }
-  },
-  validateField(e) {
-    const field = e.currentTarget.dataset.field;
-    if (this.data.busy || !this.data.form || !FIELDS.includes(field) || this._epoch !== api.accountEpoch()) return;
-    const { errors = {} } = bodyFromForm(this.data.form, this.data.today), fieldErrors = { ...this.data.fieldErrors };
-    if (errors[field]) fieldErrors[field] = errors[field]; else delete fieldErrors[field];
-    // A blur without a change must not dismiss a request error or its retry button.
-    this.setData(this.data.errorField || errors[field] ? this.validationPatch(fieldErrors) : { fieldErrors });
   },
   input(e) {
     const field = e.currentTarget.dataset.field, patch = { ['form.' + field]: e.detail.value };
@@ -70,19 +44,14 @@ Page({
   pickCurrency(e) { const c = CURRENCIES[Number(e.detail.value)]; if (c) this.changed({ 'form.currency': c.key, ...this.withCurrency(c.key) }); },
   pick(e) { const { field, key } = e.currentTarget.dataset; this.changed({ ['form.' + field]: key }); },
   toggleApiKey(e) { this.changed({ 'form.api_key': !!e.detail.value }); },
-  goTopup() {
-    if (this.data.busy || this.data.sheet || this.data.sheetBusy || this._redirecting || this._epoch !== api.accountEpoch()) return;
-    this._redirecting = true;
-    wx.redirectTo({ url: '/pages/topup-edit/topup-edit?vendor=deepseek', complete: () => { this._redirecting = false; } });
-  },
+  goTopup() { wx.redirectTo({ url: '/pages/topup-edit/topup-edit?vendor=deepseek' }); },
   pickDate(e) { this.changed({ ['form.' + e.currentTarget.dataset.field]: e.detail.value }); },
   choosePreset(e) {
     const preset = PRESETS[e.currentTarget.dataset.index];
-    if (!preset || this.data.busy || this.data.sheet || this.data.sheetBusy || this._epoch !== api.accountEpoch()) return;
+    if (!preset || this.data.busy) return;
     const base = { 'form.name': preset.name, 'form.currency': preset.currency, icon: preset.icon, ...this.withCurrency(preset.currency), selected: preset.key };
-    const form = this.data.form;
-    const plans = preset.plans.map(([plan, price, cycle]) => ({ plan, price: String(price), cycle, label: planLabel(preset.currency, price, cycle),
-      selected: form.name === preset.name && form.currency === preset.currency && form.plan === plan && Number(form.price) === price && form.cycle === cycle }));
+    const plans = preset.plans.map(([plan, price, cycle]) => ({ plan, price: String(price), cycle, label: planLabel(preset.currency, price, cycle) }));
+    // Like 超值: a single plan applies at once, several open a sheet.
     this._sheetBase = base;
     if (plans.length === 1) { this.applyPlan(plans[0]); return; }
     // 综合: no plan, the user enters roughly what the rest costs a month.
@@ -90,59 +59,27 @@ Page({
     this.setData({ sheet: { name: preset.name, icon: preset.icon, plans } });
   },
   choosePlan(e) {
-    if (this.data.busy || this.data.sheetBusy || this._epoch !== api.accountEpoch()) return;
     const plan = this.data.sheet?.plans[e.currentTarget.dataset.index];
-    if (plan) this.applyPlan(plan);
-  },
-  applyPlan(plan) {
-    if (this.data.busy || this.data.sheetBusy || !this._sheetBase || this._epoch !== api.accountEpoch()) return;
-    const base = this._sheetBase;
-    this._sheetBase = null;
-    this.setData({ sheetBusy: true });
-    const epoch = this._epoch;
-    this.changed({ ...base, 'form.plan': plan.plan, 'form.price': plan.price, 'form.cycle': plan.cycle, sheet: null }, () => {
-      if (epoch === api.accountEpoch()) this.setData({ sheetBusy: false });
-    });
-  },
-  holdSheet() {},
-  closeSheet() {
-    if (this.data.busy || this.data.sheetBusy) return;
-    this._sheetBase = null;
+    if (!plan) return;
     this.setData({ sheet: null });
+    this.applyPlan(plan);
   },
+  applyPlan(plan) { this.changed({ ...this._sheetBase, 'form.plan': plan.plan, 'form.price': plan.price, 'form.cycle': plan.cycle }); },
+  closeSheet() { this.setData({ sheet: null }); },
   leave() {
     if (this._guarded && wx.disableAlertBeforeUnload) wx.disableAlertBeforeUnload();
     this._guarded = false;
     wx.navigateBack();
   },
-  requestError(error, errorAction) {
-    const epoch = this._epoch;
-    this.setData({ error, errorField: '', errorAction }, () => {
-      if (epoch === api.accountEpoch() && this.data.error === error && this.data.errorAction === errorAction) wx.pageScrollTo?.({ scrollTop: 0, duration: 160 });
-    });
-  },
-  retry() {
-    if (this.data.busy || this.data.loading || this.data.sheet || this.data.sheetBusy || this._epoch !== api.accountEpoch()) return;
-    if (this.data.errorAction === 'load') return this.load(true);
-    if (this.data.errorAction === 'save') return this.save({ next: this._saveNext });
-    if (this.data.errorAction === 'remove') return this.remove();
-  },
   // Several subscriptions in a row: save, keep the page, start an empty form.
   saveAndNext() { return this.save({ next: true }); },
   async save(options = {}) {
-    if (this.data.busy || this.data.sheet || this.data.sheetBusy || this._confirming || !this.data.form || this._epoch !== api.accountEpoch()) return;
+    if (this.data.busy || !this.data.form) return;
     const next = options.next === true && !this.data.id;
-    const { body, error, field, errors } = bodyFromForm(this.data.form, this.data.today);
-    if (error) {
-      const epoch = this._epoch;
-      this.setData(this.validationPatch(errors), () => {
-        if (epoch === api.accountEpoch() && this.data.errorField === field) wx.pageScrollTo?.({ selector: '#field-' + field, duration: 160 });
-      });
-      return;
-    }
+    const { body, error } = bodyFromForm(this.data.form, this.data.today);
+    if (error) { this.setData({ error }); return; }
     const epoch = api.accountEpoch();
-    this._saveNext = next;
-    this.setData({ busy: true, error: '', errorField: '', errorAction: '', fieldErrors: {} });
+    this.setData({ busy: true, error: '' });
     try {
       await (this.data.id ? api.updateSubscription(this.data.id, body) : api.createSubscription(body));
       if (epoch !== api.accountEpoch()) return;
@@ -152,23 +89,21 @@ Page({
       this._guarded = false;
       const currency = displayCurrency();
       this.setData({ form: formFromItem(null, this.data.today, currency), icon: '', ...this.withCurrency(currency), selected: '', added: (this.data.added || 0) + 1 });
-      wx.pageScrollTo?.({ scrollTop: 0, duration: 0 });
+      wx.pageScrollTo && wx.pageScrollTo({ scrollTop: 0, duration: 0 });
       wx.showToast({ title: `已添加 ${title}`, icon: 'none' });
-    } catch (err) { if (epoch === api.accountEpoch()) this.requestError(err.message || '保存尚未确认，请重试', 'save'); }
+    } catch (err) { if (epoch === api.accountEpoch()) this.setData({ error: err.message || '保存尚未确认，请重试' }); }
     finally { if (epoch === api.accountEpoch()) this.setData({ busy: false }); }
   },
   remove() {
-    if (this.data.busy || this._confirming || !this.data.id || !this.data.form || this._epoch !== api.accountEpoch()) return;
-    const epoch = api.accountEpoch();
-    this._confirming = true;
+    if (this.data.busy || !this.data.id) return;
     wx.showModal({ title: '删除订阅', content: `删除「${this.data.form.name}」的记录，不影响实际扣费。`, confirmText: '删除', confirmColor: '#FA5151',
       success: async result => {
-        this._confirming = false;
-        if (!result.confirm || this.data.busy || epoch !== api.accountEpoch()) return;
-        this.setData({ busy: true, error: '', errorField: '', errorAction: '' });
+        if (!result.confirm || this.data.busy) return;
+        const epoch = api.accountEpoch();
+        this.setData({ busy: true, error: '' });
         try { await api.deleteSubscription(this.data.id); if (epoch === api.accountEpoch()) this.leave(); }
-        catch (err) { if (epoch === api.accountEpoch()) this.requestError(err.message || '删除尚未确认，请重试', 'remove'); }
+        catch (err) { if (epoch === api.accountEpoch()) this.setData({ error: err.message || '删除尚未确认，请重试' }); }
         finally { if (epoch === api.accountEpoch()) this.setData({ busy: false }); }
-      }, complete: () => { this._confirming = false; } });
+      } });
   },
 });

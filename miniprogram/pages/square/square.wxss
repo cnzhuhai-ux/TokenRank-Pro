@@ -2,22 +2,22 @@
 .page { padding-bottom: 92px; }
 /* 原生 tabBar 已包含底部安全区，固定本人行无需再留一份。 */
 .lb-own-dock { padding-bottom: 0; }
-.hint { padding: 32px var(--space-page); text-align: center; color: var(--text-secondary); font-size: var(--font-detail); }
-.hint-title { font-size: var(--font-title); font-weight: 500; line-height: 1.5; }
-.hint-sub { font-size: var(--font-detail); color: var(--text-secondary); line-height: 1.8; margin-top: 12px; }
-.hint-link { display: inline-flex; align-items: center; justify-content: center; min-height: var(--touch-size); padding: 0 12px; margin-top: 12px; color: var(--link); font-size: var(--font-detail); }
+.hint { padding: 80rpx 40rpx; text-align: center; }
+.hint-title { font-size: 38rpx; font-weight: 500; line-height: 1.5; }
+.hint-sub { font-size: 26rpx; color: var(--text-muted); line-height: 1.8; margin-top: 20rpx; }
+.hint-link { display: inline-block; padding: 12rpx 0; margin-top: 28rpx; color: var(--link); font-size: 26rpx; }
 .hint .retry { width: 100%; margin-top: 28rpx; padding: 20rpx 24rpx; }
-.board-meta { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 4px 10px; margin: 12px var(--space-page) 0; color: var(--text-muted); font-size: var(--font-caption); line-height: 1.7; }
+.board-meta { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 8rpx 20rpx; margin: 24rpx 32rpx 0; color: var(--text-muted); font-size: 22rpx; line-height: 1.6; }
 .pagination { margin: 24rpx 32rpx 0; text-align: center; }
 .pagination .load-more { width: 100%; min-height: 44px; margin: 0; padding: 16rpx; display: flex; align-items: center; justify-content: center; box-sizing: border-box; border: 1rpx solid var(--separator); border-radius: 6rpx; background: transparent; color: var(--text-secondary); font-size: 25rpx; font-weight: 400; line-height: 1.5; }
 .load-more::after { border: none; }
-.pagination-end, .pagination-error { font-size: var(--font-caption); color: var(--text-muted); line-height: 1.7; }
+.pagination-end, .pagination-error { font-size: 22rpx; color: var(--text-muted); line-height: 1.7; }
 .pagination-error { margin-bottom: 12rpx; color: var(--danger); }
 .insights { padding: 20px 16px; }
 .insight-heading, .insight-row-head, .insight-row-foot { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .insight-heading { font-size: 17px; }
 .insight-heading > text { flex: 1; min-width: 0; }
-.insight-link { flex: none; display: flex; align-items: center; min-height: var(--touch-size); margin: 0; padding: 0; background: transparent; font-size: 14px; color: var(--link); font-weight: 400; }
+.insight-link { flex: none; display: flex; align-items: center; min-height: 40px; margin: 0; padding: 0; background: transparent; font-size: 13px; color: var(--link); font-weight: 400; }
 .insight-link::after { border: none; }
 .insight-caption { font-size: 12px; line-height: 1.8; color: var(--text-secondary); }
 .insight-row { padding: 18px 0; border-bottom: 1rpx solid var(--separator); }
@@ -25,9 +25,9 @@
 .insight-percent { flex: none; font-size: 18px; color: var(--amount); }
 .insight-track { height: 4px; margin-top: 10px; background: var(--surface-muted); }
 .insight-fill { height: 4px; }
-.insight-row-foot { flex-wrap: wrap; margin-top: 8px; font-size: 12px; color: var(--text-secondary); line-height: 1.7; }
+.insight-row-foot { margin-top: 8px; font-size: 11px; color: var(--text-secondary); }
 .insight-full { width: 100%; margin: 20px 0 12px; font-size: 14px; }
 
-.page .trends-entry { width: 100%; display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 52px; box-sizing: border-box; padding: 0 var(--space-page); margin: 0; font-size: 15px; font-weight: 400; background: transparent; border-bottom: 1rpx solid var(--separator); text-align: left; }
+.page .trends-entry { width: 100%; display: flex; align-items: center; justify-content: space-between; min-height: 52px; padding: 0; margin: 0; font-size: 15px; font-weight: 400; background: transparent; border-bottom: 1rpx solid var(--separator); }
 .trends-entry::after { border: none; }
 .trends-entry text:last-child { color: var(--text-muted); font-size: 22px; }

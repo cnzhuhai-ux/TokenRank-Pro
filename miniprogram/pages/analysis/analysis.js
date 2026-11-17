@@ -3,94 +3,61 @@ const { PERIODS, compact } = require('../../utils/usage');
 const { presentAnalysis } = require('../../utils/analytics');
 const { openInsight } = require('../../utils/insight-access');
 Page({
-  data: { scope: 'mine', period: 'day', periods: PERIODS, periodIndex: 0, dimension: 'tools', tool: '', view: 'donut', metric: 'tokens',
-    loading: true, refreshing: false, refreshError: '', error: '', report: null, focusName: '', selectedDay: null, visibleCount: 8, hasReported: false,
+  data: { scope: 'mine', period: 'day', periods: PERIODS, dimension: 'tools', tool: '', view: 'donut', metric: 'tokens',
+    loading: true, error: '', report: null, focusName: '', selectedDay: null, visibleCount: 8, hasReported: false,
     audienceName: '', audience: [], audienceTotal: null, audienceLoading: false, audienceError: '',
     audienceHasMore: false, audienceSnapshot: '', audienceNext: null, gateBusy: false },
   onLoad(options) {
     const scope = options.scope === 'public' ? 'public' : 'mine';
-    const periodIndex = Math.max(0, PERIODS.findIndex(item => item.key === options.period));
-    this.setData({ scope, period: PERIODS[periodIndex].key, periodIndex,
+    this.setData({ scope, period: PERIODS.some(item => item.key === options.period) ? options.period : 'day',
       dimension: options.tool || options.dimension === 'models' ? 'models' : 'tools', tool: String(options.tool || '').slice(0, 60), focusName: String(options.name || '').slice(0, 100) });
     wx.setNavigationBarTitle?.({ title: scope === 'public' ? '广场数据分析' : '我的数据分析' });
     if (scope === 'public') wx.showShareMenu({ menus: ['shareAppMessage'], withShareTicket: true }); else wx.hideShareMenu();
   },
   onShow() { this._visible = true; return this.load(); },
   onHide() { this._visible = false; this._requestId = (this._requestId || 0) + 1; this._audienceVersion = (this._audienceVersion || 0) + 1;
-    this.setData({ refreshing: false, gateBusy: false, audienceLoading: false }); },
+    this.setData({ gateBusy: false, audienceLoading: false }); },
   onUnload() { this.onHide(); },
-  async onPullDownRefresh() { try { await this.refresh(); } finally { wx.stopPullDownRefresh(); } },
-  refresh() { return this.load({ force: true }); },
-  query() { return { scope: this.data.scope, period: this.data.period, dimension: this.data.dimension, ...(this.data.tool ? { tool: this.data.tool } : {}) }; },
-  queryKey(query = this.query(), epoch = api.accountEpoch()) {
-    return JSON.stringify([query.scope, query.period, query.dimension, query.tool || '', query.scope === 'mine' ? epoch : null]);
-  },
+  async onPullDownRefresh() { try { await this.load({ force: true }); } finally { wx.stopPullDownRefresh(); } },
   resetAudience() {
     this._audienceVersion = (this._audienceVersion || 0) + 1; this._audienceGrant = null;
     this.setData({ audienceName: '', audience: [], audienceTotal: null, audienceError: '', audienceLoading: false,
       audienceHasMore: false, audienceSnapshot: '', audienceNext: null, gateBusy: false });
   },
-  clearReport() {
-    this._raw = null; this._displayKey = '';
-    this.resetAudience();
-    this.setData({ report: null, selectedDay: null, visibleCount: 8, updatedText: '', hasReported: false });
-  },
   async load(options = {}) {
     const request = this._requestId = (this._requestId || 0) + 1, epoch = api.accountEpoch();
-    const query = this.query(), key = this.queryKey(query, epoch);
-    const current = () => request === this._requestId && key === this.queryKey(this.query(), epoch);
-    const active = () => query.scope !== 'mine' || (epoch === api.accountEpoch() && !api.accountState());
+    const query = { scope: this.data.scope, period: this.data.period, dimension: this.data.dimension, ...(this.data.tool ? { tool: this.data.tool } : {}) };
     const cached = options.force === true ? null : api.peekAnalysis?.(query);
     const user = query.scope === 'public' ? null : api.peekMe?.();
-    if (cached && active() && (query.scope === 'public' || user)) {
-      if (this._raw !== cached || !this.data.report || this._displayKey !== key) {
-        this.resetAudience(); this._raw = cached; this._displayKey = key;
-        this.setData({ selectedDay: null, visibleCount: 8 });
+    if (cached && (query.scope === 'public' || (user && !api.accountState()))) {
+      if (this._raw !== cached || !this.data.report) {
+        this.resetAudience(); this._raw = cached;
         if (!cached.items.some(item => !item.unclassified && item.name === this.data.focusName)) this.setData({ focusName: '' });
         this.render();
       }
-      this.setData({ loading: false, refreshing: false, refreshError: '', error: '', ...(user ? { hasReported: !!user.last_report_at } : {}) }); return;
+      this.setData({ loading: false, error: '', ...(user ? { hasReported: !!user.last_report_at } : {}) }); return;
     }
-    const keep = options.force === true && !!this.data.report && this._displayKey === key && active();
-    if (keep) this.resetAudience(); else this.clearReport();
-    this.setData({ loading: !keep, refreshing: keep, refreshError: '', error: '' });
+    this.resetAudience(); this.setData({ loading: true, error: '', selectedDay: null, visibleCount: 8, report: null });
     try {
       if (query.scope === 'mine') {
-        if (api.accountState()) { this.setData({ loading: false }); wx.navigateTo({ url: '/pages/account/account' }); return; }
+        if (api.accountState()) { wx.navigateTo({ url: '/pages/account/account' }); return; }
         const user = await api.ensureLogin();
-        if (!current()) return;
-        if (!active()) throw new Error('请重新登录后使用');
+        if (request !== this._requestId || epoch !== api.accountEpoch()) return;
         this.setData({ hasReported: !!user.last_report_at });
       }
       const result = cached || await api.analysis(query, options);
-      if (!current()) return;
-      if (!active()) throw new Error('请重新登录后使用');
-      this._raw = result; this._displayKey = key;
+      if (request !== this._requestId || (query.scope === 'mine' && epoch !== api.accountEpoch())) return;
+      this._raw = result;
       if (!result.items.some(item => !item.unclassified && item.name === this.data.focusName)) this.setData({ focusName: '' });
-      this.render(); this.setData({ loading: false, refreshing: false, refreshError: '', error: '' });
-    } catch (err) {
-      if (!current()) return;
-      const denied = query.scope === 'mine' && (!active() || [401, 403, 410].includes(err.statusCode) ||
-        ['ACCOUNT_INACTIVE', 'ACCOUNT_DELETED', 'ACCOUNT_DISABLED'].includes(err.code));
-      if (denied) this.clearReport();
-      const message = err.message || '数据暂不可用，请重试';
-      this.setData({ loading: false, refreshing: false, error: keep && !denied ? '' : message, refreshError: keep && !denied ? message : '' });
-    }
+      this.render(); this.setData({ loading: false });
+    } catch (err) { if (request === this._requestId) this.setData({ loading: false, error: err.message || '数据暂不可用，请重试' }); }
   },
-  render() {
-    if (!this._raw || this._displayKey !== this.queryKey()) return;
-    const report = presentAnalysis(this._raw, { metric: this.data.metric, name: this.data.focusName });
-    this.setData({ report, selectedDay: this.data.selectedDay ? report.daily.find(day => day.day === this.data.selectedDay.day) || null : null,
-      updatedText: api.fmtRelTime(this._raw.updated_at) });
-  },
-  pickPeriod(e) {
-    const period = PERIODS[Number(e.detail?.value)];
-    if (period) return this.switchPeriod({ currentTarget: { dataset: { key: period.key } } });
-  },
+  render() { if (this._raw) this.setData({ report: presentAnalysis(this._raw, { metric: this.data.metric, name: this.data.focusName }),
+    updatedText: api.fmtRelTime(this._raw.updated_at) }); },
   switchPeriod(e) {
     const period = e.currentTarget.dataset.key;
     if (!PERIODS.some(item => item.key === period) || period === this.data.period) return;
-    this.setData({ period, periodIndex: PERIODS.findIndex(item => item.key === period) }); return this.load();
+    this.setData({ period }); return this.load();
   },
   switchDimension(e) {
     const dimension = e.currentTarget.dataset.key;
