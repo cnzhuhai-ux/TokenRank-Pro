@@ -52,7 +52,8 @@
     const allowed = ['terminal', 'code-leaves', 'neural-core', 'linked-loops', 'build-modules', 'release-plane', 'value-bridge', 'impact-beacon', 'steady-flame', 'upload-calendar', 'milestone-peaks', 'usage-orbit'];
     if (!allowed.includes(badge?.art)) return null;
     const stage = stages[badge.family], index = stage?.[0] === badge.art ? stage[1].indexOf(badge.threshold) + 1 : 0;
-    return '/app/assets/badges/' + (index && index !== stage[2] ? `tiers/${badge.art}-${index}` : badge.art) + '.png';
+    const path = '/app/assets/badges/' + (index && index !== stage[2] ? `tiers/${badge.art}-${index}` : badge.art) + '.png';
+    return root.TokenRankAuth?.path ? root.TokenRankAuth.path(path) : path;
   }
   function calendarDays(calendar) {
     if (!calendar?.daily?.length) return calendar?.heatmap?.daily || [];

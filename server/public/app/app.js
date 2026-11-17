@@ -1,12 +1,12 @@
 /* Token 群排名 · 飞书网页应用；原生路由与账号隔离交互。 */
 (() => {
   'use strict';
-  const M = window.TokenRankModel, page = document.querySelector('#page');
+  const M = window.TokenRankModel, A = window.TokenRankAuth, page = document.querySelector('#page');
   const $ = selector => page.querySelector(selector);
   const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
   const full = value => Math.max(0, Number(value) || 0).toLocaleString('en-US', { maximumFractionDigits: 2 });
   const fmt = value => Number(value) >= 1e8 ? (value / 1e8).toFixed(2) + ' 亿' : Number(value) >= 1e4 ? (value / 1e4).toFixed(2).replace(/\.?0+$/, '') + ' 万' : full(value);
-  let token = localStorage.getItem('tr_token') || '', route, current, user, ready = false, force = false;
+  let token = A.token(), route, current, user, ready = false, force = false;
   const guard = M.createGuard();
   async function request(path, options = {}) {
     if (!/^\/api\//.test(path)) throw new Error('不允许访问外部接口');
@@ -16,13 +16,13 @@
     const form = options.body instanceof FormData;
     if (options.body != null && !form) headers['content-type'] = 'application/json';
     // Bearer-only writes; never attach ambient cookies. JSON mutations cannot be forged by cross-site forms.
-    const response = await fetch(path, { method, headers, credentials: 'omit', cache: 'no-store', body: options.body == null ? undefined : form ? options.body : JSON.stringify(options.body) });
+    const response = await fetch(A.path(path), { method, headers, credentials: 'omit', cache: 'no-store', body: options.body == null ? undefined : form ? options.body : JSON.stringify(options.body) });
     const data = await response.json();
     if (sentWith !== token) throw Object.assign(new Error('账号已变化'), { stale: true });
     if (!response.ok) {
       if (response.status === 401) {
-        token = ''; localStorage.removeItem('tr_token'); cache.clear(); guard.invalidate(); ready = false;
-        loginMask('登录已过期', '请重新通过飞书授权登录');
+        token = ''; A.clear(); cache.clear(); guard.invalidate(); ready = false;
+        authorize().catch(error => loginMask('登录失败', error.message));
       }
       throw Object.assign(new Error(data.error || '加载失败，请稍后重试'), { status: response.status, code: data.code });
     }
@@ -30,7 +30,7 @@
     return data;
   }
   const write = (path, body = {}, method = 'POST') => request(path, { method, body });
-  window.TokenRankShare?.configure({ request, baseUrl: location.origin });
+  window.TokenRankShare?.configure({ request, baseUrl: A.appUrl, resolvePath: A.path });
   const cache = M.createCache({ request, account: () => token });
   const read = path => cache.read(path, { force });
   function go(next) {
@@ -338,7 +338,7 @@
     }
     $('#body').onclick = e => { const b = e.target.closest('button'); if (!b) return; if (b.dataset.ledgerNew) editor(b.dataset.ledgerNew); if (b.dataset.ledgerEdit) editor(b.dataset.ledgerEdit, b.dataset.id); if (b.dataset.ledgerDelete && confirm('删除这笔记录？删除后无法恢复。')) mutate(b, () => write('/api/' + b.dataset.ledgerDelete + '/' + b.dataset.id, {}, 'DELETE')); };
   }
-  function logout() { token = ''; user = null; localStorage.removeItem('tr_token'); cache.clear(); guard.invalidate(); ready = false; loginMask('已退出登录', '重新授权后可查看群榜与个人用量'); }
+  function logout() { token = ''; user = null; A.clear(); cache.clear(); guard.invalidate(); ready = false; loginMask('已退出登录', '重新授权后可查看群榜与个人用量'); }
   async function settings(alive) {
     page.innerHTML = heading('个人设置', true) + '<div id="body"></div>';
     const profile = await read('/api/me'); if (!alive()) return; user = profile;
@@ -382,7 +382,7 @@
       } catch (error) { if (alive()) showError(error); }
       finally { if (alive()) button.disabled = false; }
     });
-    $('#logout').addEventListener('click', () => { token = ''; localStorage.removeItem('tr_token'); cache.clear(); guard.invalidate(); ready = false; loginMask('已退出登录', '重新授权后可查看群榜与个人用量'); });
+    $('#logout').addEventListener('click', logout);
   }
   function showError(error) {
     if (error.stale || error.status === 401) return;
@@ -405,7 +405,7 @@
   page.addEventListener('change', event => { if (event.target.matches('[data-analysis-category]')) patch({ category: event.target.value, analysisView: 'trend' }); });
   page.addEventListener('click', async event => {
     const button = event.target.closest('button'); if (!button) return;
-    if (button.hasAttribute('data-login')) { loginMask('参与公开 PK', '先通过飞书登录，授权后返回当前分享'); return; }
+    if (button.hasAttribute('data-login')) { authorize().catch(error => loginMask('登录失败', error.message)); return; }
     if (button.hasAttribute('data-share')) {
       const alive = current, box = button.parentElement.querySelector('.share-result');
       return mutate(button, async () => { const options = JSON.parse(button.dataset.share); if (options.style === 'calendar') options.show_amount = !!$('#share-amount')?.checked; const record = await window.TokenRankShare.create(options); if (alive() && box?.isConnected) window.TokenRankShare.render(box, record, { owner: true, onError: showError, onCompare: r => { if (alive()) window.TokenRankShare.render(box, r, { owner: true }); } }); }, () => {});
@@ -428,31 +428,21 @@
   document.addEventListener?.('visibilitychange', () => { if (document.hidden) { guard.invalidate(); releaseDisplay(); } else if (ready) render(); });
   function loginMask(title, subtitle) {
     document.querySelector('.login-mask')?.remove();
-    document.body.insertAdjacentHTML('beforeend', `<div class="login-mask"><div class="t">${esc(title)}</div><div class="s">${esc(subtitle)}</div><button class="btn" id="authorize">通过飞书登录</button></div>`);
+    document.body.insertAdjacentHTML('beforeend', `<div class="login-mask"><div class="t">${esc(title)}</div><div class="s">${esc(subtitle)}</div><button class="btn" id="authorize">前往登录</button></div>`);
     document.querySelector('#authorize').addEventListener('click', () => authorize().catch(error => { document.querySelector('.login-mask .s').textContent = error.message; }));
   }
   async function authorize() {
-    const config = await fetch('/api/feishu/session', { cache: 'no-store' }).then(r => r.json());
-    if (!config.app_id || !config.authorize_url) throw new Error('飞书登录服务未配置，请联系管理员');
-    const nonce = M.oauthState(crypto); sessionStorage.setItem('tr_oauth_state', nonce);
-    sessionStorage.setItem('tr_oauth_route', location.hash || '#/groups');
-    const url = new URL(config.authorize_url); url.searchParams.set('state', nonce); location.assign(url.href);
+    await A.authorize();
   }
   async function login() {
-    const q = new URLSearchParams(location.search);
-    if (q.has('code') || q.has('error')) {
-      const valid = M.consumeOAuthState(sessionStorage, q.get('state'));
-      const saved = sessionStorage.getItem('tr_oauth_route'); sessionStorage.removeItem('tr_oauth_route');
-      history.replaceState(null, '', '/app/' + (saved?.startsWith('#/') ? saved : '#/groups'));
-      if (!valid) throw new Error('授权 state 校验失败，请重新通过飞书登录');
-      if (!q.get('code') || q.has('error')) throw new Error('飞书授权未完成，请重新登录');
-      const response = await fetch('/api/feishu/session', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ code: q.get('code') }) });
-      const data = await response.json();
-      if (!response.ok || !data.token) throw new Error(data.error || '飞书登录失败，请重新授权');
-      token = data.token; user = data.user; localStorage.setItem('tr_token', token); cache.clear();
+    const data = await A.login({ isPublic: M.parseRoute(location.hash).name === 'share' });
+    if (data?.callback) {
+      loginMask('已返回 TokenRank', '已收到统一登录回调，业务接口统一鉴权待接入。');
+      return;
     }
+    token = A.token();
     if (!token && M.parseRoute(location.hash).name === 'share') return render();
-    if (!token) return loginMask('Token 群排名', '使用飞书账号查看群榜和个人用量');
+    if (!token) return;
     ready = true; document.querySelector('.login-mask')?.remove(); await render();
   }
   login().catch(error => loginMask('登录失败', error.message));
