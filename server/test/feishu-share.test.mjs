@@ -144,7 +144,9 @@ test('pinned local QR library parses, exports, generates complete matrices and r
 
 test('real worker API records round-trip through create/read/render/download for every style', async t => {
   const f = requestFixture(t, worker, { groups: 1, users: 2 }), h = harness();
-  f.seed(1, beijingDaysAgo(1), 123);
+  // weekly 默认周窗口是「上一个完整周」：周一跑时昨天在上周、其余日子 8 天前在上周，
+  // 两天都种量保证任何日期运行，weekly 分享都不会因窗口无数据而 NO_USAGE
+  f.seed(1, beijingDaysAgo(1), 123); f.seed(1, beijingDaysAgo(8), 456);
   h.api.configure({ request: async (path, options = {}) => {
     const result = await f.req(path, 1, options.body || (options.method === 'POST' ? {} : null));
     if (result.status >= 400) throw Object.assign(new Error(result.data.error), { status: result.status, code: result.data.code });
