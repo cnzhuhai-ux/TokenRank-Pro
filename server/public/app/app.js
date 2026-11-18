@@ -34,18 +34,63 @@
   const cache = M.createCache({ request, account: () => token });
   const read = path => cache.read(path, { force });
   function go(next) {
-    const hash = M.routeHash(next);
-    if (location.hash !== hash) history.pushState({ trApp: true }, '', hash);
+    const hash = M.routeHash(next), replacingDetail = !!detail && history.state?.[detailStateKey] === detail.id;
+    if (detail) disposeDetail(false);
+    if (replacingDetail) history.replaceState({ trApp: true }, '', hash);
+    else if (location.hash !== hash) history.pushState({ trApp: true }, '', hash);
     render();
   }
   function patch(changes) { go({ ...route, ...changes }); }
   function link(next, label, cls = '') { return `<a class="${cls}" href="${esc(M.routeHash(next))}">${esc(label)}</a>`; }
-  function tabs(items, active, key) {
-    return `<div class="tabs">${items.map(([value, label]) => `<button class="tab ${value === active ? 'active' : ''}" data-set="${key}" data-value="${esc(value)}" aria-pressed="${value === active}">${esc(label)}</button>`).join('')}</div>`;
+  function tabs(items, active, key, variant = 'filter') {
+    return `<div class="tabs tabs-${variant}" role="tablist">${items.map(([value, label]) => `<button class="tab ${value === active ? 'active' : ''}" data-set="${key}" data-value="${esc(value)}" aria-pressed="${value === active}">${esc(label)}</button>`).join('')}</div>`;
   }
-  const periodTabs = () => tabs(route.name === 'me' ? [...M.periods, ['all', '累计']] : M.periods, route.period, 'period');
-  const metricTabs = () => tabs([['tokens', 'Token 榜'], ['credits', 'Credits 榜']], route.metric, 'metric');
-  const dimensions = () => tabs([['tools', '工具'], ['models', '模型']], route.dimension, 'dimension');
+  function squareSelection(value) {
+    if (!['sum', 'tools', 'models'].includes(value)) return null;
+    return { ...route, name: 'square', view: value === 'sum' ? 'sum' : 'analysis',
+      dimension: value === 'sum' ? route.dimension : value, tool: '', category: '' };
+  }
+  const squareTabs = () => tabs([['sum', '总榜'], ['tools', '工具'], ['models', '模型']],
+    route.view === 'analysis' ? route.dimension : 'sum', 'squareView', 'square-main');
+  const isPublicTrend = context => ['square', 'subscriptions'].includes(context.name) && context.view === 'trend';
+  function activeTab(context = route) {
+    if (isPublicTrend(context)) return 'subscriptions';
+    if (context.name === 'subscriptions' || ['me', 'achievements'].includes(context.name)) return 'me';
+    return context.name.startsWith('group') ? 'groups' : context.name;
+  }
+  function tabDestination(tab) {
+    return tab === 'subscriptions'
+      ? { name: 'subscriptions', view: 'trend', period: 'week', dimension: 'tools', trendMetric: 'users' }
+      : { name: tab };
+  }
+  const labelFor = (items, value) => items.find(item => item[0] === value)?.[1] || value;
+  const periodItems = () => isPublicTrend(route) ? M.periods.filter(([key]) => key !== 'day')
+    : route.name === 'me' ? [...M.periods, ['all', '累计']] : M.periods;
+  function currentFilterSummary() {
+    // 广场/群榜/我的的周期由顶部 Tab 承担，趋势榜同理；摘要只显示口径。
+    const filters = ['group', 'me', 'square'].includes(route.name) || isPublicTrend(route) ? [] : [['周期', labelFor(periodItems(), route.period)]];
+    if (route.view === 'analysis') filters.push(['口径', labelFor([['tokens', 'Token 用量'], ['users', '常用人数']], route.analysisBasis)]);
+    else if (route.view === 'trend') filters.push(['口径', labelFor([['users', '使用人数'], ['tokens', 'Token 用量']], route.trendMetric)]);
+    else if (['square', 'group'].includes(route.name)) filters.push(['口径', labelFor([['tokens', 'Token'], ['credits', 'Credits']], route.metric)]);
+    return filters.map(([label, value]) => `<span class="filter-summary-item"><span>${esc(label)}</span><strong>${esc(value)}</strong></span>`).join('');
+  }
+  const filterBar = () => `<div class="filter-summary"><div class="filter-summary-values">${currentFilterSummary()}</div><button class="filter-open" type="button" data-open-filters aria-haspopup="dialog">筛选</button></div>`;
+  const filterOptions = () => ({ period: periodItems(), dimension: [['tools', '工具'], ['models', '模型']], metric: [['tokens', 'Token'], ['credits', 'Credits']], analysisBasis: [['tokens', 'Token 用量'], ['users', '常用人数']], trendMetric: [['users', '使用人数'], ['tokens', 'Token 用量']] });
+  function filterDialog() {
+    const options = filterOptions();
+    // 广场/群榜/我的/趋势榜的周期由顶部 Tab 承担，筛选面板只保留口径分组。
+    const keys = ['group', 'me', 'square'].includes(route.name) || isPublicTrend(route) ? [] : ['period'];
+    if ((route.view === 'analysis' && route.name !== 'square') || isPublicTrend(route) || route.name === 'group-analysis') keys.push('dimension');
+    if (route.view === 'analysis') keys.push('analysisBasis');
+    else if (route.view === 'trend') keys.push('trendMetric');
+    else if (['square', 'group'].includes(route.name) || route.view === 'sum') keys.push('metric');
+    const labels = { period: '统计周期', dimension: '查看维度', metric: '统计口径', analysisBasis: '分析口径', trendMetric: '趋势口径' };
+    return `<dialog class="filter-dialog" aria-labelledby="filter-dialog-title"><section class="filter-panel"><header class="filter-panel-header"><h2 id="filter-dialog-title">筛选</h2><button type="button" class="filter-close" data-close-filters aria-label="关闭筛选">×</button></header><div class="filter-panel-body">${keys.map(key => `<fieldset class="filter-fieldset"><legend>${labels[key]}</legend><div class="filter-choice-list">${options[key].map(([value, label]) => `<button type="button" class="filter-choice ${route[key] === value ? 'active' : ''}" data-filter-key="${key}" data-filter-value="${value}">${label}</button>`).join('')}</div></fieldset>`).join('')}</div></section></dialog>`;
+  }
+  const periodTabs = () => filterBar();
+  const periodTabList = () => tabs(periodItems(), route.period, 'period', 'period');
+  const metricTabs = () => '';
+  const dimensions = () => tabs([['tools', '工具'], ['models', '模型']], route.dimension, 'dimension', 'section');
   const note = text => `<div class="footnote">${esc(text)}</div>`;
   const empty = text => `<div class="empty">${esc(text)}</div>`;
   function heading(title, back = false) {
@@ -75,14 +120,27 @@
     const label = typeof health === 'string' ? health : health?.label || health?.message || statusLabels[health?.state] || health?.status;
     return `<div class="sync">同步状态：${esc(label || (profile?.last_report_at ? '已有上报记录' : '暂无同步记录'))}<div>${profile?.last_report_at ? '最近上报 ' + esc(new Date(profile.last_report_at + 8 * 3600000).toISOString().slice(0, 16).replace('T', ' ')) + ' · 北京时间' : '单聊飞书机器人发送「绑定」，接入电脑后开始记录'}</div></div>`;
   }
+  function devicesBlock(profile) {
+    const agents = profile?.sync_health?.agents || [];
+    if (!agents.length) return '';
+    const labels = { online: '在线', checking: '检查中', error: '同步异常', stopped: '已停止同步', unreachable: '暂时联系不上' };
+    const platforms = { darwin: 'macOS', win32: 'Windows', linux: 'Linux' };
+    return `<div class="devices"><div class="devices-title">已接入设备 ${agents.length} 台</div>` + agents.map(agent => {
+      const state = labels[agent.state] || agent.state || '状态未知';
+      const seen = agent.last_seen_at ? '最近联系 ' + esc(new Date(agent.last_seen_at + 8 * 3600000).toISOString().slice(5, 16).replace('T', ' ')) + ' · 北京时间' : '尚无心跳';
+      const version = agent.client_version ? '版本 ' + esc(agent.client_version) : '';
+      const meta = [version, seen].filter(Boolean).join(' · ');
+      return `<div class="device-row"><div class="device-main"><span class="device-name">${esc(platforms[agent.platform] || agent.platform || '未知设备')}</span><span class="device-state device-${esc(agent.state)}">${esc(state)}</span></div><div class="device-meta">${esc(meta)}</div></div>`;
+    }).join('') + '</div>';
+  }
   const robotNote = () => note('仅统计已上报数据；分享会生成可撤销的公开快照，请勿分享接入凭证。');
   function shareControls(options) {
     if (!window.TokenRankShare) return note('分享模块未加载，刷新页面后再试');
     return `<button class="btn ghost" data-share="${esc(JSON.stringify(options))}">创建分享卡片</button><div class="share-result"></div>`;
   }
   const palette = ['var(--green)', 'var(--orange)', 'var(--chart-3)', 'var(--chart-4)', 'var(--chart-5)', 'var(--text2)'];
-  function donuts(rows, people = false) {
-    return '<div class="donut-row">' + (people ? [['tokens', '常用人数']] : [['tokens', 'Tokens'], ['credits', 'Credits']]).map(([key, label]) => {
+  function donuts(rows, people = false, series = people ? [['tokens', '常用人数']] : [['tokens', 'Tokens'], ['credits', 'Credits']]) {
+    return '<div class="donut-row">' + series.map(([key, label]) => {
       const total = rows.reduce((sum, row) => sum + Math.max(0, Number(row[key]) || 0), 0);
       if (!total) return `<div class="donut-cell"><div class="donut-empty">${key === 'credits' ? '该维度暂无积分明细' : label + ' 暂无已记录分项'}</div></div>`;
       let cursor = 0;
@@ -94,46 +152,192 @@
     const max = Math.max(1, ...daily.map(d => Number(d.tokens) || 0));
     return `<div class="bars analysis-bars" aria-label="每日用量">${daily.map(d => `<div class="bar-col" title="${esc(d.day)} · ${d.reported === false ? '未同步' : full(d.tokens) + ' tokens'}"><span class="v">${d.reported === false ? '—' : fmt(d.tokens)}</span><div class="bar-fill" style="height:${d.reported === false || d.future ? 0 : Math.max(1, (d.tokens || 0) / max * 100)}%"></div><span class="k">${esc(d.day?.slice(5))}</span></div>`).join('')}</div>`;
   }
+  function detailIcon(kind) {
+    const paths = kind === 'models'
+      ? '<path d="m12 3 9 5-9 5-9-5 9-5Z"/><path d="m3 12 9 5 9-5M3 16l9 5 9-5"/>'
+      : kind === 'users'
+        ? '<path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2m20 0v-2a4 4 0 0 0-3-3.87M15 3.13a4 4 0 0 1 0 7.75"/><circle cx="9" cy="7" r="4"/>'
+        : '<path d="m6 6 12 12M6 18 18 6"/>';
+    return `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">${paths}</svg>`;
+  }
+  function detailAction(kind, name, attrs = '') {
+    const label = `查看 ${name} 的${kind === 'models' ? '模型明细' : '常用用户'}`;
+    return `<button type="button" class="insight-action" ${kind === 'models' ? 'data-model-detail' : 'data-audience'}="${esc(name)}" ${attrs} aria-haspopup="dialog" aria-label="${esc(label)}" title="${esc(label)}">${detailIcon(kind)}</button>`;
+  }
+  function analysisActions(row, context = route) {
+    if (row.unclassified) return '';
+    const actions = (context.dimension === 'tools' && ['me', 'square'].includes(context.name) ? detailAction('models', row.name) : '') +
+      (context.name === 'square' ? detailAction('users', row.name) : '');
+    return actions ? `<div class="insight-actions">${actions}</div>` : '';
+  }
   function analysisBlock(data) {
     if (!data) return empty('分析暂不可用，请刷新后重试');
     const mode = route.analysisView || 'share', basis = route.analysisBasis || 'tokens';
     const rows = (data.items || []).map(r => basis === 'users' ? { ...r, percent: r.preferred_percent || 0 } : r);
     const daily = (data.daily || []).map(d => { const parts = route.category ? (d.parts || []).filter(p => p.name === route.category) : d.parts; return { ...d, parts, ...(route.category ? { tokens: d.reported === false ? null : (parts || []).reduce((s, p) => s + (p.tokens || 0), 0) } : {}) }; });
     const max = Math.max(1, ...daily.map(d => d.tokens || 0));
-    return tabs([['share', '占比'], ['trend', '趋势'], ['detail', '明细']], mode, 'analysisView') + tabs([['tokens', 'Token 用量'], ['users', '常用人数']], basis, 'analysisBasis') + (mode === 'share' ? donuts(basis === 'users' ? rows.map(r => ({ ...r, tokens: r.preferred_users })) : rows, basis === 'users') : '') + (mode !== 'share' && basis === 'users' ? note('常用人数仅有周期汇总；下方日趋势仍为真实 Token 用量，不推算每日常用人数。') : '') + `<label class="field">趋势分类<select data-analysis-category><option value="">全部分类</option>${rows.map(r => `<option value="${esc(r.name)}" ${route.category === r.name ? 'selected' : ''}>${esc(r.name)}</option>`).join('')}</select></label><div class="caption">${Number.isFinite(data.summary?.users) ? full(data.summary.users) + ' 位用户 · ' : ''}${data.from && data.to ? esc(data.from) + ' — ' + esc(data.to) + ' · ' : ''}仅代表已上报数据</div>
-      ${daily.length && mode !== 'share' ? `<details class="trend-details" ${mode === 'detail' ? 'open' : ''}><summary>逐日占比与分项明细</summary>${daily.map(d => `<details><summary>${esc(d.day)} · ${d.reported ? fmt(d.tokens) + ' tokens' + (Number.isFinite(d.credits) ? ' · ' + full(d.credits) + ' Credits' : '') : '未同步'}</summary>${(d.parts || []).map(p => `<p>${esc(p.name)} · ${fmt(p.tokens)} tokens · ${d.tokens ? (p.tokens / d.tokens * 100).toFixed(1) : '0'}%${Number.isFinite(p.credits) ? ' · ' + full(p.credits) + ' Credits' : ''}</p>`).join('') || note('暂无分项记录')}</details>`).join('')}</details><div class="bars analysis-bars" aria-label="每日 Token 用量">${daily.map(d => `<div class="bar-col" title="${esc(d.day)} · ${d.reported ? full(d.tokens) + ' tokens' : '未同步'}"><span class="v">${d.reported ? fmt(d.tokens) : '—'}</span><div class="bar-fill" style="height:${d.reported ? Math.max(1, (d.tokens || 0) / max * 100) : 0}%"></div><span class="k">${esc(d.day?.slice(5))}</span></div>`).join('')}</div>` : ''}
-      ${rows.map(row => `<div class="dist"><div class="head"><span class="name">${esc(row.name)}</span>${route.dimension === 'tools' && ['me', 'square'].includes(route.name) ? link({ ...route, view: 'analysis', dimension: 'models', tool: row.name }, '模型明细', 'more') : ''}${route.name === 'square' ? `<button class="more" data-audience="${esc(row.name)}">常用人数与用户</button>` : ''}<span class="pct num">${Number(row.percent || 0).toFixed(1)}%</span></div><div class="bar"><i style="width:${Math.max(0, Math.min(100, row.percent || 0))}%"></i></div><div class="meta"><span>${fmt(row.tokens)} tokens${Number(row.credits) > 0 ? ' · ' + full(row.credits) + ' Credits' : ''}</span><span>${Number.isFinite(row.users) ? full(row.users) + ' 人用过 · ' + full(row.preferred_users) + ' 人常用 · ' + full(row.preferred_percent) + '%' : ''}</span></div></div>`).join('') || empty('该周期暂无分项记录；接入电脑并同步后可查看工具与模型分布')}`;
+    return tabs([['share', '占比'], ['trend', '趋势'], ['detail', '明细']], mode, 'analysisView', 'section') + tabs([['tokens', 'Token 用量'], ['users', '常用人数']], basis, 'analysisBasis', 'filter') + (mode === 'share' ? donuts(basis === 'users' ? rows.map(r => ({ ...r, tokens: r.preferred_users })) : rows, basis === 'users') : '') + (mode !== 'share' && basis === 'users' ? note('常用人数仅有周期汇总；下方日趋势仍为真实 Token 用量，不推算每日常用人数。') : '') + `<label class="field">趋势分类<select data-analysis-category><option value="">全部分类</option>${rows.map(r => `<option value="${esc(r.name)}" ${route.category === r.name ? 'selected' : ''}>${esc(r.name)}</option>`).join('')}</select></label><div class="caption">${Number.isFinite(data.summary?.users) ? full(data.summary.users) + ' 位用户 · ' : ''}${data.from && data.to ? esc(data.from) + ' — ' + esc(data.to) + ' · ' : ''}仅代表已上报数据</div>
+      ${daily.length && mode !== 'share' ? `<details class="trend-details" ${mode === 'detail' ? 'open' : ''}><summary>逐日占比与分项明细</summary><div class="day-list">${daily.map(d => {
+        const parts = d.parts || [], dayPct = token => d.tokens ? (token / d.tokens * 100).toFixed(1) : '0';
+        const head = d.reported ? `${fmt(d.tokens)} tokens${Number.isFinite(d.credits) ? ' · ' + full(d.credits) + ' Credits' : ''}` : '未同步';
+        return `<details class="day-details" ${mode === 'detail' ? 'open' : ''}><summary><span class="dd-date">${esc(d.day)}</span><span class="dd-tokens num">${head}</span></summary><div class="dd-parts">${parts.length ? parts.map(p => `<div class="dd-part"><span class="ddp-name">${esc(p.name)}</span><span class="ddp-bar"><i style="width:${Math.min(100, Number(dayPct(p.tokens)))}%"></i></span><span class="ddp-val num">${fmt(p.tokens)} tokens · ${dayPct(p.tokens)}%${Number.isFinite(p.credits) ? ' · ' + full(p.credits) + ' Credits' : ''}</span></div>`).join('') : note('暂无分项记录')}</div></details>`;
+      }).join('') || note('暂无逐日记录')}</div></details><div class="bars analysis-bars" aria-label="每日 Token 用量">${daily.map(d => `<div class="bar-col" title="${esc(d.day)} · ${d.reported ? full(d.tokens) + ' tokens' : '未同步'}"><span class="v">${d.reported ? fmt(d.tokens) : '—'}</span><div class="bar-fill" style="height:${d.reported ? Math.max(1, (d.tokens || 0) / max * 100) : 0}%"></div><span class="k">${esc(d.day?.slice(5))}</span></div>`).join('')}</div>` : ''}
+      ${rows.map(row => `<div class="dist"><div class="head"><span class="name">${esc(row.name)}</span><span class="pct num">${Number(row.percent || 0).toFixed(1)}%</span>${analysisActions(row)}</div><div class="bar"><i style="width:${Math.max(0, Math.min(100, row.percent || 0))}%"></i></div><div class="meta"><span>${fmt(row.tokens)} tokens${Number(row.credits) > 0 ? ' · ' + full(row.credits) + ' Credits' : ''}</span><span>${Number.isFinite(row.users) ? full(row.users) + ' 人用过 · ' + full(row.preferred_users) + ' 人常用 · ' + full(row.preferred_percent) + '%' : ''}</span></div></div>`).join('') || empty('该周期暂无分项记录；接入电脑并同步后可查看工具与模型分布')}`;
   }
-  let audienceVersion = 0;
-  async function audience(button) {
-    const routeAlive = current, version = ++audienceVersion, alive = () => routeAlive() && version === audienceVersion, context = { ...route }, name = button.dataset.audience;
-    let box = $('#audience'); if (!box) { page.insertAdjacentHTML('beforeend', '<section id="audience" aria-live="polite"></section>'); box = $('#audience'); }
-    let board = null;
-    async function load() {
-      const q = new URLSearchParams({ period: context.period, dimension: context.dimension, name, ...(context.tool ? { tool: context.tool } : {}), ...(board?.has_more ? { offset: board.next_offset, snapshot: board.snapshot } : {}) });
-      const data = await read('/api/insights/users?' + q); if (!alive() || !box.isConnected) return;
-      board = M.mergeBoard(board, data);
-      box.innerHTML = `<h2>${esc(name)} · ${full(board.total)} 位常用用户</h2>` + board.entries.map(e => `<div class="row">${avatar(e)}<span>${esc(e.nickname)}</span><span>${fmt(e.tokens)} tokens · ${e.percent}%</span></div>`).join('') + (board.has_more ? '<button class="btn ghost" id="audience-more">加载更多用户</button>' : note('已显示全部常用用户'));
-      if ($('#audience-more')) $('#audience-more').onclick = e => mutate(e.currentTarget, load, () => {});
-    }
-    return mutate(button, load, () => { box.scrollIntoView?.(); });
+  let detail = null, detailSequence = 0;
+  const detailStateKey = 'trInsightDetail';
+  const detailLoading = () => '<div class="insight-loading" role="status"><span class="insight-spinner" aria-hidden="true"></span><span>正在加载…</span></div>';
+  function detailContext(context) {
+    const period = isPublicTrend(context) && context.period === 'day' ? 'week' : context.period;
+    return { ...context, period };
   }
+  function syncSelectFilter(event) {
+    const select = event.target.closest('select[data-set]');
+    if (!select) return false;
+    patch({ [select.dataset.set]: select.value });
+    return true;
+  }
+  function periodLabel(period) { return [...M.periods, ['all', '累计']].find(item => item[0] === period)?.[1] || '当前周期'; }
+  function detailAlive(panel, version = panel.version) {
+    return detail === panel && panel.version === version && panel.routeAlive() && panel.identity === token && panel.dialog.isConnected;
+  }
+  function disposeDetail(restoreFocus = true) {
+    const panel = detail;
+    if (!panel) return;
+    detail = null; panel.version++;
+    panel.dialog.close?.(); panel.dialog.remove();
+    document.body.style.overflow = panel.bodyOverflow;
+    if (page.inert === true) page.inert = panel.pageInert;
+    const bar = document.querySelector('.tabbar');
+    if (bar && bar.inert === true) bar.inert = panel.barInert;
+    window.scrollTo?.({ top: panel.scrollY, behavior: 'instant' });
+    if (restoreFocus && panel.trigger?.isConnected) panel.trigger.focus?.({ preventScroll: true });
+  }
+  function closeDetail() {
+    if (!detail) return;
+    const ownState = history.state?.[detailStateKey] === detail.id;
+    disposeDetail();
+    if (ownState) history.back();
+  }
+  function openDetail(kind, name, trigger, source = route) {
+    if (!name || !source || (kind === 'users' && source.name !== 'square' && !isPublicTrend(source))) return null;
+    const context = detailContext(source), routeAlive = current;
+    const existing = detail;
+    if (existing) disposeDetail(false);
+    const dialog = document.createElement('dialog');
+    dialog.className = 'insight-dialog';
+    dialog.setAttribute('aria-labelledby', 'insight-detail-title');
+    dialog.setAttribute('aria-describedby', 'insight-detail-context');
+    dialog.setAttribute('aria-modal', 'true');
+    const panel = { id: ++detailSequence, kind, name, context, trigger, routeAlive, identity: token, version: 0, busy: false,
+      dialog, board: null, model: null, scrollY: existing?.scrollY ?? (window.scrollY || 0), bodyOverflow: existing?.bodyOverflow ?? document.body.style.overflow,
+      pageInert: existing?.pageInert ?? !!page.inert, barInert: existing?.barInert ?? !!document.querySelector('.tabbar')?.inert };
+    dialog.innerHTML = `<section class="insight-panel"><header class="insight-panel-header"><div><h2 id="insight-detail-title">${esc(name)} · ${kind === 'models' ? '模型明细' : '常用用户'}</h2><p id="insight-detail-context">${context.name === 'me' ? '我的用量' : isPublicTrend(context) ? '趋势榜' : '广场'} · ${periodLabel(context.period)}${context.tool ? ' · ' + esc(context.tool) : ''}</p></div><button type="button" class="insight-action insight-close" aria-label="关闭详情" title="关闭详情" data-detail-close>${detailIcon('close')}</button></header><div class="insight-panel-body" tabindex="-1">${detailLoading()}</div></section>`;
+    detail = panel;
+    document.body.appendChild(dialog);
+    panel.body = dialog.querySelector('.insight-panel-body');
+    document.body.style.overflow = 'hidden'; page.inert = true;
+    const bar = document.querySelector('.tabbar'); if (bar) bar.inert = true;
+    if (typeof dialog.showModal === 'function') dialog.showModal();
+    else { dialog.setAttribute('open', ''); dialog.setAttribute('role', 'dialog'); }
+    dialog.querySelector('[data-detail-close]').focus();
+    history.pushState({ ...history.state, [detailStateKey]: panel.id }, '', location.href);
+    dialog.addEventListener('cancel', event => { event.preventDefault(); closeDetail(); });
+    dialog.addEventListener('click', event => {
+      const fullAnalysis = event.target.closest('a.insight-link');
+      if (fullAnalysis) { event.preventDefault(); return go(M.parseRoute(fullAnalysis.hash || fullAnalysis.getAttribute('href'))); }
+      if (event.target === dialog || event.target.closest('[data-detail-close]')) { closeDetail(); return; }
+      const button = event.target.closest('button');
+      if (button?.hasAttribute('data-detail-retry')) return loadDetail(panel, button.dataset.more === 'true', true);
+      if (button?.hasAttribute('data-detail-more')) return loadDetail(panel, true);
+    });
+    dialog.addEventListener('keydown', event => {
+      if (event.key === 'Escape') { event.preventDefault(); closeDetail(); return; }
+      if (event.key !== 'Tab') return;
+      const focusable = [...dialog.querySelectorAll('button:not([disabled]), a[href], input:not([disabled]), select:not([disabled]), [tabindex="0"]')];
+      const first = focusable[0], last = focusable[focusable.length - 1];
+      if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last?.focus(); }
+      else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first?.focus(); }
+    });
+    panel.ready = loadDetail(panel);
+    return panel;
+  }
+  function detailRange(data) {
+    return data.from && data.to ? `<p class="insight-date">${esc(data.from)} — ${esc(data.to)} · 北京时间</p>` : '';
+  }
+  function modelDetailHTML(data) {
+    const rows = data.items || [], association = data.association;
+    const summary = `<div class="insight-summary"><div><span class="insight-summary-value num">${fmt(data.summary?.tokens)}</span><span class="insight-summary-label">tokens · 含缓存</span></div><div><span class="insight-summary-value num">${rows.filter(row => !row.unclassified).length}</span><span class="insight-summary-label">种已关联模型</span></div></div>`;
+    const coverage = association ? `<p class="insight-note">模型明细已关联 ${full(association.percent)}%${association.unlinked_tokens > 0 ? ' · ' + fmt(association.unlinked_tokens) + ' tokens 未关联，单独列出' : ''}</p>` : '';
+    const series = [['tokens', 'Tokens'], ...(rows.some(row => Number.isFinite(row.credits)) ? [['credits', 'Credits']] : [])];
+    return detailRange(data) + summary + coverage + (rows.some(row => row.tokens > 0) ? donuts(rows, false, series) : '') +
+      '<h3 class="insight-section-title">各模型用量</h3><div class="insight-model-list">' + (rows.map(row => `<div class="dist"><div class="head"><span class="name">${esc(row.name)}</span><span class="pct num">${full(row.percent)}%</span></div><div class="bar"><i style="width:${Math.max(0, Math.min(100, Number(row.percent) || 0))}%"></i></div><div class="meta"><span>${full(row.tokens)} tokens</span>${Number.isFinite(row.credits) ? `<span>${full(row.credits)} Credits</span>` : ''}</div></div>`).join('') || empty('本周期暂无该工具的模型明细')) + '</div>';
+  }
+  function audienceDetailHTML(panel) {
+    const board = panel.board, context = panel.context;
+    return detailRange(board) + (context.view === 'trend' ? '<p class="insight-note">名单按当前统计周期计算，与趋势对比区间不同。</p>' : '') +
+      `<h3 class="insight-count">${full(board.total)} 位常用用户</h3><p class="insight-note">常用指该项在本人同期用量中占比最高；仅展示参与公开排名的用户。${context.tool ? '占比按该工具内的模型用量计算。' : ''}</p><div class="insight-user-list">` +
+      (board.entries.map(entry => `<div class="row">${avatar(entry)}<div class="who"><div class="nick">${esc(entry.nickname || '未命名')}</div><div class="sub">占${context.tool ? '该工具' : '本人'}用量 ${full(entry.percent)}%</div></div><div class="amt num">${fmt(entry.tokens)}<span class="insight-summary-label">tokens</span></div></div>`).join('') || empty('本周期暂无以此为主要' + (context.dimension === 'models' ? '模型' : '工具') + '的公开用户')) +
+      `</div><div class="insight-pagination">${board.has_more ? '<button type="button" class="insight-more" data-detail-more>加载更多 · ' + board.entries.length + ' / ' + full(board.total) + '</button>' : board.entries.length ? '<p class="insight-note">已显示全部常用用户</p>' : ''}</div>`;
+  }
+  function paintDetail(panel) {
+    if (!detailAlive(panel)) return;
+    panel.body.innerHTML = panel.kind === 'models' ? modelDetailHTML(panel.model) : audienceDetailHTML(panel);
+    if (panel.kind === 'models') panel.body.insertAdjacentHTML('beforeend', link({ ...panel.context, view: 'analysis', dimension: 'models', tool: panel.name, category: '' }, '打开完整分析', 'insight-link'));
+  }
+  async function loadDetail(panel, more = false, refresh = false) {
+    if (!detailAlive(panel) || panel.busy || (more && !panel.board?.has_more)) return;
+    panel.busy = true;
+    const version = ++panel.version, alive = () => detailAlive(panel, version), existing = more && !!panel.board;
+    const previousScroll = panel.body.scrollTop;
+    if (existing) {
+      const button = panel.body.querySelector('[data-detail-more], [data-detail-retry]');
+      if (button) { button.disabled = true; button.textContent = '正在加载…'; }
+    } else panel.body.innerHTML = detailLoading();
+    try {
+      const context = panel.context;
+      let path;
+      if (panel.kind === 'models') path = (context.name === 'me' ? '/api/my/analysis?' : '/api/insights?') + new URLSearchParams({ period: context.period, dimension: 'models', tool: panel.name });
+      else path = '/api/insights/users?' + new URLSearchParams({ period: context.period, dimension: context.dimension, name: panel.name,
+        ...(context.tool ? { tool: context.tool } : {}), ...(more ? { offset: panel.board.next_offset, snapshot: panel.board.snapshot } : {}) });
+      const data = await cache.read(path, { force: refresh || more });
+      if (!alive()) return;
+      if (panel.kind === 'models') panel.model = data;
+      else panel.board = M.mergeBoard(more ? panel.board : null, data);
+      paintDetail(panel);
+      panel.body.scrollTop = more ? previousScroll : 0;
+    } catch (error) {
+      if (!alive() || error.stale) return;
+      if (existing && error.status === 409) {
+        panel.board = null; panel.busy = false;
+        return loadDetail(panel, false, true);
+      }
+      const message = error.status === 403 ? error.message || '当前无权查看，请稍后重试' : error.message || '暂时无法读取详情';
+      const html = `<div class="insight-error" role="alert"><p>${esc(message)}</p><button type="button" class="insight-retry" data-detail-retry data-more="${!!existing}">重新加载</button></div>`;
+      if (existing) {
+        paintDetail(panel);
+        panel.body.querySelector('.insight-pagination').innerHTML = html;
+        panel.body.scrollTop = previousScroll;
+      } else panel.body.innerHTML = html;
+    } finally { if (alive()) panel.busy = false; }
+  }
+  function audience(button) { return openDetail('users', button.dataset.audience, button)?.ready; }
   async function squareTrends(alive) {
     const context = { ...route }, period = route.period === 'day' ? 'week' : route.period;
-    $('#body').innerHTML = dimensions() + tabs([['users', '常用人数'], ['tokens', 'Token 用量']], route.trendMetric, 'trendMetric') + `<label class="field">截至日期<input type="date" id="trend-end" max="${M.shiftDay(M.beijingDay(), -1)}" value="${esc(route.end || M.shiftDay(M.beijingDay(), -1))}"></label><div id="trend-list"></div>`;
+    $('#body').innerHTML = tabs([['tools', '工具'], ['models', '模型']], route.dimension, 'dimension', 'filter') + tabs([['users', '使用人数'], ['tokens', 'Token 用量']], route.trendMetric, 'trendMetric', 'filter') + `<label class="field">截至日期<input type="date" id="trend-end" max="${M.shiftDay(M.beijingDay(), -1)}" value="${esc(route.end || M.shiftDay(M.beijingDay(), -1))}"></label><div id="trend-list"></div>`;
     $('#trend-end').onchange = e => { if (M.validDay(e.target.value)) patch({ end: e.target.value }); };
     let board = null;
     async function load() {
       const q = new URLSearchParams({ period, dimension: context.dimension, metric: context.trendMetric, ...(context.end ? { end: context.end } : {}), ...(board?.has_more ? { offset: board.next_offset, snapshot: board.snapshot } : {}) });
       const data = await read('/api/insights/trends?' + q); if (!alive()) return;
       board = M.mergeBoard(board, data);
-      $('#trend-list').innerHTML = note(`${data.from} — ${data.to} · 对比 ${data.previous_from} — ${data.previous_to}`) + board.entries.map(e => `<div class="group-row"><strong>${e.rank}. ${esc(e.name)}</strong><p>${full(e.users)} 位常用 · ${fmt(e.tokens)} tokens${Number.isFinite(e.credits) ? ' · ' + full(e.credits) + ' Credits' : ''}</p><p>排名变化 ${e.rank_change == null ? '新上榜' : e.rank_change > 0 ? '+' + e.rank_change : e.rank_change} · 上期 ${e.previous_users ?? '—'} 人 / ${e.previous_tokens == null ? '—' : fmt(e.previous_tokens)} tokens</p><button data-audience="${esc(e.name)}">查看常用用户</button></div>`).join('') + (board.has_more ? '<button class="btn ghost" id="trend-more">加载更多趋势</button>' : note('已显示全部趋势'));
+      $('#trend-list').innerHTML = note(`${data.from} — ${data.to} · 对比 ${data.previous_from} — ${data.previous_to}`) + board.entries.map(e => `<div class="group-row"><strong>${e.rank}. ${esc(e.name)}</strong><p>${full(e.users)} 人使用 · ${fmt(e.tokens)} tokens${Number.isFinite(e.credits) ? ' · ' + full(e.credits) + ' Credits' : ''}</p><p>排名变化 ${e.rank_change == null ? '新上榜' : e.rank_change > 0 ? '+' + e.rank_change : e.rank_change} · 上期 ${e.previous_users ?? '—'} 人 / ${e.previous_tokens == null ? '—' : fmt(e.previous_tokens)} tokens</p><button data-audience="${esc(e.name)}">查看常用用户</button></div>`).join('') + (board.has_more ? '<button class="btn ghost" id="trend-more">加载更多趋势</button>' : note('已显示全部趋势'));
       if ($('#trend-more')) $('#trend-more').onclick = e => mutate(e.currentTarget, load, () => {});
     }
     await load();
   }
   async function groups(alive) {
-    page.innerHTML = heading('我的群榜') + periodTabs() + '<div id="body" aria-live="polite">' + empty('加载群榜…') + '</div>';
+    page.innerHTML = heading('我的群榜') + periodTabList() + '<div id="body" aria-live="polite">' + empty('加载群榜…') + '</div>';
     const data = await read('/api/my/groups-overview?period=' + route.period);
     if (!alive()) return;
     user = data.user;
@@ -149,9 +353,9 @@
     const credit = route.metric === 'credits';
     window.__trBoard = board;
     function row(entry, mine = false) {
-      return `<div class="row ${mine ? 'me' : ''}"><span class="rank num">${esc(entry.rank)}</span>${avatar(entry)}<div class="who"><div class="nick">${esc(entry.nickname || (mine ? user?.nickname : '') || '未命名')}${mine ? ' · 我' : ''}</div><div class="sub">${esc([entry.top_tool, entry.top_model].filter(Boolean).join(' · ') || (!entry.tokens && !entry.credits ? '尚未上报' : '已记录用量'))}</div><div class="sub alt">${credit ? fmt(entry.tokens) + ' tokens' : Number(entry.credits) > 0 ? full(entry.credits) + ' Credits' : ''}</div></div><span class="amt num">${credit ? full(entry.credits) : fmt(entry.tokens)}</span>${route.name === 'group' && !credit && !mine ? `<button class="more" data-pk="${entry.rank}">PK</button>` : ''}</div>`;
+        return `<div class="row ${mine ? 'me' : ''}"${mine ? ' tabindex="0" role="link" data-my-row="true"' : ''}><span class="rank num">${esc(entry.rank)}</span>${avatar(entry)}<div class="who"><div class="nick">${esc(entry.nickname || (mine ? user?.nickname : '') || '未命名')}${mine ? ' · 我' : ''}</div><div class="sub">${esc([entry.top_tool, entry.top_model].filter(Boolean).join(' · ') || (!entry.tokens && !entry.credits ? '尚未上报' : '已记录用量'))}</div><div class="sub alt">${credit ? fmt(entry.tokens) + ' tokens' : Number(entry.credits) > 0 ? full(entry.credits) + ' Credits' : ''}</div></div><span class="amt num">${credit ? full(entry.credits) : fmt(entry.tokens)}</span>${route.name === 'group' && !credit && !mine ? `<button class="more" data-pk="${entry.rank}">PK</button>` : ''}</div>`;
     }
-    return `<div class="list-header"><span>${full(board.total)} 人 · ${credit ? 'Credits 用量' : 'Token 用量'}</span><span>已显示 ${board.entries.length} 人</span></div>${board.entries.map(e => row(e, e.rank === board.me?.rank)).join('') || empty('本期暂无上报成员；请通过飞书机器人加入群榜并接入电脑')}${board.me ? '<div class="fixed-mine" aria-label="我的排名"><a href="' + esc(M.routeHash({ name: 'me', period: route.period })) + '">查看我的用量</a>' + row({ ...board.me, nickname: user?.nickname, avatar_url: user?.avatar_url }, true) + '</div>' : note('本期暂无我的公开排名，可通过机器人查看加入或显示状态')}
+    return `<div class="list-header"><span>${full(board.total)} 人 · ${credit ? 'Credits 用量' : 'Token 用量'}</span><span>已显示 ${board.entries.length} 人</span></div>${board.entries.map(e => row(e, e.rank === board.me?.rank)).join('') || empty('本期暂无上报成员；请通过飞书机器人加入群榜并接入电脑')}${board.me ? '<div class="fixed-mine" aria-label="我的排名，点击查看我的用量" tabindex="0" role="link" data-my-row="true">' + row({ ...board.me, nickname: user?.nickname, avatar_url: user?.avatar_url }, true) + '</div>' : note('本期暂无我的公开排名，可通过机器人查看加入或显示状态')}
       ${board.has_more ? '<button class="btn ghost" id="load-more">加载更多</button>' : note('已显示全部排名')}`;
   }
   function mountBoard(board, alive) {
@@ -173,32 +377,32 @@
     });
   }
   async function group(alive) {
-    page.innerHTML = heading(route.name === 'group-analysis' ? '群数据分析' : '群榜详情', true) + periodTabs() + '<div id="body">' + empty('加载群数据…') + '</div>';
+    page.innerHTML = heading(route.name === 'group-analysis' ? '群数据分析' : '群榜详情', true) + periodTabList() + filterBar() + '<div id="body">' + empty('加载群数据…') + '</div>';
     const data = await read('/api/groups/' + route.id + '/page?period=' + route.period);
     if (!alive()) return;
     user = data.user;
     const prefix = `<div class="section"><span class="t">${esc(data.group.name)}</span><span>${full(data.group.members)} 人</span></div>` + syncBlock(user);
     window.__trGroup = data.group;
-    const actions = `<div class="links">${data.group.can_rename ? '<button class="more" data-group-rename>修改群名</button>' : ''}<button class="more" data-group-visibility="${!data.group.my_hidden}">${data.group.my_hidden ? '在群榜显示我' : '在群榜隐藏我'}</button><button class="more" data-group-leave>退出群榜</button></div>`;
+    const actions = `<div class="links group-actions">${link({ ...route, name: 'group-analysis' }, '群数据分析', 'analysis-chip')}<button type="button" class="more" data-other-toggle aria-haspopup="menu" aria-expanded="false">其他</button><div class="other-menu" hidden>${data.group.can_rename ? '<button type="button" data-group-rename>修改群名</button>' : ''}<button type="button" data-group-visibility="${!data.group.my_hidden}">${data.group.my_hidden ? '在群榜显示我' : '在群榜隐藏我'}</button><button type="button" data-group-leave>退出群榜</button></div></div>`;
     if (!data.board) { $('#body').innerHTML = prefix + empty('需先加入群榜并完善昵称头像。请在飞书群发送「加入」，单聊机器人查看账号接入状态。'); return; }
     if (route.name === 'group-analysis') {
       const report = data.insights;
       $('#body').innerHTML = prefix + (report ? hero(report, '群公开成员用量') + `<div class="caption">${full(report.summary?.active_users)} 人活跃 · ${full(report.summary?.reported_users)} 人已上报 · 隐藏成员不纳入统计</div>` + stats(report) + dimensions() + analysisBlock(report[route.dimension]) + shareControls({ style: 'group-insights', group_id: route.id, period: route.period, snapshot: report.snapshot }) : empty(data.insights_error || '群分析暂不可用，请刷新后重试')) + robotNote();
     } else {
-      $('#body').innerHTML = prefix + actions + `<div class="links">${link({ ...route, name: 'group-analysis' }, '群数据分析')}</div>` + metricTabs() + '<div id="board"></div>' + robotNote();
+      $('#body').innerHTML = prefix + actions + metricTabs() + '<div id="board"></div>' + robotNote();
       const board = route.metric === 'credits' ? await read(M.boardPath(route)) : data.board;
       if (alive()) mountBoard(M.mergeBoard(null, board), alive);
     }
   }
   async function square(alive) {
-    page.innerHTML = heading('广场排名') + periodTabs() + tabs([['sum', '双榜'], ['analysis', '分析'], ['trend', '趋势']], route.view, 'view') + '<div id="body">' + empty('加载广场…') + '</div>';
-    if (route.view === 'trend') return squareTrends(alive);
+    if (route.view === 'trend') return subscriptions(alive);
+    page.innerHTML = heading('广场排名') + tabs(periodItems(), route.period, 'period', 'square-period') + squareTabs() + filterBar() + '<div id="body">' + empty('加载广场…') + '</div>';
     if (route.view === 'analysis') {
       const bundle = await read('/api/insights?period=' + route.period + '&dimension=tools&bundle=1');
       let data = bundle[route.dimension];
       if (!data) data = route.dimension === 'tools' ? bundle : await read('/api/insights?period=' + route.period + '&dimension=models');
       if (route.tool) data = await read('/api/insights?period=' + route.period + '&dimension=models&tool=' + encodeURIComponent(route.tool));
-      if (alive()) $('#body').innerHTML = dimensions() + (route.tool ? note('工具模型下钻：' + route.tool) + link({ ...route, tool: '' }, '返回全部模型') : '') + analysisBlock(data) + note('Credits 为工具自报积分；未覆盖的分项不按零费用解释。');
+      if (alive()) $('#body').innerHTML = (route.tool ? note('工具模型下钻：' + route.tool) + link({ ...route, tool: '', category: '' }, '返回全部模型') : '') + analysisBlock(data) + note('Credits 为工具自报积分；未覆盖的分项不按零费用解释。');
     } else {
       $('#body').innerHTML = metricTabs() + '<div id="board">' + empty('加载排名…') + '</div>';
       const board = await read(M.boardPath({ ...route, id: '' }));
@@ -209,7 +413,8 @@
     return `<div class="nav-row"><button class="nav-btn" ${previous ? `data-set="${key}" data-value="${esc(previous)}"` : 'disabled'}>上一${key === 'month' ? '月' : key === 'week' ? '周' : '天'}</button><span class="nav-title">${esc(title)}</span><button class="nav-btn" ${next ? `data-set="${key}" data-value="${esc(next)}"` : 'disabled'}>下一${key === 'month' ? '月' : key === 'week' ? '周' : '天'}</button></div>`;
   }
   async function me(alive) {
-    page.innerHTML = heading('我的用量', route.view !== 'sum') + tabs([['sum', '汇总'], ['cal', '日历'], ['daily', '日报'], ['trend', '走势'], ['analysis', '分析']], route.view, 'view') + (['sum', 'analysis'].includes(route.view) ? periodTabs() : '') + '<div id="body">' + empty('加载我的用量…') + '</div>';
+    if (route.view === 'ledger') return subscriptions(alive);
+    page.innerHTML = heading('我的用量', route.view !== 'sum') + tabs([['sum', '汇总'], ['cal', '日历'], ['daily', '日报'], ['trend', '走势'], ['analysis', '分析']], route.view, 'view', 'view') + (['sum', 'analysis'].includes(route.view) ? periodTabList() : '') + '<div id="body">' + empty('加载我的用量…') + '</div>';
     if (route.view === 'analysis') {
       const bundle = await read('/api/my/analysis?period=' + route.period + '&dimension=tools&bundle=1');
       let data = bundle[route.dimension] || (route.dimension === 'tools' ? bundle : await read('/api/my/analysis?period=' + route.period + '&dimension=models'));
@@ -223,7 +428,7 @@
     const data = await read('/api/my/overview?period=' + route.period);
     if (!alive()) return;
     user = data.user;
-    $('#body').innerHTML = syncBlock(user) + (data.usage ? hero(data.usage, '我的用量') + `<div class="stats"><div><div class="v num">${full(data.usage.summary?.active_days)} 天</div><div class="k">活跃天数</div></div><div><div class="v num">${full(data.usage.activity?.current_streak)} 天</div><div class="k">连续记录</div></div></div>` + stats(data.usage) + trendBars((data.usage.daily || []).filter(d => d.day >= data.usage.from && d.day <= data.usage.to)) + shareControls({ style: 'usage', period: route.period }) : empty(data.usage_error?.error || '用量暂不可用，请刷新后重试')) + `<div class="links">${link({ name: 'settings' }, '设置与接入')}${link({ name: 'achievements' }, '成就图鉴')}${link({ name: 'groups', period: route.period === 'all' ? 'day' : route.period }, '我的群榜')}</div>` + robotNote();
+    $('#body').innerHTML = syncBlock(user) + (data.usage ? hero(data.usage, '我的用量') + `<div class="stats"><div><div class="v num">${full(data.usage.summary?.active_days)} 天</div><div class="k">活跃天数</div></div><div><div class="v num">${full(data.usage.activity?.current_streak)} 天</div><div class="k">连续记录</div></div></div>` + stats(data.usage) + trendBars((data.usage.daily || []).filter(d => d.day >= data.usage.from && d.day <= data.usage.to)) + shareControls({ style: 'usage', period: route.period }) : empty(data.usage_error?.error || '用量暂不可用，请刷新后重试')) + `<div class="links">${link({ name: 'settings' }, '设置与接入')}${link({ name: 'achievements' }, '成就图鉴')}${link({ name: 'groups', period: route.period === 'all' ? 'day' : route.period }, '我的群榜')}${link({ name: 'me', view: 'ledger', period: 'all' }, '订阅账本')}</div>` + devicesBlock(user) + robotNote();
   }
   async function daily(alive) {
     const day = route.day || M.shiftDay(M.beijingDay(), -1);
@@ -238,7 +443,7 @@
     if (!alive()) return;
     const map = M.heatmap(route.range === 'month' ? { ...data, heatmap: null, daily: data.daily.map(d => ({ ...d, details: data.heatmap?.daily?.find(h => h.day === d.day)?.details })) } : data);
     const prefKey = 'tr_calendar_display:' + (user?.id || token), pref = JSON.parse(localStorage.getItem(prefKey) || '{"device":true,"model":true,"cost":false}');
-    $('#body').innerHTML = tabs([['quarter', '近13周'], ['month', '本月']], route.range, 'range') + `<div class="links">${[['device', '显示设备'], ['model', '显示模型'], ['cost', '显示费用']].map(([key, label]) => `<label><input type="checkbox" data-calendar-pref="${key}" ${pref[key] ? 'checked' : ''}>${label}</label>`).join('')}</div>` + dateNav(data.previous_month, data.next_month, 'month', month) + `<div class="caption">${esc(map.from)} — ${esc(map.to)} · 北京时间 · ${map.extended ? '近13周' : '本月'}</div><div class="heatmap-scroll"><div class="heatmap" style="--weeks:${Math.ceil(map.days.length / 7)}">${map.days.map(day => `<button class="heat-cell level-${day.level} ${day.outside ? 'outside' : ''} ${day.future ? 'future' : ''}" data-calendar-day="${esc(day.day)}" ${day.outside || day.future ? 'disabled' : ''} aria-label="${esc(day.day + ' · ' + day.statusText + (day.reported ? ' · ' + full(day.tokens) + ' tokens' : ''))}" title="${esc(day.day + ' · ' + day.statusText)}"><span>${Number(day.day.slice(-2))}</span></button>`).join('')}</div></div><div class="caption">颜色深浅表示 Token 用量；空白表示未同步或范围外，已同步零用量会单独标注。</div><div id="day-detail" aria-live="polite"></div><label class="field"><input type="checkbox" id="share-amount">在公开日历分享中包含费用金额（默认不公开）</label>` + shareControls({ style: 'calendar', month, calendar_snapshot: data.snapshot });
+    $('#body').innerHTML = tabs([['quarter', '近13周'], ['month', '本月']], route.range, 'range') + `<div class="links">${[['device', '显示设备'], ['model', '显示模型'], ['cost', '显示费用']].map(([key, label]) => `<label><input type="checkbox" data-calendar-pref="${key}" ${pref[key] ? 'checked' : ''}>${label}</label>`).join('')}</div>` + dateNav(data.previous_month, data.next_month, 'month', month) + `<div class="caption">${esc(map.from)} — ${esc(map.to)} · 北京时间 · ${map.extended ? '近13周' : '本月'}</div><div class="heatmap-scroll"><div class="heatmap" style="--weeks:${Math.ceil(map.days.length / 7)}">${map.days.map(day => `<button class="heat-cell level-${day.level} ${day.outside ? 'outside' : ''} ${day.future ? 'future' : ''}" data-calendar-day="${esc(day.day)}" ${day.outside || day.future ? 'disabled' : ''} aria-label="${esc(day.day + ' · ' + day.statusText + (day.reported ? ' · ' + full(day.tokens) + ' tokens' : ''))}" title="${esc(day.day + ' · ' + day.statusText)}"><span>${Number(day.day.slice(-2))}</span>${day.reported ? `<span class="heat-amt">${fmt(day.tokens)}</span>` : ''}</button>`).join('')}</div></div><div class="caption">颜色深浅表示 Token 用量；空白表示未同步或范围外，已同步零用量会单独标注。</div><div id="day-detail" aria-live="polite"></div><label class="field"><input type="checkbox" id="share-amount">在公开日历分享中包含费用金额（默认不公开）</label>` + shareControls({ style: 'calendar', month, calendar_snapshot: data.snapshot });
     let chosen;
     $('#body').querySelectorAll('[data-calendar-pref]').forEach(box => { box.onchange = () => { pref[box.dataset.calendarPref] = box.checked; localStorage.setItem(prefKey, JSON.stringify(pref)); if (chosen) select(chosen); }; });
     function select(day) {
@@ -320,7 +525,11 @@
     return `<label class="field">${esc(label)}<select name="${name}">${values.map(v => `<option value="${esc(v)}" ${v === value ? 'selected' : ''}>${esc(labelOf(v))}</option>`).join('')}</select></label>`;
   }
   async function subscriptions(alive) {
-    page.innerHTML = heading('订阅与充值') + '<div id="body">' + empty('加载账本…') + '</div>';
+    if (route.view === 'trend') {
+      page.innerHTML = heading('趋势榜', true) + periodTabList() + '<div id="body">' + empty('加载趋势榜…') + '</div>';
+      return squareTrends(alive);
+    }
+    page.innerHTML = heading('订阅账本', true) + '<div id="body">' + empty('加载账本…') + '</div>';
     const data = await read('/api/subscriptions'); if (!alive()) return;
     const money = (v, c = 'USD') => `${esc(c)} ${full((v || 0) / 100)}`;
     $('#body').innerHTML = note('手工记录实际支出；API 等值为估算，不代表真实账单。') +
@@ -339,12 +548,28 @@
     $('#body').onclick = e => { const b = e.target.closest('button'); if (!b) return; if (b.dataset.ledgerNew) editor(b.dataset.ledgerNew); if (b.dataset.ledgerEdit) editor(b.dataset.ledgerEdit, b.dataset.id); if (b.dataset.ledgerDelete && confirm('删除这笔记录？删除后无法恢复。')) mutate(b, () => write('/api/' + b.dataset.ledgerDelete + '/' + b.dataset.id, {}, 'DELETE')); };
   }
   function logout() { token = ''; user = null; localStorage.removeItem('tr_token'); cache.clear(); guard.invalidate(); ready = false; loginMask('已退出登录', '重新授权后可查看群榜与个人用量'); }
+  const connectSection = () => `<div class="help"><h3>接入电脑</h3><p>在飞书单聊机器人发送「绑定」，或在这里获取专属安装命令。命令含接入凭证，请勿公开转发。</p><button class="btn" id="getcmd">获取接入命令</button><div id="cmd" aria-live="polite"></div></div>`;
+  function bindConnectCommands(alive = current) {
+    $('#getcmd').addEventListener('click', async event => {
+      const button = event.currentTarget; button.disabled = true;
+      try {
+        // Credentials deliberately bypass the shared read cache.
+        const data = await request('/api/connect/token');
+        if (!alive()) return;
+        $('#cmd').innerHTML = `<h3>macOS / Linux</h3><code class="cmd">${esc(data.install_command || '安装命令暂不可用，请单聊机器人发送「绑定」')}</code><h3>Windows PowerShell</h3><code class="cmd">${esc(data.install_command_windows || 'Windows 安装命令暂不可用，请联系管理员')}</code>`;
+        $('#cmd').insertAdjacentHTML('beforeend', `<p>接入码（仅本人使用）</p><code>${esc(data.token)}</code>${syncBlock(data)}<p>AI 接入指引：将上方对应系统的安装命令交给电脑上的 AI 助手，要求先解释步骤，再经你允许执行；不要公开命令或接入码。安装完成后回此页刷新同步状态。</p><button class="btn ghost" id="rotate-code">重置接入码</button>`);
+        $('#rotate-code').onclick = e => { if (confirm('重置将使旧接入码失效，所有电脑需重新接入，继续？')) mutate(e.currentTarget, () => write('/api/connect/token')); };
+      } catch (error) { if (alive()) showError(error); }
+      finally { if (alive()) button.disabled = false; }
+    });
+  }
   async function settings(alive) {
     page.innerHTML = heading('个人设置', true) + '<div id="body"></div>';
     const profile = await read('/api/me'); if (!alive()) return; user = profile;
-    $('#body').innerHTML = `<form id="profile-form" class="form">${avatar(profile)}${field('nickname', '昵称', profile.nickname, 'text', 'required maxlength="16"')}${field('avatar', '头像（JPG / PNG / WebP）', '', 'file', 'accept="image/png,image/jpeg,image/webp"')}<button class="btn">保存资料</button></form><label class="field"><input id="ranking-hidden" type="checkbox" ${profile.rank_hidden ? 'checked' : ''}>不参与公开排名</label><div class="links">${link({ name: 'help' }, '接入电脑与同步状态')}${link({ name: 'email' }, '邮箱登记')}${link({ name: 'reminders' }, '飞书提醒')}</div><button class="btn ghost" id="logout">退出登录</button><button class="btn ghost" id="delete-account">注销账号</button>`;
+    $('#body').innerHTML = `<form id="profile-form" class="form">${avatar(profile)}${field('nickname', '昵称', profile.nickname, 'text', 'required maxlength="16"')}${field('avatar', '头像（JPG / PNG / WebP）', '', 'file', 'accept="image/png,image/jpeg,image/webp"')}<button class="btn">保存资料</button></form><label class="field"><input id="ranking-hidden" type="checkbox" ${profile.rank_hidden ? 'checked' : ''}>不参与公开排名</label>` + connectSection() + `<div class="links">${link({ name: 'email' }, '邮箱登记')}${link({ name: 'reminders' }, '飞书提醒')}</div><button class="btn ghost" id="logout">退出登录</button><button class="btn ghost" id="delete-account">注销账号</button>`;
     $('#profile-form').onsubmit = e => { e.preventDefault(); const form = e.currentTarget, body = new FormData(); body.set('nickname', form.elements.nickname.value); const file = form.elements.avatar.files[0]; if (file) body.set('avatar', file); mutate(form.querySelector('button'), () => request('/api/profile', { method: 'POST', body })); };
     $('#ranking-hidden').onchange = e => { const box = e.currentTarget; mutate(box, () => write('/api/profile/ranking', { hidden: box.checked })); };
+    bindConnectCommands(alive);
     $('#logout').onclick = logout;
     $('#delete-account').onclick = e => { if (prompt('注销会删除用量、群关系、分享与接入凭证，无法恢复。输入 DELETE_ACCOUNT 继续。') === 'DELETE_ACCOUNT') mutate(e.currentTarget, () => write('/api/account', { confirm: 'DELETE_ACCOUNT' }, 'DELETE'), logout); };
   }
@@ -368,20 +593,9 @@
     if (alive() && !token) box.insertAdjacentHTML('beforeend', '<button class="btn ghost" data-login>登录后参与 PK</button>');
   }
   async function help() {
-    page.innerHTML = heading('使用说明') + `<div class="help"><h3>接入电脑</h3><p>在飞书单聊机器人发送「绑定」，或在这里获取专属安装命令。命令含接入凭证，请勿公开转发。</p><button class="btn" id="getcmd">获取接入命令</button><div id="cmd" aria-live="polite"></div><h3>群内命令</h3><p><b>加入</b>：上榜本群<br><b>榜单 [今日|本周|本月|总榜]</b>：查看群排名<br><b>隐藏 / 显示 / 退出</b>：管理我的排名</p><h3>单聊命令</h3><p><b>绑定</b>：接入电脑　<b>我的</b>：个人用量　<b>榜单</b>：广场榜</p><h3>统计与分享</h3><p>总用量含缓存，按北京时间自然日统计。用量来自个人电脑上报，仅供交流参考，不等同厂商账单。不上传代码、对话内容、提示词、项目名和文件路径。用量、日报、周报、日历和成就可生成可撤销公开快照；群内临时 PK 不生成公开链接或图片。</p><button class="btn ghost" id="logout">退出登录</button></div>`;
+    page.innerHTML = heading('使用说明') + connectSection() + `<div class="help"><h3>群内命令</h3><p><b>加入</b>：上榜本群<br><b>榜单 [今日|本周|本月|总榜]</b>：查看群排名<br><b>隐藏 / 显示 / 退出</b>：管理我的排名</p><h3>单聊命令</h3><p><b>绑定</b>：接入电脑　<b>我的</b>：个人用量　<b>榜单</b>：广场榜</p><h3>统计与分享</h3><p>总用量含缓存，按北京时间自然日统计。用量来自个人电脑上报，仅供交流参考，不等同厂商账单。不上传代码、对话内容、提示词、项目名和文件路径。用量、日报、周报、日历和成就可生成可撤销公开快照；群内临时 PK 不生成公开链接或图片。</p><button class="btn ghost" id="logout">退出登录</button></div>`;
     const alive = current;
-    $('#getcmd').addEventListener('click', async event => {
-      const button = event.currentTarget; button.disabled = true;
-      try {
-        // Credentials deliberately bypass the shared read cache.
-        const data = await request('/api/connect/token');
-        if (!alive()) return;
-        $('#cmd').innerHTML = `<h3>macOS / Linux</h3><code class="cmd">${esc(data.install_command || '安装命令暂不可用，请单聊机器人发送「绑定」')}</code><h3>Windows PowerShell</h3><code class="cmd">${esc(data.install_command_windows || 'Windows 安装命令暂不可用，请联系管理员')}</code>`;
-        $('#cmd').insertAdjacentHTML('beforeend', `<p>接入码（仅本人使用）</p><code>${esc(data.token)}</code>${syncBlock(data)}<p>AI 接入指引：将上方对应系统的安装命令交给电脑上的 AI 助手，要求先解释步骤，再经你允许执行；不要公开命令或接入码。安装完成后回此页刷新同步状态。</p><button class="btn ghost" id="rotate-code">重置接入码</button>`);
-        $('#rotate-code').onclick = e => { if (confirm('重置将使旧接入码失效，所有电脑需重新接入，继续？')) mutate(e.currentTarget, () => write('/api/connect/token')); };
-      } catch (error) { if (alive()) showError(error); }
-      finally { if (alive()) button.disabled = false; }
-    });
+    bindConnectCommands(alive);
     $('#logout').addEventListener('click', () => { token = ''; localStorage.removeItem('tr_token'); cache.clear(); guard.invalidate(); ready = false; loginMask('已退出登录', '重新授权后可查看群榜与个人用量'); });
   }
   function showError(error) {
@@ -390,21 +604,53 @@
     clearTimeout(showError.timer); showError.timer = setTimeout(() => { toast.hidden = true; }, 4000);
   }
   async function render() {
+    if (detail) {
+      if (history.state?.[detailStateKey] === detail.id) {
+        const state = { ...history.state }; delete state[detailStateKey];
+        history.replaceState(state, '', location.href);
+      }
+      disposeDetail(false);
+    }
     if (!ready && M.parseRoute(location.hash).name !== 'share') return;
     current = guard.next(); const alive = current;
     await releaseDisplay(); if (!alive()) return;
     route = M.parseRoute(location.hash);
     document.querySelectorAll('.tabbar button').forEach(button => {
-      const active = button.dataset.tab === (route.name.startsWith('group') ? 'groups' : route.name === 'achievements' ? 'me' : route.name);
+      const active = button.dataset.tab === activeTab();
       button.classList.toggle('active', active); button.setAttribute('aria-current', active ? 'page' : 'false');
     });
     try { await ({ groups, group, 'group-analysis': group, square, me, achievements, help, subscriptions, settings, email, reminders, share })[route.name](alive); }
     catch (error) { if (alive() && !error.stale && error.status !== 401) page.insertAdjacentHTML('beforeend', `<div role="alert" class="empty">${esc(error.message)}<button class="btn ghost" data-refresh>重新加载</button></div>`); }
     finally { if (alive()) force = false; }
   }
-  page.addEventListener('change', event => { if (event.target.matches('[data-analysis-category]')) patch({ category: event.target.value, analysisView: 'trend' }); });
+  page.addEventListener('change', event => { if (syncSelectFilter(event)) return; if (event.target.matches('[data-analysis-category]')) patch({ category: event.target.value, analysisView: 'trend' }); });
+  function closeFilterDialog() { document.querySelector('.filter-dialog')?.close?.(); document.querySelector('.filter-dialog')?.remove(); }
+  function openFilterDialog() {
+    closeFilterDialog(); const wrapper = document.createElement('div'); wrapper.innerHTML = filterDialog(); const dialog = wrapper.firstElementChild;
+    document.body.append(dialog); if (dialog.showModal) dialog.showModal(); else dialog.setAttribute('open', '');
+    dialog.addEventListener('click', event => {
+      if (event.target === dialog || event.target.closest('[data-close-filters]')) { closeFilterDialog(); return; }
+      const choice = event.target.closest('[data-filter-key]'); if (!choice) return;
+      const next = { ...route, [choice.dataset.filterKey]: choice.dataset.filterValue };
+      if (choice.dataset.filterKey === 'period' && route.name === 'me' && route.view === 'cal') next.day = '';
+      closeFilterDialog(); go(next);
+    });
+  }
+  page.addEventListener('keydown', event => {
+    const myRow = event.target.closest('[data-my-row]');
+    if (myRow && (event.key === 'Enter' || event.key === ' ')) { event.preventDefault(); go({ name: 'me', period: route.period }); }
+  });
   page.addEventListener('click', async event => {
+    if (event.target.closest('[data-open-filters]')) { openFilterDialog(); return; }
+    if (!event.target.closest('.other-menu')) { const menu = page.querySelector('.other-menu:not([hidden])'); if (menu) { menu.hidden = true; const toggle = page.querySelector('[data-other-toggle]'); if (toggle) toggle.setAttribute('aria-expanded', 'false'); } }
+    const myRow = event.target.closest('[data-my-row]');
+    if (myRow) return go({ name: 'me', period: route.period });
     const button = event.target.closest('button'); if (!button) return;
+    if (button.hasAttribute('data-other-toggle')) {
+      const menu = button.parentElement.querySelector('.other-menu');
+      if (menu) { menu.hidden = !menu.hidden; button.setAttribute('aria-expanded', String(!menu.hidden)); }
+      return;
+    }
     if (button.hasAttribute('data-login')) { loginMask('参与公开 PK', '先通过飞书登录，授权后返回当前分享'); return; }
     if (button.hasAttribute('data-share')) {
       const alive = current, box = button.parentElement.querySelector('.share-result');
@@ -414,7 +660,14 @@
     if (button.hasAttribute('data-group-visibility')) return mutate(button, () => write('/api/groups/' + route.id + '/visibility', { hidden: button.dataset.groupVisibility === 'true' }));
     if (button.hasAttribute('data-group-leave') && confirm('退出此群榜？个人用量会保留，重新加入需回飞书群操作。')) return mutate(button, () => write('/api/groups/' + route.id + '/leave'), () => go({ name: 'groups' }));
     if (button.hasAttribute('data-pk')) { const alive = current, path = '/api/groups/' + route.id + '/compare', body = { period: route.period, rank: Number(button.dataset.pk), snapshot: window.__trBoard.snapshot }; return mutate(button, async () => { const record = await write(path, body); if (!alive()) return; let box = $('#pk-result'); if (!box) { page.insertAdjacentHTML('beforeend', '<div id="pk-result"></div>'); box = $('#pk-result'); } window.TokenRankShare.renderTransient(box, { ...record, self_tokens: record.usage.summary.tokens, difference_tokens: record.usage.summary.tokens - record.comparison.source.usage.summary.tokens }); box.scrollIntoView?.(); }, () => {}); }
+    if (button.hasAttribute('data-my-row')) return go({ name: 'me', period: route.period });
+    if (button.hasAttribute('data-model-detail')) return openDetail('models', button.dataset.modelDetail, button)?.ready;
     if (button.hasAttribute('data-audience')) return audience(button);
+    if (button.dataset.set === 'squareView') {
+      const next = squareSelection(button.dataset.value);
+      if (next) return go(next);
+      return;
+    }
     if (button.hasAttribute('data-set')) patch({ [button.dataset.set]: button.dataset.value });
     if (button.hasAttribute('data-back')) {
       // App-owned history supports browser back; a direct deep link gets a deterministic parent.
@@ -422,11 +675,15 @@
     }
     if (button.hasAttribute('data-refresh')) { force = true; cache.clear(); render(); }
   });
-  document.querySelectorAll('.tabbar button').forEach(button => button.addEventListener('click', () => go({ name: button.dataset.tab })));
+  document.querySelectorAll('.tabbar button').forEach(button => button.addEventListener('click', () => go(tabDestination(button.dataset.tab))));
+  addEventListener('popstate', () => {
+    if (detail && history.state?.[detailStateKey] !== detail.id) disposeDetail();
+  });
   addEventListener('hashchange', render);
-  addEventListener('pagehide', () => { guard.invalidate(); releaseDisplay(); });
+  addEventListener('pagehide', () => { disposeDetail(false); guard.invalidate(); releaseDisplay(); });
   document.addEventListener?.('visibilitychange', () => { if (document.hidden) { guard.invalidate(); releaseDisplay(); } else if (ready) render(); });
   function loginMask(title, subtitle) {
+    disposeDetail(false);
     document.querySelector('.login-mask')?.remove();
     document.body.insertAdjacentHTML('beforeend', `<div class="login-mask"><div class="t">${esc(title)}</div><div class="s">${esc(subtitle)}</div><button class="btn" id="authorize">通过飞书登录</button></div>`);
     document.querySelector('#authorize').addEventListener('click', () => authorize().catch(error => { document.querySelector('.login-mask .s').textContent = error.message; }));

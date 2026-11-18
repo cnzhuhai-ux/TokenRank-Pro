@@ -22,9 +22,12 @@
       if (!/^[a-f0-9]{24}$/.test(parts[1] || '')) name = 'groups';
       else id = parts[1];
     }
-    const period = [...periods.map(p => p[0]), ...(name === 'me' ? ['all'] : [])].includes(q.get('period')) ? q.get('period') : name === 'me' ? 'all' : 'day';
-    return { name, id, period, metric: q.get('metric') === 'credits' ? 'credits' : 'tokens',
-      view: ['sum', 'daily', 'cal', 'trend', 'analysis', 'weekly'].includes(q.get('view')) ? q.get('view') : 'sum',
+    const views = ['sum', 'daily', 'cal', 'trend', 'analysis', 'weekly', ...(name === 'me' ? ['ledger'] : [])];
+    const view = views.includes(q.get('view')) ? q.get('view') : 'sum';
+    const publicTrend = ['square', 'subscriptions'].includes(name) && view === 'trend';
+    const allowedPeriods = publicTrend ? ['week', 'month', 'last_month'] : [...periods.map(p => p[0]), ...(name === 'me' ? ['all'] : [])];
+    const period = allowedPeriods.includes(q.get('period')) ? q.get('period') : publicTrend ? 'week' : name === 'me' ? 'all' : 'day';
+    return { name, id, period, metric: q.get('metric') === 'credits' ? 'credits' : 'tokens', view,
       dimension: q.get('dimension') === 'models' ? 'models' : 'tools',
       day: validDay(q.get('day')) ? q.get('day') : '',
       month: /^\d{4}-(0[1-9]|1[0-2])$/.test(q.get('month') || '') ? q.get('month') : '',
@@ -41,6 +44,7 @@
     return '#/' + route.name + (route.id ? '/' + encodeURIComponent(route.id) : '') + (q.size ? '?' + q : '');
   }
   function parentRoute(route) {
+    if (route.name === 'subscriptions') return route.view === 'trend' ? { name: 'square', view: 'sum', period: route.period } : { name: 'me', view: 'sum', period: 'all' };
     if (route.name === 'group-analysis') return { ...route, name: 'group' };
     if (route.name === 'group') return { name: 'groups', period: route.period };
     if (route.name === 'achievements') return route.family ? { name: 'achievements' } : { name: 'me' };

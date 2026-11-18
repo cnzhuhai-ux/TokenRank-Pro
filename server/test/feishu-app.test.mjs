@@ -122,7 +122,7 @@ function appHarness({ responses = {}, fetcher } = {}) {
   class Form { constructor(form) { this.values = Object.entries(form?.values || {}); } set(k, v) { this.values.push([k,v]); } [Symbol.iterator]() { return this.values[Symbol.iterator](); } }
   const ctx = { window: { TokenRankModel: M, TokenRankShare: { configure() {} } }, document, localStorage: { getItem: k => storage.get(k) ?? null, setItem: (k,v) => storage.set(k,v), removeItem: k => storage.delete(k) }, sessionStorage: {}, location: { origin: 'http://local', hash: '#/settings' }, history: {}, URL, URLSearchParams, Date, Map, Set, FormData: Form, console, setTimeout, clearTimeout, requestAnimationFrame: fn => fn(), matchMedia: () => ({ matches: false }), addEventListener() {}, crypto: { getRandomValues: a => a.fill(7) }, fetch: async (path, options) => { calls.push({path, ...options}); if (fetcher) return fetcher(path, options); return { ok: true, json: async () => responses[path] || {} }; } };
   let app = readFileSync(new URL('../public/app/app.js', import.meta.url), 'utf8');
-  app = app.replace("  login().catch(error => loginMask('登录失败', error.message));", `  window.testApp = { request, read, cache, mutate, settings, email, subscriptions, reminders, playBadge, releaseDisplay, hero, analysisBlock, current: () => current, setToken: v => {token=v;}, setLease: v => {displayLease=v;}, setAlive: fn => {current=fn;}, setRoute: r => {route=r;} }; current=()=>true; route={name:'me',period:'week',dimension:'tools'};`);
+  app = app.replace("  login().catch(error => loginMask('登录失败', error.message));", `  window.testApp = { request, read, cache, mutate, settings, email, subscriptions, reminders, playBadge, releaseDisplay, hero, analysisBlock, square, me, squareTabs, squareSelection, activeTab, tabDestination, periodItems, detailContext, filterDialog, current: () => current, setToken: v => {token=v;}, setLease: v => {displayLease=v;}, setAlive: fn => {current=fn;}, setRoute: r => {route=r;} }; current=()=>true; route={name:'me',period:'week',dimension:'tools'};`);
   vm.runInNewContext(app, ctx);
   return { app: ctx.window.testApp, calls, nodes, node, ctx, storage, Form };
 }
@@ -215,6 +215,100 @@ test('topup form posts a real zero balance and preserves vendor and currency', a
   form.onsubmit({preventDefault(){},currentTarget:form});await new Promise(r=>setTimeout(r,0));
   const body=JSON.parse(h.calls.find(c=>c.path==='/api/topups'&&c.method==='POST').body);
   assert.equal(body.amount,0);assert.equal(body.vendor,'deepseek');assert.equal(body.kind,'balance');assert.equal(body.currency,'CNY');
+});
+
+test('square top navigation maps total, tools and models to existing routes and clears drilldown', () => {
+  const h = appHarness(), route = M.parseRoute('#/square?view=analysis&dimension=models&period=last_month&metric=credits&tool=Codex&category=Old&analysisView=detail');
+  h.app.setRoute(route);
+  const html = h.app.squareTabs();
+  assert.deepEqual([...html.matchAll(/data-value="([^"]+)"/g)].map(m => m[1]), ['sum', 'tools', 'models']);
+  assert.match(html, /data-value="models" aria-pressed="true"/);
+  assert.match(html, />总榜</); assert.doesNotMatch(html, />分析<|>趋势</);
+  for (const choice of ['sum', 'tools', 'models']) {
+    const next = h.app.squareSelection(choice);
+    assert.equal(next.view, choice === 'sum' ? 'sum' : 'analysis');
+    assert.equal(next.dimension, choice === 'sum' ? 'models' : choice);
+    assert.equal(next.period, 'last_month'); assert.equal(next.metric, 'credits');
+    assert.equal(next.tool, ''); assert.equal(next.category, ''); assert.equal(next.analysisView, 'detail');
+    assert.equal(M.parseRoute(M.routeHash(next)).view, next.view);
+  }
+  assert.equal(h.app.squareSelection('unknown'), null);
+});
+
+test('public trend and ledger routes retain old links, valid periods and correct bottom tab', () => {
+  const h = appHarness();
+  const destination = h.app.tabDestination('subscriptions');
+  assert.equal(destination.name, 'subscriptions'); assert.equal(destination.view, 'trend'); assert.equal(destination.period, 'week');
+  for (const name of ['square', 'subscriptions']) {
+    const route = M.parseRoute('#/' + name + '?view=trend&period=day&dimension=models');
+    assert.equal(route.period, 'week'); assert.equal(route.dimension, 'models'); assert.equal(h.app.activeTab(route), 'subscriptions');
+    h.app.setRoute(route);
+    assert.deepEqual(Array.from(h.app.periodItems(), item => item[0]), ['week', 'month', 'last_month']);
+  }
+  for (const hash of ['#/me?view=ledger', '#/subscriptions']) {
+    const route = M.parseRoute(hash);
+    assert.equal(h.app.activeTab(route), 'me'); assert.equal(M.parentRoute(route).name, 'me');
+  }
+  assert.equal(M.parseRoute('#/me?view=ledger').view, 'ledger');
+  assert.equal(M.parseRoute('#/subscriptions').view, 'sum');
+  assert.equal(M.parseRoute('#/square?view=ledger').view, 'sum');
+  assert.equal(h.app.activeTab(M.parseRoute('#/square?view=analysis&dimension=tools')), 'square');
+  assert.equal(h.app.activeTab(M.parseRoute('#/group/g1')), 'groups');
+});
+
+test('square tools and models render the correct bundle without duplicate dimension tabs', async () => {
+  const bundle = {
+    tools: { items: [{ name: 'Tool A', tokens: 100, percent: 100 }], daily: [] },
+    models: { items: [{ name: 'Model X', tokens: 100, percent: 100 }], daily: [] },
+  };
+  const h = appHarness({ responses: { '/api/insights?period=week&dimension=tools&bundle=1': bundle } });
+  h.app.setRoute(M.parseRoute('#/square?view=analysis&dimension=tools&period=week'));
+  await h.app.square(() => true);
+  assert.match(h.node('#page').innerHTML, /data-set="squareView"/);
+  assert.match(h.node('#body').innerHTML, /Tool A/);
+  assert.doesNotMatch(h.node('#body').innerHTML, /data-set="dimension"/);
+  h.app.setRoute(M.parseRoute('#/square?view=analysis&dimension=models&period=week'));
+  await h.app.square(() => true);
+  assert.match(h.node('#body').innerHTML, /Model X/);
+  assert.doesNotMatch(h.node('#body').innerHTML, /data-model-detail=/);
+  assert.equal(h.calls.length, 1);
+});
+
+test('new trend bottom route builds its own page with period filters and no ledger request', async () => {
+  const h = appHarness({ responses: { '/api/insights/trends?period=week&dimension=models&metric=users': {
+    from: '2026-11-09', to: '2026-11-15', previous_from: '2026-11-02', previous_to: '2026-11-08',
+    entries: [{ rank: 1, name: 'Model X', users: 3, tokens: 100, previous_users: 2, previous_tokens: 80, rank_change: 1 }], has_more: false, snapshot: 's',
+  } } });
+  h.app.setRoute(M.parseRoute('#/subscriptions?view=trend&dimension=models'));
+  await h.app.subscriptions(() => true);
+  assert.match(h.node('#page').innerHTML, /趋势榜/); assert.match(h.node('#page').innerHTML, /data-set="period"/);
+  assert.match(h.node('#body').innerHTML, /data-set="trendMetric"/);
+  assert.doesNotMatch(h.node('#page').innerHTML, /data-open-filters/);
+  assert.match(h.node('#body').innerHTML, /id="trend-list"/);
+  assert.match(h.node('#trend-list').innerHTML, /Model X/); assert.match(h.node('#trend-list').innerHTML, /3 人使用/);
+  assert.ok(h.calls.every(call => call.path.startsWith('/api/insights/trends?')));
+});
+
+test('my ledger and legacy subscription links render the same private ledger', async () => {
+  for (const hash of ['#/me?view=ledger', '#/subscriptions']) {
+    const h = appHarness({ responses: { '/api/subscriptions': { items: [], topups: [] } } });
+    h.app.setRoute(M.parseRoute(hash));
+    await (hash.startsWith('#/me') ? h.app.me(() => true) : h.app.subscriptions(() => true));
+    assert.equal(h.calls.length, 1); assert.equal(h.calls[0].path, '/api/subscriptions');
+    assert.match(h.node('#page').innerHTML, /订阅账本/); assert.match(h.node('#page').innerHTML, /data-back/);
+    assert.match(h.node('#body').innerHTML, /data-ledger-new="subscriptions"/);
+  }
+});
+
+test('square filter removes duplicate dimension choices but retains analysis basis', () => {
+  const h = appHarness(); h.app.setRoute(M.parseRoute('#/square?view=analysis'));
+  const html = h.app.filterDialog();
+  assert.doesNotMatch(html, /data-filter-key="dimension"/);
+  assert.match(html, /data-filter-key="analysisBasis"/);
+  h.app.setRoute(M.parseRoute('#/subscriptions?view=trend'));
+  const trend = h.app.filterDialog();
+  assert.match(trend, /data-filter-key="dimension"/); assert.match(trend, /使用人数/);
+  assert.doesNotMatch(trend, /data-filter-value="day"/);
 });
 
 test('web integration wires sharing, two-phase achievements and Windows installation', () => {
